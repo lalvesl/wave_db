@@ -1,0 +1,15 @@
+[package]
+name = "wave_db"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "wave_db"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wave_db"
+path = "src/main.rs"
+
+[dependencies]
+wave_db_macro = { path = "../wave_db_macro" }
