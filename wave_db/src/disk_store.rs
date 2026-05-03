@@ -165,10 +165,11 @@ impl DiskStore {
         let anchor_sentinel = codec::anchor_sentinel_id(rec_id);
 
         // 1. Update in-memory cache
-        self.cache.insert(record.clone())?;
+        self.cache.insert(record)?;
 
-        // 2. Write versioned record to data file
-        let versioned_bytes = codec::encode_versioned_record(&record);
+        // 2. Write versioned record to data file (use the one from cache which may have updated metadata)
+        let updated_rec = self.cache.get_versioned(rec_id).expect("just inserted");
+        let versioned_bytes = codec::encode_versioned_record(updated_rec);
         self.data.insert(rec_id.raw(), &versioned_bytes)?;
 
         // 3. Write anchor slot to data file
@@ -206,10 +207,11 @@ impl DiskStore {
         let old_created_at = old_id.created_at().ticks();
 
         // 1. Update in-memory cache (validates old_id is live, updates chain)
-        self.cache.mutate(old_id, new_record.clone())?;
+        self.cache.mutate(old_id, new_record)?;
 
-        // 2. Write new versioned record to data file
-        let new_versioned_bytes = codec::encode_versioned_record(&new_record);
+        // 2. Write new versioned record to data file (use the one from cache which has old_modification_id set)
+        let updated_new_rec = self.cache.get_versioned(new_id).expect("just inserted");
+        let new_versioned_bytes = codec::encode_versioned_record(updated_new_rec);
         self.data.insert(new_id.raw(), &new_versioned_bytes)?;
 
         // 3. Update old versioned record (its new_modification_id was updated in cache)
