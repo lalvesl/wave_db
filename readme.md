@@ -88,6 +88,8 @@ pub struct SomeObject {
   - `old_modification_id`: ID of the previous version of this object
   - `new_modification_id`: ID of the next version (`0u128` if this is the live object)
   - `struct_version`: schema version at write time, used for lazy migration
+  - `creator_id`: ID of the user who created or modified this version
+  *(Note: `struct_version` (16 bits) and `creator_id` (48 bits) are packed into a single 64-bit field for memory and storage optimization).*
 
 ### Schema Versioning & Lazy Migration
 

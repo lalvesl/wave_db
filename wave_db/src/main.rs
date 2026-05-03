@@ -56,7 +56,7 @@ fn main() {
 
     let profile = UserProfile {
         id: profile_id,
-        metadata: Metadata::new(1),
+        metadata: Metadata::new(1, 999),
         display_name: "Alice".to_owned(),
         email: "alice@example.com".to_owned(),
     };
@@ -76,7 +76,7 @@ fn main() {
 
     let order = Order {
         id: order_id,
-        metadata: Metadata::new(1),
+        metadata: Metadata::new(1, 999),
         amount_cents: 4999,
         description: "Widget Pro ×2".to_owned(),
     };
@@ -95,7 +95,7 @@ fn main() {
 
     let msg = Message {
         id: msg_id,
-        metadata: Metadata::new(1),
+        metadata: Metadata::new(1, 999),
         body: "Hello, WaveDB!".to_owned(),
     };
 
