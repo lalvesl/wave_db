@@ -17,7 +17,7 @@
 use std::{
     collections::BTreeMap,
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Read, Write},
     path::Path,
 };
 

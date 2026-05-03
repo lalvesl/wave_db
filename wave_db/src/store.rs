@@ -149,11 +149,10 @@ impl Store {
         let key = PageKey::new(record.id.struct_id(), record.id.tenant_id());
 
         // Block if a *live* anchor exists.
-        if let Some(slot) = self.anchors.get(&key) {
-            if slot.is_live() {
+        if let Some(slot) = self.anchors.get(&key)
+            && slot.is_live() {
                 return Err(StoreError::AlreadyExists);
             }
-        }
 
         let anchor = self.build_anchor(record.data.clone(), record.id);
         let record_id = record.id;

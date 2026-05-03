@@ -173,7 +173,7 @@ impl DataFile {
                 let mut page = self.read_page(page_idx)?;
                 if page.can_fit(data.len()) {
                     page.insert(id, data)
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                        .map_err(|e| io::Error::other(e.to_string()))?;
                     self.write_page(page_idx, &page)?;
                     return Ok(());
                 }

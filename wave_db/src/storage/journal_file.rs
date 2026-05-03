@@ -252,7 +252,7 @@ fn decode_entry(payload: &[u8]) -> Result<JournalEntry, DecodeError> {
                 freed_bytes: freed,
             })
         }
-        other => Err(DecodeError::UnknownTag(())),
+        _other => Err(DecodeError::UnknownTag(())),
     }
 }
 

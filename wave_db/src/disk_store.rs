@@ -161,7 +161,7 @@ impl DiskStore {
         let rec_id = record.id;
         let struct_id = rec_id.struct_id();
         let tenant_id = rec_id.tenant_id();
-        let shard_id = rec_id.shard_id();
+        let _shard_id = rec_id.shard_id();
         let anchor_sentinel = codec::anchor_sentinel_id(rec_id);
 
         // 1. Update in-memory cache
@@ -424,12 +424,9 @@ fn rebuild_cache(
 
     // Load anchor slots
     for (sentinel_id, bytes) in anchor_entries {
-        match codec::decode_anchor_slot(&bytes) {
-            Ok(slot) => {
-                let key = PageKey::new(sentinel_id.struct_id(), sentinel_id.tenant_id());
-                cache.load_anchor(key, slot);
-            }
-            Err(_) => {}
+        if let Ok(slot) = codec::decode_anchor_slot(&bytes) {
+            let key = PageKey::new(sentinel_id.struct_id(), sentinel_id.tenant_id());
+            cache.load_anchor(key, slot);
         }
     }
 

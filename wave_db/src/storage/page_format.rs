@@ -58,7 +58,7 @@ impl std::error::Error for PageFormatError {}
 
 impl From<PageFormatError> for io::Error {
     fn from(e: PageFormatError) -> Self {
-        io::Error::new(io::ErrorKind::Other, e.to_string())
+        io::Error::other(e.to_string())
     }
 }
 
