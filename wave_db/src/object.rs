@@ -14,6 +14,9 @@ pub trait WaveDbObject: Sized {
     /// Zero-sized marker type for this object kind (e.g. `OrderKind`).
     type Kind: 'static + Copy;
 
+    /// The unique identifier for this struct type.
+    const STRUCT_ID: u16;
+
     /// Shared reference to the record's composite ID.
     fn id(&self) -> &Id;
 

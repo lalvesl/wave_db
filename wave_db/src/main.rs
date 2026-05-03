@@ -8,7 +8,7 @@ use wave_db::prelude::*;
 // ── Example structs annotated with the proc-macro ────────────────────────────
 
 /// A unique object: one live record per tenant.
-#[wave_db]
+#[wave_db(struct_id = 2)]
 #[derive(Debug)]
 pub struct UserProfile {
     pub id: Id,
@@ -18,7 +18,7 @@ pub struct UserProfile {
 }
 
 /// A non-unique object: many records per tenant (e.g. orders).
-#[wave_db(NonUnique)]
+#[wave_db(NonUnique, struct_id = 3)]
 #[derive(Debug)]
 pub struct Order {
     pub id: Id,
@@ -28,7 +28,7 @@ pub struct Order {
 }
 
 /// Non-unique with a custom B+ tree conversion threshold.
-#[wave_db(NonUnique, btree_threshold = 100)]
+#[wave_db(NonUnique, btree_threshold = 100, struct_id = 4)]
 #[derive(Debug)]
 pub struct Message {
     pub id: Id,
@@ -46,9 +46,9 @@ fn main() {
     // Create a tenant and struct IDs.
     let tenant = TenantId::new(0x_0000_CAFE_1234);
     let shard = ShardId::new(0);
-    let profile_struct = StructId::new(2);
-    let order_struct = StructId::new(3);
-    let msg_struct = StructId::new(4);
+    let profile_struct = StructId::new(UserProfile::STRUCT_ID);
+    let order_struct = StructId::new(Order::STRUCT_ID);
+    let msg_struct = StructId::new(Message::STRUCT_ID);
 
     // ── UserProfile ──────────────────────────────────────────────────────────
     let profile_id =

@@ -16,6 +16,8 @@ struct WaveDbArgs {
     non_unique: bool,
     /// Optional override of `MAX_NON_UNIQUE_ELEMENTS`.
     btree_threshold: Option<u32>,
+    /// The struct/table ID.
+    struct_id: Option<u16>,
 }
 
 impl Parse for WaveDbArgs {
@@ -38,6 +40,16 @@ impl Parse for WaveDbArgs {
                         }) = &kv.value
                         {
                             args.btree_threshold = Some(n.base10_parse()?);
+                        } else {
+                            return Err(syn::Error::new_spanned(&kv.value, "expected integer"));
+                        }
+                    }
+                    "struct_id" => {
+                        if let Expr::Lit(ExprLit {
+                            lit: Lit::Int(n), ..
+                        }) = &kv.value
+                        {
+                            args.struct_id = Some(n.base10_parse()?);
                         } else {
                             return Err(syn::Error::new_spanned(&kv.value, "expected integer"));
                         }
@@ -128,6 +140,16 @@ fn expand_wave_db(args: WaveDbArgs, input: DeriveInput) -> syn::Result<TokenStre
         ));
     }
 
+    let struct_id = match args.struct_id {
+        Some(id) => id,
+        None => {
+            return Err(syn::Error::new_spanned(
+                struct_name,
+                "#[wave_db] requires a `struct_id = N` attribute",
+            ));
+        }
+    };
+
     // Build marker type name: `<StructName>Kind`
     let kind_name = format_ident!("{}Kind", struct_name);
 
@@ -157,6 +179,7 @@ fn expand_wave_db(args: WaveDbArgs, input: DeriveInput) -> syn::Result<TokenStre
         // Core trait impl.
         impl ::wave_db::WaveDbObject for #struct_name {
             type Kind = #kind_name;
+            const STRUCT_ID: u16 = #struct_id;
 
             fn id(&self) -> &::wave_db::Id {
                 &self.id

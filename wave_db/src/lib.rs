@@ -9,21 +9,21 @@
 //! ```rust
 //! use wave_db::prelude::*;
 //!
-//! #[wave_db]
+//! #[wave_db(struct_id = 1)]
 //! pub struct UserProfile {
 //!     pub id: Id,
 //!     pub metadata: Metadata,
 //!     pub display_name: String,
 //! }
 //!
-//! #[wave_db(NonUnique)]
+//! #[wave_db(NonUnique, struct_id = 2)]
 //! pub struct Order {
 //!     pub id: Id,
 //!     pub metadata: Metadata,
 //!     pub amount: u64,
 //! }
 //!
-//! #[wave_db(NonUnique, btree_threshold = 100)]
+//! #[wave_db(NonUnique, btree_threshold = 100, struct_id = 3)]
 //! pub struct Message {
 //!     pub id: Id,
 //!     pub metadata: Metadata,
