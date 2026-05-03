@@ -31,24 +31,33 @@
 //! }
 //! ```
 
+pub mod anchor;
 pub mod config;
 pub mod id;
+pub mod journal;
 pub mod metadata;
 pub mod object;
 pub mod page;
+pub mod store;
 
+pub use anchor::{AnchorContent, AnchorSlot};
 pub use id::{Id, ShardId, Slider, StructId, TenantId, Timestamp};
+pub use journal::{Journal, JournalEntry};
 pub use metadata::Metadata;
 pub use object::{NonUniqueObject, UniqueObject, WaveDbObject};
+pub use store::{AnchorMode, StoredRecord, Store, StoreError};
 
 // Re-export the proc-macro so users only need `use wave_db::prelude::*`.
 pub use wave_db_macro::wave_db;
 
 /// Convenience prelude — import everything a user needs.
 pub mod prelude {
+    pub use crate::anchor::{AnchorContent, AnchorSlot};
     pub use crate::config::Config;
     pub use crate::id::{Id, ShardId, Slider, StructId, TenantId, Timestamp};
+    pub use crate::journal::{Journal, JournalEntry};
     pub use crate::metadata::Metadata;
     pub use crate::object::{NonUniqueObject, UniqueObject, WaveDbObject};
+    pub use crate::store::{AnchorMode, StoredRecord, Store, StoreError};
     pub use wave_db_macro::wave_db;
 }
