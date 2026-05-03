@@ -38,6 +38,12 @@ impl CreatorAndVersion {
     pub const fn raw(self) -> u64 {
         self.0
     }
+
+    /// Reconstruct from a raw packed `u64`.
+    #[inline]
+    pub const fn from_raw(v: u64) -> Self {
+        Self(v)
+    }
 }
 
 /// Metadata stored in every WaveDB object.

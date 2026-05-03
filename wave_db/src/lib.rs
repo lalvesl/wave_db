@@ -33,14 +33,17 @@
 
 pub mod anchor;
 pub mod config;
+pub mod disk_store;
 pub mod id;
 pub mod journal;
 pub mod metadata;
 pub mod object;
 pub mod page;
+pub mod storage;
 pub mod store;
 
 pub use anchor::{AnchorContent, AnchorSlot};
+pub use disk_store::{DiskStore, DiskStoreError};
 pub use id::{Id, ShardId, Slider, StructId, TenantId, Timestamp};
 pub use journal::{Journal, JournalEntry};
 pub use metadata::Metadata;
@@ -54,6 +57,7 @@ pub use wave_db_macro::wave_db;
 pub mod prelude {
     pub use crate::anchor::{AnchorContent, AnchorSlot};
     pub use crate::config::Config;
+    pub use crate::disk_store::{DiskStore, DiskStoreError};
     pub use crate::id::{Id, ShardId, Slider, StructId, TenantId, Timestamp};
     pub use crate::journal::{Journal, JournalEntry};
     pub use crate::metadata::Metadata;

@@ -392,6 +392,23 @@ impl Store {
         &self.config
     }
 
+    // ── Rebuild-only loaders (for DiskStore) ─────────────────────────────────
+
+    /// Directly insert a versioned record into the cache, bypassing the journal.
+    ///
+    /// **For `DiskStore` rebuild only** — called during `open` when reconstructing
+    /// in-memory state from the data file. Must not be used in normal write paths.
+    pub fn load_versioned(&mut self, rec: StoredRecord) {
+        self.versioned.insert(rec.id, rec);
+    }
+
+    /// Directly insert an anchor slot into the cache, bypassing the journal.
+    ///
+    /// **For `DiskStore` rebuild only**.
+    pub fn load_anchor(&mut self, key: PageKey, slot: AnchorSlot) {
+        self.anchors.insert(key, slot);
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     fn build_anchor(&self, data: Vec<u8>, version_id: Id) -> AnchorSlot {
