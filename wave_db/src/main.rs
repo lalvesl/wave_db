@@ -28,13 +28,20 @@ pub struct Order {
 }
 
 /// Non-unique with a custom B+ tree conversion threshold.
-#[wave_db(NonUnique, btree_threshold = 100, struct_id = 4)]
-#[derive(Debug)]
-pub struct Message {
-    pub id: Id,
-    pub metadata: Metadata,
-    pub body: String,
+pub mod message {
+    use super::*;
+    pub type Message = Message1;
+
+    #[wave_db(NonUnique, btree_threshold = 100, struct_id = 4, struct_version = 1)]
+    #[derive(Debug)]
+    pub struct Message1 {
+        pub id: Id,
+        pub metadata: Metadata,
+        pub body: String,
+    }
 }
+
+pub use message::Message;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
