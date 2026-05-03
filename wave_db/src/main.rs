@@ -8,7 +8,7 @@ use wave_db::prelude::*;
 // ── Example structs annotated with the proc-macro ────────────────────────────
 
 /// A unique object: one live record per tenant.
-#[wave_db(struct_id = 2)]
+#[wave_db(struct_id = 2, struct_version = 1)]
 #[derive(Debug)]
 pub struct UserProfile {
     pub id: Id,
@@ -56,7 +56,7 @@ fn main() {
 
     let profile = UserProfile {
         id: profile_id,
-        metadata: Metadata::new(1, 999),
+        metadata: Metadata::new(UserProfile::STRUCT_VERSION, 999),
         display_name: "Alice".to_owned(),
         email: "alice@example.com".to_owned(),
     };
@@ -76,7 +76,7 @@ fn main() {
 
     let order = Order {
         id: order_id,
-        metadata: Metadata::new(1, 999),
+        metadata: Metadata::new(Order::STRUCT_VERSION, 999),
         amount_cents: 4999,
         description: "Widget Pro ×2".to_owned(),
     };
@@ -95,7 +95,7 @@ fn main() {
 
     let msg = Message {
         id: msg_id,
-        metadata: Metadata::new(1, 999),
+        metadata: Metadata::new(Message::STRUCT_VERSION, 999),
         body: "Hello, WaveDB!".to_owned(),
     };
 

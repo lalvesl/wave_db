@@ -18,6 +18,8 @@ struct WaveDbArgs {
     btree_threshold: Option<u32>,
     /// The struct/table ID.
     struct_id: Option<u16>,
+    /// The current schema version of this struct.
+    struct_version: Option<u16>,
 }
 
 impl Parse for WaveDbArgs {
@@ -50,6 +52,16 @@ impl Parse for WaveDbArgs {
                         }) = &kv.value
                         {
                             args.struct_id = Some(n.base10_parse()?);
+                        } else {
+                            return Err(syn::Error::new_spanned(&kv.value, "expected integer"));
+                        }
+                    }
+                    "struct_version" => {
+                        if let Expr::Lit(ExprLit {
+                            lit: Lit::Int(n), ..
+                        }) = &kv.value
+                        {
+                            args.struct_version = Some(n.base10_parse()?);
                         } else {
                             return Err(syn::Error::new_spanned(&kv.value, "expected integer"));
                         }
@@ -150,6 +162,8 @@ fn expand_wave_db(args: WaveDbArgs, input: DeriveInput) -> syn::Result<TokenStre
         }
     };
 
+    let struct_version = args.struct_version.unwrap_or(1);
+
     // Build marker type name: `<StructName>Kind`
     let kind_name = format_ident!("{}Kind", struct_name);
 
@@ -180,6 +194,7 @@ fn expand_wave_db(args: WaveDbArgs, input: DeriveInput) -> syn::Result<TokenStre
         impl ::wave_db::WaveDbObject for #struct_name {
             type Kind = #kind_name;
             const STRUCT_ID: u16 = #struct_id;
+            const STRUCT_VERSION: u16 = #struct_version;
 
             fn id(&self) -> &::wave_db::Id {
                 &self.id

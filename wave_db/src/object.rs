@@ -17,6 +17,9 @@ pub trait WaveDbObject: Sized {
     /// The unique identifier for this struct type.
     const STRUCT_ID: u16;
 
+    /// The current schema version of this struct type. Used for lazy migration.
+    const STRUCT_VERSION: u16;
+
     /// Shared reference to the record's composite ID.
     fn id(&self) -> &Id;
 
