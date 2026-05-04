@@ -31,8 +31,7 @@
 //!    but whose corresponding data-file writes may not be complete yet.
 
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -42,7 +41,6 @@ use crate::{
     id::{Id, StructId, TenantId},
     journal::JournalEntry,
     page::PageKey,
-    store::{AnchorMode, StoredRecord, Store, StoreError},
     storage::{
         codec::{self, CodecError},
         data_file::DataFile,
@@ -50,6 +48,7 @@ use crate::{
         index_file::IndexFile,
         journal_file::JournalFile,
     },
+    store::{AnchorMode, Store, StoreError, StoredRecord},
 };
 
 // ─── Error ────────────────────────────────────────────────────────────────────
@@ -173,7 +172,10 @@ impl DiskStore {
         self.data.insert(rec_id.raw(), &versioned_bytes)?;
 
         // 3. Write anchor slot to data file
-        let anchor = self.cache.anchor(struct_id, tenant_id).expect("just inserted");
+        let anchor = self
+            .cache
+            .anchor(struct_id, tenant_id)
+            .expect("just inserted");
         let anchor_bytes = codec::encode_anchor_slot(anchor);
         self.data.insert(anchor_sentinel.raw(), &anchor_bytes)?;
 
@@ -187,17 +189,16 @@ impl DiskStore {
 
         // 5. Journal entry
         let key = PageKey::new(struct_id, tenant_id);
-        self.journal.append(&JournalEntry::Insert { record_id: rec_id, anchor_key: key })?;
+        self.journal.append(&JournalEntry::Insert {
+            record_id: rec_id,
+            anchor_key: key,
+        })?;
 
         Ok(())
     }
 
     /// Mutate an existing record.
-    pub fn mutate(
-        &mut self,
-        old_id: Id,
-        new_record: StoredRecord,
-    ) -> Result<(), DiskStoreError> {
+    pub fn mutate(&mut self, old_id: Id, new_record: StoredRecord) -> Result<(), DiskStoreError> {
         let new_id = new_record.id;
         let struct_id = old_id.struct_id();
         let tenant_id = old_id.tenant_id();
@@ -229,7 +230,8 @@ impl DiskStore {
         self.data.update(anchor_sentinel.raw(), &anchor_bytes)?;
 
         // 5. Update index: remove old created_at entry, insert new
-        self.index.remove(struct_id.value(), tenant_id.value(), old_created_at);
+        self.index
+            .remove(struct_id.value(), tenant_id.value(), old_created_at);
         self.index.insert(
             struct_id.value(),
             tenant_id.value(),
@@ -239,8 +241,11 @@ impl DiskStore {
 
         // 6. Journal
         let key = PageKey::new(struct_id, tenant_id);
-        self.journal
-            .append(&JournalEntry::Mutate { old_id, new_id, anchor_key: key })?;
+        self.journal.append(&JournalEntry::Mutate {
+            old_id,
+            new_id,
+            anchor_key: key,
+        })?;
 
         Ok(())
     }
@@ -286,8 +291,10 @@ impl DiskStore {
 
         // 4. Journal
         let key = PageKey::new(struct_id, tenant_id);
-        self.journal
-            .append(&JournalEntry::Delete { anchor_key: key, final_version_id: final_id })?;
+        self.journal.append(&JournalEntry::Delete {
+            anchor_key: key,
+            final_version_id: final_id,
+        })?;
 
         Ok(())
     }
@@ -310,20 +317,12 @@ impl DiskStore {
     }
 
     /// Full version history from newest to oldest.
-    pub fn history_backward(
-        &self,
-        struct_id: StructId,
-        tenant_id: TenantId,
-    ) -> Vec<&StoredRecord> {
+    pub fn history_backward(&self, struct_id: StructId, tenant_id: TenantId) -> Vec<&StoredRecord> {
         self.cache.history_backward(struct_id, tenant_id)
     }
 
     /// Full version history from oldest to newest.
-    pub fn history_forward(
-        &self,
-        struct_id: StructId,
-        tenant_id: TenantId,
-    ) -> Vec<&StoredRecord> {
+    pub fn history_forward(&self, struct_id: StructId, tenant_id: TenantId) -> Vec<&StoredRecord> {
         self.cache.history_forward(struct_id, tenant_id)
     }
 
@@ -349,7 +348,8 @@ impl DiskStore {
 
     /// Ordered anchor IDs for `(struct_id, tenant_id)` — creation order.
     pub fn index_range(&self, struct_id: StructId, tenant_id: TenantId) -> Vec<u128> {
-        self.index.range_for_tenant(struct_id.value(), tenant_id.value())
+        self.index
+            .range_for_tenant(struct_id.value(), tenant_id.value())
     }
 
     // ── Flush / close ─────────────────────────────────────────────────────────
@@ -396,10 +396,7 @@ impl DiskStore {
 // ─── Rebuild helpers ──────────────────────────────────────────────────────────
 
 /// Decode raw `(u128, Vec<u8>)` scan pairs into the in-memory cache.
-fn rebuild_cache(
-    cache: &mut Store,
-    entries: Vec<(u128, Vec<u8>)>,
-) -> Result<(), DiskStoreError> {
+fn rebuild_cache(cache: &mut Store, entries: Vec<(u128, Vec<u8>)>) -> Result<(), DiskStoreError> {
     // Sort: anchors (created_at=0) last so versioned records are loaded first.
     // This way anchor.current_version_id can be resolved immediately.
     let mut versioned_entries = Vec::new();
@@ -416,9 +413,9 @@ fn rebuild_cache(
 
     // Load versioned records first
     for (_, bytes) in versioned_entries {
-        match codec::decode_versioned_record(&bytes) {
-            Ok(rec) => cache.load_versioned(rec),
-            Err(_) => {} // skip corrupt entries during rebuild
+        // skip corrupt entries during rebuild
+        if let Ok(rec) = codec::decode_versioned_record(&bytes) {
+            cache.load_versioned(rec);
         }
     }
 
@@ -481,8 +478,7 @@ mod tests {
     #[test]
     fn insert_and_get_live() {
         let dir = tmp_dir("wave_ds_insert");
-        let mut ds =
-            DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
+        let mut ds = DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
         let r = record(2, 1, 100, 0, b"disk-data");
         ds.insert(r).unwrap();
         let live = ds.get_live(StructId::new(2), TenantId::new(1)).unwrap();
@@ -495,8 +491,7 @@ mod tests {
         let dir = tmp_dir("wave_ds_reopen");
         let v1_id;
         {
-            let mut ds =
-                DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
+            let mut ds = DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
             let r = record(2, 1, 100, 0, b"persisted");
             v1_id = r.id;
             ds.insert(r).unwrap();
@@ -516,8 +511,7 @@ mod tests {
         let v1_id;
         let v2_id;
         {
-            let mut ds =
-                DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
+            let mut ds = DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
             let v1 = record(2, 1, 100, 0, b"v1");
             v1_id = v1.id;
             ds.insert(v1).unwrap();
@@ -543,8 +537,7 @@ mod tests {
     fn delete_and_reopen() {
         let dir = tmp_dir("wave_ds_delete");
         {
-            let mut ds =
-                DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
+            let mut ds = DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
             let r = record(2, 1, 100, 0, b"to delete");
             ds.insert(r).unwrap();
             ds.delete(StructId::new(2), TenantId::new(1)).unwrap();
@@ -553,7 +546,10 @@ mod tests {
         let ds2 = DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
         assert!(ds2.get_live(StructId::new(2), TenantId::new(1)).is_none());
         let anchor = ds2.anchor(StructId::new(2), TenantId::new(1)).unwrap();
-        assert!(!anchor.is_live(), "anchor should be tombstoned after reopen");
+        assert!(
+            !anchor.is_live(),
+            "anchor should be tombstoned after reopen"
+        );
         // History still accessible after reopen
         let chain = ds2.history_backward(StructId::new(2), TenantId::new(1));
         assert_eq!(chain.len(), 1);
@@ -563,8 +559,7 @@ mod tests {
     #[test]
     fn heap_append_and_read() {
         let dir = tmp_dir("wave_ds_heap");
-        let mut ds =
-            DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
+        let mut ds = DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
         let big_data = vec![0xCAu8; 10_000];
         let ptr = ds.heap_append(&big_data).unwrap();
         let got = ds.heap_read(ptr).unwrap();
@@ -575,17 +570,20 @@ mod tests {
     #[test]
     fn multiple_tenants_independent() {
         let dir = tmp_dir("wave_ds_multi");
-        let mut ds =
-            DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
+        let mut ds = DiskStore::open(&dir, Config::dev(), AnchorMode::Inline).unwrap();
         ds.insert(record(2, 1, 100, 0, b"tenant-1")).unwrap();
         ds.insert(record(2, 2, 100, 0, b"tenant-2")).unwrap();
 
         assert_eq!(
-            ds.get_live(StructId::new(2), TenantId::new(1)).unwrap().data,
+            ds.get_live(StructId::new(2), TenantId::new(1))
+                .unwrap()
+                .data,
             b"tenant-1"
         );
         assert_eq!(
-            ds.get_live(StructId::new(2), TenantId::new(2)).unwrap().data,
+            ds.get_live(StructId::new(2), TenantId::new(2))
+                .unwrap()
+                .data,
             b"tenant-2"
         );
         ds.close().unwrap();

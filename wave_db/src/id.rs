@@ -91,10 +91,12 @@ impl fmt::Display for TenantId {
 
 impl ShardId {
     /// Derive a shard ID by hashing a u64 property into the 0..=255 range.
+    #[deprecated(note = "Not recomend to use this api")]
     #[inline]
     pub const fn from_property(v: u64) -> Self {
         // Simple but stable: use the lower 8 bits after a cheap mix.
-        let mixed = v.wrapping_mul(0x517c_c1b7_27220_a95).wrapping_add(v >> 32);
+        // 0x517c_c1b7_27220_a95
+        let mixed = v.wrapping_mul(0x517c_c1b7_2722_0a95).wrapping_add(v >> 32);
         Self(mixed as u8)
     }
 
