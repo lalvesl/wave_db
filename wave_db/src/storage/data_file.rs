@@ -57,7 +57,11 @@ impl DataFile {
 
         if path.exists() {
             let file = OpenOptions::new().read(true).write(true).open(path)?;
-            let mut df = Self { file, page_size, page_count: 0 };
+            let mut df = Self {
+                file,
+                page_size,
+                page_count: 0,
+            };
             df.read_header()?;
             if df.page_size != page_size {
                 return Err(io::Error::new(
@@ -70,8 +74,17 @@ impl DataFile {
             }
             Ok(df)
         } else {
-            let file = OpenOptions::new().create(true).read(true).write(true).open(path)?;
-            let mut df = Self { file, page_size, page_count: 0 };
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(path)?;
+            let mut df = Self {
+                file,
+                page_size,
+                page_count: 0,
+            };
             // Write header page
             df.page_count = 1;
             df.write_header()?;
@@ -379,7 +392,7 @@ mod tests {
         let initial_pages = df.page_count;
         // Insert enough records to fill all initial pages
         for i in 0u128..100 {
-            df.insert(i + 1000, &vec![0u8; 64]).unwrap();
+            df.insert(i + 1000, &[0u8; 64]).unwrap();
         }
         assert!(df.page_count > initial_pages, "file should have grown");
         cleanup(&p);

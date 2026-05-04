@@ -80,8 +80,12 @@ impl HeapFile {
             let cursor = read_cursor(&mut file)?;
             Ok(Self { file, cursor })
         } else {
-            let mut file =
-                OpenOptions::new().create(true).read(true).write(true).open(path)?;
+            let mut file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(path)?;
             let cursor = BLOCK; // first entry starts at 4096 (after the header block)
             write_cursor(&mut file, cursor)?;
             Ok(Self { file, cursor })
@@ -113,7 +117,10 @@ impl HeapFile {
         self.cursor = next_aligned;
         write_cursor(&mut self.file, self.cursor)?;
 
-        Ok(HeapPtr { offset: entry_start, size: data.len() as u32 })
+        Ok(HeapPtr {
+            offset: entry_start,
+            size: data.len() as u32,
+        })
     }
 
     /// Read data at the given [`HeapPtr`].
@@ -127,7 +134,10 @@ impl HeapFile {
         if stored_size != ptr.size {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("heap ptr size mismatch: stored={stored_size} ptr={}", ptr.size),
+                format!(
+                    "heap ptr size mismatch: stored={stored_size} ptr={}",
+                    ptr.size
+                ),
             ));
         }
 
@@ -258,7 +268,10 @@ mod tests {
 
     #[test]
     fn heap_ptr_roundtrip() {
-        let ptr = HeapPtr { offset: 8192, size: 1234 };
+        let ptr = HeapPtr {
+            offset: 8192,
+            size: 1234,
+        };
         let bytes = ptr.to_bytes();
         let decoded = HeapPtr::from_bytes(&bytes);
         assert_eq!(decoded, ptr);
