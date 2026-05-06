@@ -335,7 +335,7 @@ Property tests pass at the default 256 cases. `cargo doc` produces clean output 
 1. Validates `struct_id` fits in `u20` and is unique across the codebase (per-compilation-unit best-effort, plus a build script lint).
 2. Parses the trailing integer of the struct identifier as `struct_version` (`u8`).
 3. Emits trait impls so `MyStruct1` carries `STRUCT_ID = N` and `STRUCT_VERSION = 1`.
-4. Accepts attribute flags: `NonUnique`, `NestedNonUnique`, `try_heap_inline`, `btree_threshold = K`.
+4. Accepts attribute flags: `NonUnique`, `NestedNonUnique`, `try_heap_inline`, `btree_threshold = K`, `primary_anchor(field, …)`, `secondary_anchor(field, …)` (repeatable). The two anchor attributes drive the addressing variants from the _Anchor Slots_ section of the README — the macro emits the `find_by_<fields>` accessors and a compile-time anchor-layout descriptor that the storage engine consults at run time.
 
 ### `crates/wavedb-macros/Cargo.toml`
 
@@ -367,6 +367,13 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, ItemStruct, AttributeArgs};
 
+/// One declared anchor (primary or secondary) — a list of field idents
+/// whose values are concatenated and hashed.
+#[derive(Debug, FromMeta)]
+struct AnchorSpec {
+    fields: Vec<syn::Ident>,
+}
+
 #[derive(Debug, FromMeta)]
 struct WaveDbArgs {
     struct_id: u32,
@@ -374,6 +381,8 @@ struct WaveDbArgs {
     #[darling(default)] nested_non_unique: bool,
     #[darling(default)] try_heap_inline:   bool,
     #[darling(default)] btree_threshold:   Option<u32>,
+    #[darling(default)] primary_anchor:    Option<AnchorSpec>,
+    #[darling(default, multiple)] secondary_anchor: Vec<AnchorSpec>,
 }
 
 #[proc_macro_attribute]
@@ -399,6 +408,11 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         (_,     true)  => quote! { ::wavedb_core::Shape::NestedNonUnique },
     };
 
+    let primary_accessor   = args.primary_anchor.as_ref()
+        .map(|spec| emit_find_by(name, spec, AnchorRole::Primary));
+    let secondary_accessors = args.secondary_anchor.iter()
+        .map(|spec| emit_find_by(name, spec, AnchorRole::Secondary));
+
     quote! {
         #input
 
@@ -406,6 +420,11 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             const STRUCT_ID:      u32 = #sid;
             const STRUCT_VERSION: u8  = #version;
             const SHAPE: ::wavedb_core::Shape = #shape;
+        }
+
+        impl #name {
+            #primary_accessor
+            #(#secondary_accessors)*
         }
     }.into()
 }
@@ -419,13 +438,18 @@ Compile-pass and compile-fail cases live in `crates/wavedb-macros/tests/ui/`:
 
 ```
 ui/
-├── ok_minimal.rs         # #[wave_db(struct_id = 1)] pub struct Foo1 { … }
+├── ok_minimal.rs                   # #[wave_db(struct_id = 1)] pub struct Foo1 { … }
 ├── ok_nonunique.rs
 ├── ok_nested.rs
-├── err_no_struct_id.rs   # missing struct_id → compile-fail
+├── ok_primary_anchor.rs            # primary_anchor(email_address) — struct has the field
+├── ok_secondary_anchors.rs         # multiple secondary_anchor declarations
+├── ok_property_hashed_combo.rs     # primary_anchor + secondary_anchor on the same struct
+├── err_no_struct_id.rs             # missing struct_id → compile-fail
 ├── err_struct_id_too_big.rs
-├── err_no_trailing_version.rs   # struct named "Foo" with no digits
-└── err_version_overflow.rs      # struct named "Foo300" → > u8
+├── err_no_trailing_version.rs      # struct named "Foo" with no digits
+├── err_version_overflow.rs         # struct named "Foo300" → > u8
+├── err_anchor_unknown_field.rs     # primary_anchor(no_such_field) → compile-fail
+└── err_duplicate_secondary.rs      # two identical secondary_anchor specs → compile-fail
 ```
 
 ```rust
@@ -493,6 +517,8 @@ src/
 
 ### Key types
 
+The anchor model has to support both addressing variants from the README — the synthetic `(STRUCT_ID, TENANT_ID, SHARD_ID)` key _and_ the property-hashed `(STRUCT_ID, TENANT_ID, SHARD_ID, hash48)` key — plus secondary anchors that redirect to a primary. The storage engine doesn't care which variant is in use; it only sees a 128-bit anchor address and the slot's payload tells it whether the slot is a primary or a secondary.
+
 ```rust
 pub struct DataFile { /* mmap or Arc<File> + page directory */ }
 
@@ -504,12 +530,43 @@ impl DataFile {
     pub fn write_versioned(&self, rec: &VersionedRecord) -> Result<()>;
 }
 
+/// 128-bit anchor address. Equal to a record's `Id` for property-hashed primaries
+/// and for secondaries; equal to `Id` with `created_at = 0` for synthetic primaries.
+#[repr(transparent)]
+pub struct AnchorKey(u128);
+
 pub struct AnchorSlot {
-    pub current_version_at: u64,
-    pub mode:               AnchorMode,   // Inline { bytes } | Pointer { id }
-    pub references:         Vec<Id>,
+    pub kind: AnchorKind,
+    pub references: Vec<AnchorKey>,
+}
+
+pub enum AnchorKind {
+    /// The primary anchor for a record. Holds the data (or a pointer to it)
+    /// plus the list of secondary anchors that redirect to this slot.
+    Primary {
+        current_version_at: u64,
+        mode:               AnchorMode,            // Inline { bytes } | Pointer { id }
+        secondaries:        Vec<AnchorKey>,        // addresses of all redirects
+    },
+    /// A secondary anchor — only ever a redirect to a primary.
+    Secondary {
+        primary:   AnchorKey,
+        // small marker so a stale read from a recycled page is detectable
+        marker:    u64,
+    },
+    /// Tombstone for a deleted primary; secondaries get their own tombstone kind below.
+    PrimaryTombstone { final_version_at: u64 },
+    SecondaryTombstone,
 }
 ```
+
+The storage engine resolves a read by:
+
+1. Reading the slot at `AnchorKey`.
+2. If it's `Secondary { primary, .. }`, recursing once to read the primary. (The recursion is bounded at 1; secondaries can't chain.)
+3. If it's `Primary`, returning the data directly.
+
+Resolving a delete walks the primary's `secondaries` list, tombstones each, then tombstones the primary — all journaled in a single transaction so no orphan secondary can survive a primary delete.
 
 ### Tests
 
@@ -535,9 +592,22 @@ fn write_then_read_anchor_inline() {
 fn version_chain_links_correctly() {
     /* write v1, write v2 with old_mod=v1, assert v1.new_mod == v2.id */
 }
+
+#[test]
+fn secondary_anchor_redirects_to_primary() {
+    /* write a primary at addr P, write a secondary at addr S pointing to P,
+       read S, assert the engine resolves through to the primary's data,
+       assert the primary's `secondaries` list contains S. */
+}
+
+#[test]
+fn delete_primary_tombstones_all_secondaries() {
+    /* write P + S1 + S2, delete the primary, assert S1 and S2 are tombstoned
+       in the same journaled transaction (replay test). */
+}
 ```
 
-A property test inserts N random `(STRUCT_ID, TENANT_ID, SHARD_ID)` triples and asserts every one is retrievable, plus that double-hashing is invoked at the expected fill ratio (P2 from the design).
+A property test inserts N records under each of the two primary-anchor variants — synthetic and property-hashed — and asserts every one is retrievable through both its primary and (where declared) its secondaries, plus that double-hashing is invoked at the expected fill ratio (P2 from the design).
 
 ### Acceptance
 
