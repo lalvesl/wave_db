@@ -30,10 +30,10 @@ Every query for a single user filters a table containing **every user's data**. 
 
 ### The Ocean Wave Analogy
 
-| Era     | Web Frontend                                          | Database                                      |
-| ------- | ----------------------------------------------------- | --------------------------------------------- |
-| Past    | Static pages (fast, not dynamic)                      | DB and server tightly coupled                 |
-| Present | Client-side rendering (dynamic, slow)                 | Independent DBs with ORMs as glue             |
+| Era     | Web Frontend                                          | Database                                       |
+| ------- | ----------------------------------------------------- | ---------------------------------------------- |
+| Past    | Static pages (fast, not dynamic)                      | DB and server tightly coupled                  |
+| Present | Client-side rendering (dynamic, slow)                 | Independent DBs with ORMs as glue              |
 | Future  | Server-side dynamic rendering (Next.js, Nuxt, Leptos) | **Tenant-partitioned, application-centric DB** |
 
 The cycle closes. Each iteration looks like regression but carries forward the best properties of both worlds.
@@ -51,49 +51,120 @@ TENANT (u48)
            └── A person granted access; defined via a Tenant-scoped permissions struct
 ```
 
-Every piece of data belongs to a **TENANT**. A user is someone who can act on that data under the tenant's permission struct. Sharing is modelled as granting a user access inside the tenant's own data space — no cross-partition references needed for the common case.
+Every piece of data belongs to a **TENANT**. A user is someone who can act on that data under the tenant's permission rules. Sharing is modelled as granting a user access inside the tenant's own data space — no cross-partition references needed for the common case.
+
+### Data Shapes
+
+WaveDB recognises **three** data shapes, each with different ownership and indexing rules:
+
+| Shape                          | Cardinality per tenant                                         | Examples                                    | Allowed operations                       |
+| ------------------------------ | -------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------- |
+| **Unique**                     | Exactly one live record per `(STRUCT_ID, TENANT_ID)`           | User profile, company settings              | `read`, `"update"`, `create`             |
+| **NonUnique**                  | Many live records per tenant                                   | Orders, messages, files                     | `read`, `"update"`, `create`, `"delete"` |
+| **NonUnique-within-NonUnique** | Many records tightly bound to a single parent NonUnique record | Lines on an invoice, tasks inside a project | `read`, `"update"`, `create`, `"delete"` |
+
+> `"update"` and `"delete"` are quoted because WaveDB is versioned: an update writes a new versioned record and rotates the anchor; a delete writes a tombstone. The bytes never disappear, and Unique records have no `delete` because there is nothing single-record-deletable about an exclusive record per tenant.
+
+The third shape — **NonUnique-within-NonUnique** — is _not_ modelled as a generic many-to-many. Lines on an invoice have no independent identity; they exist only in the context of their parent invoice. Treating them as M2M cross-references would force needless anchor maintenance for relationships that never escape their parent. Instead, WaveDB stores them as a tightly-coupled child collection under the parent's address space.
 
 ### The ID
 
-Every record has a composite ID of exactly 128 bits:
+Every record has a composite ID of exactly **128 bits**:
 
 ```
-[ TENANT_ID (u48) | SHARD_ID (u8) | STRUCT_ID (u16) | CREATED_AT (u48, 100µs precision) | SLIDER (u8) ]
+[ TENANT_ID (u48) | SHARD_ID (u12) | STRUCT_ID (u20) | CREATED_AT (u48, 100µs precision) ]
 ```
 
-| Field         | Type  | Description                                                                                                                                              |
-| ------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TENANT_ID`   | `u48` | Identifies the owner of this record. `0` = database system                                                                                               |
-| `SHARD_ID`    | `u8`  | Hashed property range for Large Tenants — **256 shards** to spread high-volume Non-Unique data across pages                                              |
-| `STRUCT_ID`   | `u16` | The table / object type, fixed at compile time                                                                                                           |
-| `CREATED_AT`  | `u48` | Microseconds (at 100µs precision) since a custom epoch defined in code                                                                                   |
-| `SLIDER`      | `u8`  | Auto-increments to prevent collisions within the same 100µs tick. May be assigned **randomly per device** to pre-empt collisions (used for NonUnique data) |
+| Field        | Type  | Description                                                                                                                                                                                                                           |
+| ------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TENANT_ID`  | `u48` | Identifies the owner of this record. `0` is reserved for the database system; `U48::MAX` is reserved for unauthenticated sessions.                                                                                                    |
+| `SHARD_ID`   | `u12` | Range-allocated to a Quick-Node. `0` for **Unique** data — tenant ownership solves uniqueness on its own. For **NonUnique** data, the writing Quick-Node mints `SHARD_ID` from the shard range it currently owns for this tenant.     |
+| `STRUCT_ID`  | `u20` | The table / object type, fixed at compile time. Incremental and unique across **all structs**; **shared between all versions of the same struct** (`Message1`, `Message2`, … all carry the same `STRUCT_ID`). See _Procedure Macros_. |
+| `CREATED_AT` | `u48` | 100µs ticks since a custom epoch defined in code.                                                                                                                                                                                     |
 
-### Mandatory Object Structure
+#### Why no slider anymore
+
+Earlier drafts carried an 8-bit `SLIDER` field to break collisions inside a 100µs tick. With **range-mode shard ownership**, that's no longer needed:
+
+- For **Unique** data, the owning Quick-Node is the only writer for the tenant — there's only one writer per `(STRUCT_ID, TENANT_ID)`, so collisions on the `(TENANT_ID, 0, STRUCT_ID, CREATED_AT)` hash can't happen by construction.
+- For **NonUnique** data, the writing Quick-Node mints `SHARD_ID` from its owned shard range. Two writers on different nodes can't collide because they hold disjoint ranges; two writers on the same node serialise on the per-node shard counter.
+
+Eight bits of address space were reclaimed: 4 went into `SHARD_ID` (8 → 12, growing from 256 to 4096 shards) and 4 went into `STRUCT_ID` (16 → 20, raising the struct ceiling from 65 K to over 1 M).
+
+### Object Structure
 
 Every WaveDB object is defined with a Rust proc-macro:
 
 ```rust
-#[wave_db]
-pub struct SomeObject {
+#[wave_db(struct_id = 1)]
+pub struct UserProfile1 {
     pub id: Id,
     pub metadata: Metadata,
-    pub some_property: String,
-    // ...
+    pub display_name: String,
+    pub bio: String,
+}
+
+pub type UserProfile = UserProfile1;
+```
+
+- **`Id`** — exposes `.tenant_id()`, `.shard_id()`, `.struct_id()`, `.created_at()` by trait impl.
+- **`Metadata`** — exposes the version chain, authorship, and access rules described next.
+
+### Metadata
+
+```rust
+pub struct Metadata {
+    /// ID of the previous version of this object (`0u128` if this is the first).
+    pub old_modification_id: u128,
+    /// ID of the next version of this object (`0u128` if this is the live one).
+    pub new_modification_id: u128,
+    /// Schema version at write time. Used for lazy migration.
+    pub struct_version: u8,
+    /// User who created or modified this version.
+    pub user: u48,
+    /// Device of the user that wrote this version. A single user may
+    /// be online from multiple devices simultaneously; this field lets
+    /// the engine attribute each version to the device that produced it,
+    /// which is useful for audit, conflict diagnosis, and per-device
+    /// session bookkeeping during failover.
+    pub device_created: u64,
+    /// Optional access-control rule. `None` is the common case (only the
+    /// tenant's own users can touch this record); postcard encodes `None`
+    /// in a single byte.
+    pub permission: Option<PermissionRef>,
 }
 ```
 
-- **`Id`** — exposes `.tenant_id()`, `.shard_id()`, `.struct_id()`, `.created_at()`, `.slider()` by trait impl
-- **`Metadata`** — exposes:
-  - `old_modification_id`: ID of the previous version of this object
-  - `new_modification_id`: ID of the next version (`0u128` if this is the live object)
-  - `struct_version`: schema version at write time, used for lazy migration
-  - `creator_id`: ID of the user who created or modified this version
-  *(Note: `struct_version` (16 bits) and `creator_id` (48 bits) are packed into a single 64-bit field for memory and storage optimization).*
+`(struct_version, user)` is 56 bits and packs efficiently alongside `device_created` and the optional permission field through postcard. See _Permissions_ for the shape of `PermissionRef` and _Procedure Macros_ for how `struct_version` is derived.
 
 ### Schema Versioning & Lazy Migration
 
-`struct_version` is stored in every object's `Metadata`. When a record is read and its `struct_version` is behind the current compiled version, the migration transform runs in memory and the updated record is written back **in the background**. Migrations are partial and progressive — no global lock, no downtime.
+`struct_version` is stored in every object's `Metadata`. When a record is read and its `struct_version` is behind the current compiled version, the migration transform runs in memory and the updated record is written back **in the background**. Migrations are partial and progressive — no global lock, no downtime. See _Migrations_ for the full forward / rollback / chain story.
+
+---
+
+## Procedure Macros
+
+WaveDB's object types are declared through a single `#[wave_db]` proc-macro that does four jobs at compile time:
+
+1. **Implements `Id` and `Metadata` accessors.** Every annotated struct gets `.tenant_id()`, `.shard_id()`, `.struct_id()`, `.created_at()` plus full `Metadata` getters / setters by trait impl — no boilerplate at the call site.
+2. **Pins a permanent `STRUCT_ID` declared by the developer** via `#[wave_db(struct_id = N, …)]`. The convention is incremental — the next struct family takes the next free integer — and the value is **shared across every version of the same struct family**: `Message1`, `Message2`, …, `Message42` all declare the same `struct_id = N`. The macro validates uniqueness across the whole codebase at compile time; once assigned, the ID never changes.
+3. **Derives `struct_version` from the type name.** The trailing integer of the struct identifier _is_ the schema version. `Message42` ⇒ `struct_version = 42`. The macro reads the suffix, validates it fits in `u8`, and emits the corresponding `impl`. There is no separate `version = …` attribute — the version lives in the type name, the family ID lives in the macro arguments.
+4. **Re-exports a stable alias.** The codebase always imports the unversioned name (`Message`), and your file declares which version is live with a single `pub type` line:
+
+```rust
+#[wave_db(struct_id = 7, NonUnique)]
+pub struct Message42 {
+    pub id: Id,
+    pub metadata: Metadata,
+    pub body: String,
+    pub author: u48,
+}
+
+pub type Message = Message42;
+```
+
+Rolling forward or back is then **a one-line edit** — change `Message42` to `Message43` (or back to `Message41`) in the `pub type` and the rest of the application picks up the change. The `struct_id` does **not** change between versions, so cross-references and indexes remain valid across the upgrade. This naming convention is exactly what makes the rollback path in _Migrations_ a viable everyday operation.
 
 ---
 
@@ -116,31 +187,33 @@ Anchors keep the full list of inbound references in an array on the slot itself,
 
 Anchors support two modes, chosen per deployment / per node profile:
 
-| Mode             | Slot contents                  | Read cost           | Storage cost | Typical use                                  |
-| ---------------- | ------------------------------ | ------------------- | ------------ | -------------------------------------------- |
-| **Inline data**  | Full live record bytes + marker | 1 IO                | Higher (~2x live data) | **Quick-Nodes** — hot, latency-sensitive paths |
+| Mode             | Slot contents                    | Read cost           | Storage cost           | Typical use                                     |
+| ---------------- | -------------------------------- | ------------------- | ---------------------- | ----------------------------------------------- |
+| **Inline data**  | Full live record bytes + marker  | 1 IO                | Higher (~2x live data) | **Quick-Nodes** — hot, latency-sensitive paths  |
 | **Pointer-only** | Pointer to versioned record only | 1 extra IO per read | Lower (no duplication) | Storage-constrained or cold-leaning deployments |
 
 Inline mode trades disk space for one fewer I/O on the read path. Pointer-only mode keeps anchors tiny (just the address + reference array) at the cost of an extra hop to fetch data. The Quick-Node tier defaults to inline; archive-leaning deployments can opt into pointer-only.
 
 ### Two Slots Per Live Record
 
-| Slot          | Hashed at                              | Contents                                                                                                  |
-| ------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **Anchor**    | `(STRUCT_ID, TENANT_ID)` — no timestamp | Live data (inline mode) **or** pointer (pointer-only mode), plus marker `current_version_at: created_at` |
-| **Versioned** | `(STRUCT_ID, TENANT_ID, CREATED_AT)`    | Full data + modification chain (`old_mod_id`, `new_mod_id`)                                              |
+| Slot          | Hashed at                                         | Contents                                                                                                 |
+| ------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| **Anchor**    | `(STRUCT_ID, TENANT_ID, SHARD_ID)` — no timestamp | Live data (inline mode) **or** pointer (pointer-only mode), plus marker `current_version_at: created_at` |
+| **Versioned** | `(STRUCT_ID, TENANT_ID, SHARD_ID, CREATED_AT)`    | Full data + modification chain (`old_mod_id`, `new_mod_id`)                                              |
+
+`SHARD_ID` is `0` for Unique data, so its anchor key collapses to `(STRUCT_ID, TENANT_ID)` exactly as before. For NonUnique data, the shard range is the per-record discriminator that gives each anchor its own address.
 
 ### How Mutation Works
 
-1. New versioned record is written at the new `created_at` hash with `old_mod_id` pointing to the previous version
-2. The previous versioned record's `new_mod_id` is updated to point forward
-3. The anchor slot is overwritten with the new data and the new `current_version_at` marker
+1. New versioned record is written at the new `created_at` hash with `old_mod_id` pointing to the previous version.
+2. The previous versioned record's `new_mod_id` is updated to point forward.
+3. The anchor slot is overwritten with the new data and the new `current_version_at` marker.
 
 That's still 2–3 IOPs per write — same cost as the no-anchor design — but the structural payoff is large:
 
-- **References never need rewriting on mutation** — they all target the anchor address
-- **Sync queries by versioned ID always resolve** — the historical record exists at its versioned hash from the moment it was written
-- **Cross-references work even before sync completes** — the anchor is the stable handle
+- **References never need rewriting on mutation** — they all target the anchor address.
+- **Sync queries by versioned ID always resolve** — the historical record exists at its versioned hash from the moment it was written.
+- **Cross-references work even before sync completes** — the anchor is the stable handle.
 
 ### Tombstone Anchors
 
@@ -211,19 +284,19 @@ A configurable parameter `max_dict_memory` caps total RAM used by dictionaries. 
 
 #### Update Flow
 
-1. Dictionary updates (rebuilt as the data distribution shifts) are first written to the **journal**
-2. A **background task** consumes journal entries and rewrites the affected entries in `dictionaries_file`
-3. Pages written under an old dictionary version remain readable — each page header carries the dictionary version it was compressed with
-4. Lazy re-compression: when a page is rewritten for any other reason, it picks up the latest dictionary
+1. Dictionary updates (rebuilt as the data distribution shifts) are first written to the **journal**.
+2. A **background task** consumes journal entries and rewrites the affected entries in `dictionaries_file`.
+3. Pages written under an old dictionary version remain readable — each page header carries the dictionary version it was compressed with.
+4. Lazy re-compression: when a page is rewritten for any other reason, it picks up the latest dictionary.
 
 This means **dictionary rebuilds are never on the write hot path** — the journal absorbs the cost and the background task amortises the disk writes.
 
 #### Why This Works
 
-- All records of one STRUCT share enum values, ID prefixes, common timestamp ranges, and field-position layout — dictionaries achieve very high compression ratios
-- Per-STRUCT scoping keeps dictionaries small (often <64KB) so many fit in memory simultaneously
-- Cold STRUCTs don't waste RAM
-- Dictionary versioning means old pages stay readable forever — no migration cliff
+- All records of one STRUCT share enum values, ID prefixes, common timestamp ranges, and field-position layout — dictionaries achieve very high compression ratios.
+- Per-STRUCT scoping keeps dictionaries small (often <64KB) so many fit in memory simultaneously.
+- Cold STRUCTs don't waste RAM.
+- Dictionary versioning means old pages stay readable forever — no migration cliff.
 
 ---
 
@@ -241,7 +314,7 @@ If still too large, the page slot stores a pointer `(STRUCT_ID, TENANT_ID, data_
 
 When the value exceeds what an overflow block can hold cleanly, WaveDB writes a **Heap Anchor**: a small indirection record in the data file that points to the actual bytes living at the tail of the heap file.
 
-- The heap anchor is hashed by `(CREATED_AT, SLIDER)` instead of the usual `(STRUCT_ID, TENANT_ID)`. Because `SLIDER` auto-increments — or is randomised by the client — within each 100µs tick, this hash is effectively unique per record, so heap anchors don't collide with normal Anchor Slots.
+- The heap anchor is hashed by `(CREATED_AT, SHARD_ID, TENANT_ID)` instead of the usual `(STRUCT_ID, TENANT_ID)`. Because `SHARD_ID` is range-owned by a single Quick-Node and that node serialises within each 100µs tick, this hash is unique per record without coordination — heap anchors don't collide with normal Anchor Slots.
 - The anchor record itself is tiny: a single pointer `(offset, size)` into the heap file.
 - The actual bytes are appended to the **tail of the heap file**, padded out to keep every entry **4KB-aligned**. This guarantees that heap reads never straddle a page boundary, regardless of the underlying value's size.
 
@@ -253,14 +326,14 @@ A read for an oversized field costs a bounded **2 IOs**: one for the heap anchor
 
 ## Files on Disk
 
-WaveDB splits its on-disk state across **four files**, each tuned for a different access pattern. (How these are physically combined is controlled by *Operation Modes* further down — single-file mode merges them all; production splits them.)
+WaveDB splits its on-disk state across **four files**, each tuned for a different access pattern. (How these are physically combined is controlled by _Operation Modes (file layout)_ further down — single-file mode merges them all; production splits them.)
 
-| File           | Contents                                                                | Layout                                    | Access pattern                                   |
-| -------------- | ----------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------ |
-| `data` file    | Hash-mapped pages — Anchor Slots, versioned records, heap-anchor stubs   | Page-addressed (hash → page)             | Random IO, page-sized                            |
-| `index` file   | B+ tree nodes and small-collection array indexes                        | **Highly contiguous**; nodes 4KB-aligned  | Sequential within a tree, random across trees    |
-| `heap` file    | Compressed / oversized payloads + the heap-anchor append region         | Append-mostly, 4KB-padded                | Append on write, point IO on read                |
-| `journal` file | In-flight mutations, dictionary updates, free-space deltas              | Append-only                               | Append + sequential replay on startup            |
+| File           | Contents                                                               | Layout                                   | Access pattern                                |
+| -------------- | ---------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------- |
+| `data` file    | Hash-mapped pages — Anchor Slots, versioned records, heap-anchor stubs | Page-addressed (hash → page)             | Random IO, page-sized                         |
+| `index` file   | B+ tree nodes and small-collection array indexes                       | **Highly contiguous**; nodes 4KB-aligned | Sequential within a tree, random across trees |
+| `heap` file    | Compressed / oversized payloads + the heap-anchor append region        | Append-mostly, 4KB-padded                | Append on write, point IO on read             |
+| `journal` file | In-flight mutations, dictionary updates, free-space deltas             | Append-only                              | Append + sequential replay on startup         |
 
 ### Why split
 
@@ -274,31 +347,10 @@ The index file's contiguous layout is the payoff of the per-(STRUCT_ID, TENANT_I
 
 Multiple `(STRUCT_ID, TENANT_ID)` pairs naturally share pages. When a target page is full:
 
-1. **Double hashing** finds an alternative candidate page
-2. Double hashing firing at a meaningful rate **is the signal** — the file is approaching capacity and a rebalance triggers automatically
+1. **Double hashing** finds an alternative candidate page.
+2. Double hashing firing at a meaningful rate **is the signal** — the file is approaching capacity and a rebalance triggers automatically.
 
 The collision resolution mechanism _is_ the alert system.
-
----
-
-## Unique vs. Non-Unique Data
-
-### Unique (default)
-
-One live record per `(STRUCT_ID, TENANT_ID)`. Examples: a user's profile, a company's settings.
-
-### Non-Unique
-
-Declared with `#[wave_db(NonUnique)]`. Multiple records per tenant. Examples: a tenant's orders, a tenant's messages.
-
-```rust
-#[wave_db(NonUnique)]
-pub struct Order {
-    pub id: Id,
-    pub metadata: Metadata,
-    pub amount: u64,
-}
-```
 
 ---
 
@@ -344,15 +396,15 @@ The instant the **51st** item (`MAX_NON_UNIQUE_ELEMENTS + 1`) is inserted, the a
 
 Data is bulk-loaded into a new `BTreeNode` sized **exactly to the OS page size** (e.g., 4 KB). The page-alignment is the whole point of the design:
 
-- A single 4 KB node holds **~170 index entries**
-- A tree of depth 2 covers nearly **30,000 items**
-- **>99% of tenant index lookups complete in 1 or fewer disk I/O reads**
+- A single 4 KB node holds **~170 index entries**.
+- A tree of depth 2 covers nearly **30,000 items**.
+- **>99% of tenant index lookups complete in 1 or fewer disk I/O reads.**
 
 The threshold is tunable per-STRUCT via a proc-macro attribute:
 
 ```rust
-#[wave_db(NonUnique, btree_threshold = 100)]
-pub struct Message { ... }
+#[wave_db(struct_id = 7, NonUnique, btree_threshold = 100)]
+pub struct Message1 { ... }
 ```
 
 > **Index types:** Ordered indexes use the standard B+ tree shape described above. Discrete (value-bucketed) indexes use a hash bucket → array-or-tree model — each bucket starts as an array and promotes to a per-bucket B+ tree if it grows past the threshold.
@@ -366,8 +418,8 @@ pub struct Message { ... }
 #### `try_heap_inline` — Small iterables, minimal overhead
 
 ```rust
-#[wave_db(wave_db::try_heap_inline)]
-pub struct TagList {
+#[wave_db(struct_id = 15, wave_db::try_heap_inline)]
+pub struct TagList1 {
     tags: Iter<u8>,
 }
 ```
@@ -377,9 +429,9 @@ Stored as a heap-inline linked-list chunked by `MAX_HEAPED_SIZE`. Each chunk has
 #### Default (`AsRef`) — Full index support
 
 ```rust
-#[wave_db]
-pub struct Order {
-    items: Iter<OrderItem>,
+#[wave_db(struct_id = 10)]
+pub struct Order1 {
+    items: Iter<OrderItem1>,
 }
 ```
 
@@ -389,14 +441,102 @@ Maintains the full index graph above. Property mutations only rewrite the index 
 
 ## History
 
-History records live at their natural versioned hash `(STRUCT_ID, TENANT_ID, CREATED_AT)`. The Anchor Slot holds the live state. They never collide in the address space.
+History records live at their natural versioned hash `(STRUCT_ID, TENANT_ID, SHARD_ID, CREATED_AT)`. The Anchor Slot holds the live state. They never collide in the address space.
 
 ### Traversal
 
-- **Backward** (present → past): start at anchor, follow `current_version_at` to the live versioned record, then `old_modification_id` chain
+- **Backward** (present → past): start at anchor, follow `current_version_at` to the live versioned record, then `old_modification_id` chain.
 - **Forward** (past → present): from any historical record, follow `new_modification_id` until you reach `new_mod_id == 0`. The anchor mirrors that record.
-- **Lookup miss on versioned hash**: the record at that timestamp doesn't exist
-- **Stale ID via anchor**: anchor's `current_version_at` reveals the latest version
+- **Lookup miss on versioned hash**: the record at that timestamp doesn't exist.
+- **Stale ID via anchor**: anchor's `current_version_at` reveals the latest version.
+
+---
+
+## Permissions
+
+WaveDB stores access control **inline in `Metadata`**, scoped per record. The `permission` field is an `Option<PermissionRef>` and behaves as follows:
+
+| Value                                  | Semantics                                                                                                                                                                                             | Storage cost (postcard) |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `None`                                 | Only the tenant's own users can read/write/delete this record (the common case for B2C apps).                                                                                                         | 1 byte                  |
+| `Some(PermissionRef::Inline(list))`    | A small inline ACL — a linked list of user IDs allowed to act on this record. Used for small tenants and short-lived shares. Auto-promotes to a per-record B+ tree once the list crosses a threshold. | 1 byte tag + list bytes |
+| `Some(PermissionRef::Group(group_id))` | Reference to a separately-stored permission group, suited to large tenants where many records share an ACL.                                                                                           | 1 byte tag + group ref  |
+
+### Granted Operations by Data Shape
+
+| Data shape                 | Operations                               |
+| -------------------------- | ---------------------------------------- |
+| Unique                     | `read`, `"update"`, `create`             |
+| NonUnique                  | `read`, `"update"`, `create`, `"delete"` |
+| NonUnique-within-NonUnique | `read`, `"update"`, `create`, `"delete"` |
+
+Unique records have no `delete` because deleting the _only_ record of its kind for a tenant is semantically a tenant-level action, not a record-level one.
+
+> All permission checks are local to the tenant — only users that belong to the same tenant are checked against the rule. Cross-tenant sharing (a contractor on another tenant accessing your records) is a separate problem, tracked as P15 in _Known Problems_.
+
+---
+
+## Migrations
+
+WaveDB supports **two migration kinds**, both expressed as ordinary `async` functions and both required to ship with a **rollback**.
+
+### Type 1 — Same struct, new version
+
+The `STRUCT_ID` is unchanged; only `struct_version` advances. Used when a field is added, renamed, defaulted, or its representation changes. The migration is a function from the old version to the new one:
+
+```rust
+async fn migrate(db: &Db, old: Message41) -> Result<Message42> { /* ... */ }
+async fn rollback(db: &Db, new: Message42) -> Result<Message41> { /* ... */ }
+```
+
+When a record is read with `struct_version` behind the current compiled version, the migration runs in memory and the result is written back in the background (see _Schema Versioning & Lazy Migration_). The rollback runs in the opposite direction when a node has to step backward.
+
+### Type 2 — Composing a new object from existing ones
+
+A different `STRUCT_ID` is introduced — perhaps `OrderSummary1` is a new aggregate computed from `Order` and `OrderItem`. The migration takes one or more existing objects, may issue extra database lookups for related data, and produces the new object:
+
+```rust
+async fn migrate(db: &Db, source: ...) -> Result<OrderSummary1> { /* ... */ }
+async fn rollback(db: &Db, new: OrderSummary1) -> Result<...>     { /* ... */ }
+```
+
+Rollback for Type 2 is harder than Type 1 because the engine has to know **whether the new object exists yet** before deciding what to do:
+
+1. **Try to resolve the new object first** (its anchor / index lookup).
+2. **If found**, run the rollback path — it reverses the composition back into the source records.
+3. **If not found**, fall through to looking up the original old objects directly.
+
+Each Type 2 migration therefore registers a small descriptor that tells the engine _which sources_ a new object resolves to, so the rollback can locate and reconstruct them.
+
+### Why rollback is mandatory
+
+WaveDB is a distributed system. At any moment a cluster can have:
+
+- Slow-Nodes still serving an old `struct_version`,
+- Quick-Nodes already on the new one,
+- User clients running mixed builds.
+
+Forward and backward translations must both exist for **any two adjacent versions to coexist live**. Rollback is not a recovery feature — it's part of the day-to-day routing pipeline.
+
+### Code-side rollback
+
+Rolling back the application is the same single-line move used for rolling forward — change
+
+```rust
+pub type Message = Message43;
+```
+
+back to
+
+```rust
+pub type Message = Message42;
+```
+
+…and the database keeps both readable as long as the rollback function for `Message43 → Message42` is still compiled in. The DB does not need a separate "downgrade" deployment; it just keeps the old `pub type` alias active.
+
+### Migration chains
+
+A node arriving at the cluster on a very old version doesn't need a direct migration to the current version. The engine **chains migrations** — `v_n → v_{n+1} → … → v_current` — picking a path through registered migrations. Each step is the same async fn, and each step's rollback is also chainable, so a node can step backward by the same mechanism.
 
 ---
 
@@ -406,53 +546,158 @@ History records live at their natural versioned hash `(STRUCT_ID, TENANT_ID, CRE
 
 Server and database are **the same binary**. No separate DB process, no ORM, no protocol translation.
 
-### Ownership Routing
+### Two Tiers (Cassandra-inspired)
 
-On user connect, a server node takes **routing ownership** of the relevant `(STRUCT_ID, TENANT_ID)` pairs, pushes mutations to DB-tier nodes asynchronously, and publishes a **Bloom filter** of currently-owned pairs to larger DB nodes.
+The cluster is split into two physical tiers serving different roles in the same partition map.
 
-### 🌐 Distributed Topology: Compute / Storage Separation
+#### ⚡ Quick-Nodes (the "hot" layer)
 
-WaveDB uses a Cassandra-inspired distributed architecture built around the **Coordinator Pattern**, separating fast transactional state from cold historical storage. The cluster is split into two physical tiers serving different roles in the same partition map.
+- **Hardware:** Good CPU, good RAM, fast NVMe SSDs of moderate capacity.
+- **Role:** Owns specific `(TENANT_ID, SHARD_ID)` partitions via a Consistent Hash Ring; takes routing ownership for connected users; validates interactions; replicates to peers.
+- **Behaviour:** Holds active **Anchor Slots in memory**. Anchors here run in **inline-data mode** — the extra storage is cheap relative to the read-IO it saves.
 
-#### ⚡ Quick-Nodes (the "Hot" layer)
+#### 🧊 Slow-Nodes (the "cold" layer)
 
-- **Hardware:** High CPU, high RAM, fast (smaller-capacity) NVMe SSDs.
-- **Role:** Owns specific `TENANT_ID` + `SHARD_ID` partitions via a Consistent Hash Ring.
-- **Behaviour:** Holds active **Anchor Slots in memory**. Validates interactions, processes mutations, and pushes asynchronous replication to backup Quick-Nodes. Anchors here run in **inline-data mode** — the extra storage is cheap relative to the read-IO it saves.
-
-#### 🧊 Slow-Nodes (the "Cold" layer)
-
-- **Hardware:** Lower CPU, moderate RAM, high-capacity HDD or SSD arrays.
+- **Hardware:** Lower CPU, moderate RAM, large-capacity HDD or SSD arrays.
 - **Role:** Acts as the **Immutable Journal** and history archive.
 - **Behaviour:** Quick-Nodes continuously flush older versions and transaction logs down to Slow-Nodes, releasing active disk space on the hot tier and maintaining permanent history off the latency path.
 
-This separation lets each tier specialise its hardware: Quick-Nodes are sized for IOPS-per-watt, Slow-Nodes are sized for $/TB.
+This separation lets each tier specialise its hardware: Quick-Nodes are sized for IOPS-per-watt, Slow-Nodes for $/TB.
+
+### Ownership Model
+
+Two ownership scopes, both following the same protocol — **one writer, n replicas**:
+
+1. **Tenant ownership** (default for Unique data). Exactly one Quick-Node owns each tenant. Other replicas receive the data for redundancy and read-fallback. If the owner crashes, a friendly replica takes over.
+2. **Shard ownership** (for NonUnique data). The 12-bit `SHARD_ID` space is partitioned into **runtime-negotiated ranges**, with one Quick-Node owning each range for a given tenant. Each NonUnique struct picks a property to hash into its `SHARD_ID` so the hash is the routing key. The range subdivision granularity adapts to the tenant's NonUnique cardinality — a tenant with millions of orders has many shards split across many nodes; a tenant with dozens has few shards on one node.
+
+In both cases the **owner is the only writer**. It is responsible for:
+
+- Validating the mutation,
+- Notifying the replicas that also store the same `(TENANT_ID, SHARD_ID)` partition,
+- Forwarding to a Slow-Node for cold persistence and history release.
+
+### Replication Policy
+
+Each `(TENANT_ID, SHARD_ID)` partition lives on **at least 2 Quick-Nodes** by default (configurable via `MIN_REPLICAS`). The placement algorithm picks **physically distant nodes** — different sub-networks, different racks — so a single sub-network failure cannot take both copies offline.
+
+### Routing & Failover
+
+A client always knows **two** Quick-Nodes for its session: the **owner** and a **backup**. Both URLs are returned at connect time.
+
+- The client sends mutations to the owner.
+- The owner replicates and acks.
+- If the client times out on the owner, it switches to the backup and asks for the new owner — a small pause, no data loss.
+
+If a mutation hits the wrong node by mistake, the receiving node either proxies forward to the owner or — usually cheaper — _requests_ ownership transfer for that partition. Range moves are a runtime operation, not a deployment.
 
 ### 📡 Bloom Filter Screen-Sync
 
-A state-sync mechanism for the live read path. Clients maintain a **Bloom filter of the 128-bit IDs currently rendered on screen** and send it to the primary Quick-Node over WebSocket. The node compares the filter against its live Anchor Slots and pushes back only the **exact deltas** — new or changed objects — preventing the massive over-fetching that array-based polling would require.
+A state-sync mechanism for the **online** read path. Clients maintain a Bloom filter of the 128-bit IDs currently rendered on screen and send it to the primary Quick-Node over WebSocket. The owner compares the filter against its live Anchor Slots and pushes back **only the deltas**: new objects, updated anchors, tombstones. This is event-driven — every mutation the owner accepts triggers a "new state" notification to the subscribers whose filters might match.
 
-> **When to use what:** Bloom filter sync is the right tool for **online clients** with a small, evolving working set. For clients that have been offline for a long time — where the screen state is far behind reality — it is cheaper for the client to send the array of on-screen IDs back to the server for explicit revalidation, rather than trying to round-trip an extremely lossy filter.
+> **When to use what:** Bloom filter sync is the right tool for **online clients** with a small, evolving working set. For clients that have been offline for a long time — where the screen state is far behind reality — it is cheaper for the client to send the array of on-screen IDs back to the server for explicit revalidation.
 
-### Offline-First via Slip ID
+### Distribution philosophy
 
-Clients write locally while offline. On reconnect, the server resolves any timestamp collisions by ±1 tick adjustments and sends corrected IDs back. Anchors keep cross-references stable across slips.
+The distribution machinery exists primarily to let Quick-Nodes flush history to Slow-Nodes and reclaim hot-tier space. Past that, the ownership model is deliberately simple — most of the engineering energy goes into the per-node storage engine, not into cluster choreography.
 
 ### Consistency Model
 
-- **Within one tenant**: strong (single writer via routing ownership)
-- **Across tenants**: eventual (Bloom filter sync)
-- **On conflict**: most recent state wins via anchor; loser becomes a branch in the history chain
+- **Within one tenant:** strong (single writer via routing ownership).
+- **Across tenants:** eventual (Bloom filter sync).
+- **On conflict:** most recent state wins via anchor; loser becomes a branch in the history chain.
+
+### Offline-First (deferred)
+
+> An earlier draft proposed an offline-first user-side mode using a Slip-ID reconciliation protocol. **This is on hold.** The current design assumes the client is online whenever it writes; offline durability for end-user clients is not in scope for the first cut.
 
 ---
 
-## Operation Modes
+## Client API & Operation Modes
 
-| Mode                  | Description                             | Use Case              |
+WaveDB ships as a library with the same code path on servers, native clients, and (compiled to WASM) browsers. The four supported entry-points cover both server-managed and self-hosted setups:
+
+| Mode                                        | Storage location                  | Tenant model                |
+| ------------------------------------------- | --------------------------------- | --------------------------- |
+| `Db::open(url, path, user)`                 | Local file at `path`              | `tenant = user_id`          |
+| `Db::open(url, path, user, default_tenant)` | Local file at `path`              | Tenant explicit (companies) |
+| `Db::open(url, user, default_tenant)`       | Browser localStorage (WASM build) | Tenant explicit             |
+| `Db::open(url, user)`                       | Browser localStorage (WASM build) | `tenant = user_id`          |
+
+In all four, `url` resolves to the cluster's front door — the request is then redirected to the Quick-Node currently owning the user's tenant, and the second URL of the **backup** Quick-Node is returned alongside it for failover. The native modes use the local `path` as a write-through cache and as the file layer that sits underneath `tokio::broadcast`; the WASM modes use browser localStorage in the same role.
+
+Once a `Db` instance exists, it can spawn **another `Db` for a different tenant**:
+
+```rust
+let other = db.another_tenant(other_tenant_id).await?;
+```
+
+…which routes against the same cluster but with a different ownership target.
+
+### Object lifecycle
+
+Objects can never be **created in isolation**. Every `create` is preceded by a "does this exist?" check — if it does, you `update`; if it doesn't, the engine assigns a fresh `Id` and `Metadata` and saves. Local code uses `Default::default()` for both `Id` and `Metadata`, and the engine fills in the real values at `save` / `send` time.
+
+```rust
+// Lookup a Unique record — returns Option because the record may not exist yet.
+let profile: Option<UserProfile> = UserProfile::search(&db).await?;
+
+// Lookup NonUnique with a query (sea_orm-flavoured Expression).
+let recent: Vec<Order> = Order::query(&db, expr.gt(Order::amount, 100)).await?;
+
+// Update (versioned in place) and delete (NonUnique only).
+order.update(&db).await?;
+order.delete(&db).await?;
+```
+
+The `Drop` impl on `Db` notifies its Quick-Node so the node can release the session promptly.
+
+### Unauthenticated sessions
+
+A client without credentials connects with `user = U48::MAX`. This session sees only **public data** — the API surface is restricted to login (password, Google, etc.) and reading data tagged as world-readable.
+
+---
+
+## Connection Methods
+
+WaveDB **is** the wire protocol. Clients and servers don't communicate through a separate REST API or RPC layer built on top of the database — the same operations that read and write objects locally also flow over the network as the application's only protocol. There is no DTO layer, no API schema to keep in sync with the storage schema, and no "DB models vs. API models" split. Whatever the client serializes as a query, the server deserializes directly into the storage engine.
+
+| Transport                   | Native client | Browser client | Notes                                                          |
+| --------------------------- | ------------- | -------------- | -------------------------------------------------------------- |
+| **WebSocket**               | preferred     | preferred      | Bidirectional, push-capable; carries Bloom-filter screen-sync  |
+| **HTTP POST**               | fallback      | fallback       | Used when WebSocket is blocked (proxies, restrictive networks) |
+| **Future native transport** | planned       | n/a            | A higher-throughput native-only transport is in scoping        |
+
+### HTTP POST: single-queue with piggybacked notifications
+
+Plain HTTP is request/response and unidirectional from the server's perspective — it cannot push. To make HTTP POST behave like the WebSocket transport for the bits that matter (delivering "object changed" notifications to the UI), the client side runs a small queue:
+
+1. **One queue per client.** All outbound requests from a session are funnelled into a single FIFO queue. The Quick-Node processes them in order; there is **no concurrent in-flight POST** per session. This keeps ordering deterministic and lets the server attach state changes to whatever response is going back next.
+2. **Responses can carry more than was asked for.** A POST response is allowed to include data the request didn't ask for — specifically, **notifications about objects on the user's screen that have changed since the last exchange**. From the application's point of view, this is the same `new state` event the WebSocket pushes; it just hitches a ride on the next HTTP response. The client UI updates from these piggyback payloads exactly as it would from a WebSocket push.
+3. **Idle ticks when the queue empties.** When the client has nothing to ask for and the queue is empty, it doesn't go silent. It starts ticking **empty POSTs at a configured interval** (`http_poll_interval`) so the server has a regular opportunity to flush pending notifications. The interval is configurable per deployment and the client backs off gradually when no notifications arrive for a while.
+4. **WebSocket and the future native transport skip all of this.** Both are bidirectional and push-capable, so notifications arrive without polling and the request queue can run with normal concurrency.
+
+The net result: the application code is identical across transports — it always reacts to "object changed" events. The transport layer is responsible for getting those events to it, by push (WebSocket / native) or by piggyback (HTTP).
+
+### Browser specifics
+
+The WASM build replaces the Tokio runtime: futures run via `wasm_bindgen_futures`, HTTP goes through the browser `fetch` API, WebSockets go through `gloo_net::websocket`. The public API is identical.
+
+---
+
+## Operation Modes (file layout)
+
+| Mode                  | Description                             | Use case              |
 | --------------------- | --------------------------------------- | --------------------- |
 | **Single File**       | Data + history + journal in one file    | Development, embedded |
 | **Separated History** | Live data and history in separate files | Production            |
-| **History Only**      | History records only                    | Archive/backup nodes  |
+| **History Only**      | History records only                    | Archive / Slow-Node   |
+
+---
+
+## Everything is `async`
+
+Every public API on `Db`, every storage actor, every migration — `async` end to end. There is no blocking IO surface and no thread-pool dispatch hidden from the caller. On native this runs on Tokio; in the browser it runs on `wasm_bindgen_futures`.
 
 ---
 
@@ -460,10 +705,10 @@ Clients write locally while offline. On reconnect, the server resolves any times
 
 The write path is structured as a **journaled cache that fronts the durable files**. The cache is shaped exactly like the on-disk hash-map, so reads can serve directly from it without an extra format conversion. Two parameters govern the pipeline's behaviour:
 
-| Parameter         | Description                                                  |
-| ----------------- | ------------------------------------------------------------ |
-| `MAX_DISK_IOPS`   | Soft IO budget per second across all background actors        |
-| `MAX_CACHED_SIZE` | Total RAM budget for the in-memory write/read cache           |
+| Parameter         | Description                                            |
+| ----------------- | ------------------------------------------------------ |
+| `MAX_DISK_IOPS`   | Soft IO budget per second across all background actors |
+| `MAX_CACHED_SIZE` | Total RAM budget for the in-memory write/read cache    |
 
 ### The write path
 
@@ -488,10 +733,10 @@ Reads sit higher on the priority ladder than pending background writes:
 
 Each storage file is owned by an **actor** holding an `Arc<File>` plus a **`Mutex` over the currently-being-written block** (not the whole file). Concurrency is shaped per-file:
 
-| File                                    | Concurrency model                                                                                         |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `data` file (random-access)             | Concurrent writes allowed across **different pages**; same-page writers serialize on the page mutex       |
-| `index`, `heap`, `journal` (append-mostly) | Multiple writers prepare bytes in parallel; only the actual append step takes the block-level mutex     |
+| File                                       | Concurrency model                                                                                   |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `data` file (random-access)                | Concurrent writes allowed across **different pages**; same-page writers serialise on the page mutex |
+| `index`, `heap`, `journal` (append-mostly) | Multiple writers prepare bytes in parallel; only the actual append step takes the block-level mutex |
 
 A **tokio broadcast channel** publishes page invalidations and free-space events so each actor can drop stale cache entries without polling. The only contended primitive is the per-block mutex inside each file — there is no global write lock.
 
@@ -499,7 +744,7 @@ A **tokio broadcast channel** publishes page invalidations and free-space events
 
 When the actor pool isn't busy with reads or writes and has IO budget left under `MAX_DISK_IOPS`, it picks up background work — in this priority order:
 
-1. **Rebalance task** — intentionally low-priority. The normal write path already rebalances incrementally through the double-hashing collision mechanism (see *Collision & Fullness Strategy*); standalone rebalance is only catching up corner cases, which is why it doesn't need its own scheduler tier.
+1. **Rebalance task** — intentionally low-priority. The normal write path already rebalances incrementally through the double-hashing collision mechanism (see _Collision & Fullness Strategy_); standalone rebalance is only catching up corner cases, which is why it doesn't need its own scheduler tier.
 2. **Cleanup / compaction** for files that have accumulated free space (see below).
 
 ### Free-space tracking & cleanup
@@ -524,7 +769,7 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 
 ## Reliability
 
-**Journal:** Append-only file recording in-flight page mutations, dictionary updates, **and free-space deltas**. Replayed on startup. Anchor + versioned writes are journaled together so crashes mid-mutation can never leave the two slots inconsistent. The full write/cleanup discipline is described in *Write Pipeline & Concurrency Model* above.
+**Journal:** Append-only file recording in-flight page mutations, dictionary updates, **and free-space deltas**. Replayed on startup. Anchor + versioned writes are journaled together so crashes mid-mutation can never leave the two slots inconsistent. The full write/cleanup discipline is described in _Write Pipeline & Concurrency Model_ above.
 
 **Checksums:** Every page carries a checksum verified on read.
 
@@ -534,18 +779,20 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 
 ## Configuration Parameters
 
-| Parameter                       | Description                                          | Default              |
-| ------------------------------- | ---------------------------------------------------- | -------------------- |
-| `page_size`                     | Bytes per page                                       | varies by deployment |
-| `page_counter`                  | Number of pages in file                              | grows as needed      |
-| `max_heap_inline`               | Largest heap value stored inline before overflow     | 25% of page_size     |
-| `warning_size_page_occupation`  | Fill threshold to alert                              | 70%                  |
-| `max_dict_memory`               | RAM budget for STRUCT_ID dictionaries                | 64 MB                |
-| `MAX_NON_UNIQUE_ELEMENTS`       | Per-STRUCT_ID array → B+ tree conversion threshold   | 50                   |
-| `MAX_CACHED_SIZE`               | RAM budget for the in-memory write/read cache; writes block when near limit | tunable |
-| `MAX_DISK_IOPS`                 | Soft IO budget per second across all background actors | hardware-dependent |
-| `lock_timeout`                  | Max hold time for an ID lock                         | 30 s                 |
-| `bloom_filter_publish_interval` | How often nodes share ownership filters              | 1 s                  |
+| Parameter                       | Description                                                                  | Default              |
+| ------------------------------- | ---------------------------------------------------------------------------- | -------------------- |
+| `page_size`                     | Bytes per page                                                               | varies by deployment |
+| `page_counter`                  | Number of pages in file                                                      | grows as needed      |
+| `max_heap_inline`               | Largest heap value stored inline before overflow                             | 25% of page_size     |
+| `warning_size_page_occupation`  | Fill threshold to alert                                                      | 70%                  |
+| `max_dict_memory`               | RAM budget for STRUCT_ID dictionaries                                        | 64 MB                |
+| `MAX_NON_UNIQUE_ELEMENTS`       | Per-STRUCT_ID array → B+ tree conversion threshold                           | 50                   |
+| `MAX_CACHED_SIZE`               | RAM budget for the in-memory write/read cache; writes block when near limit  | tunable              |
+| `MAX_DISK_IOPS`                 | Soft IO budget per second across all background actors                       | hardware-dependent   |
+| `MIN_REPLICAS`                  | Minimum number of Quick-Nodes holding each `(TENANT_ID, SHARD_ID)` partition | 2                    |
+| `lock_timeout`                  | Max hold time for an ID lock                                                 | 30 s                 |
+| `bloom_filter_publish_interval` | How often nodes share ownership filters                                      | 1 s                  |
+| `http_poll_interval`            | Idle tick rate of the HTTP-POST client queue when no requests are pending    | 2 s                  |
 
 ---
 
@@ -553,19 +800,20 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 
 ### ✅ Resolved
 
-| #   | Problem                    | Resolution                                                                                                                                                                                          |
-| --- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1  | Heap overflow strategy     | zstd inline → hashed overflow block → **Heap Anchor stub** in the data file (hashed by `CREATED_AT + SLIDER`) addressing 4KB-padded entries appended to the heap-file tail; bounded 2-IO read regardless of value size |
-| P2  | Hash collision / page full | Tenants share pages naturally; double hashing as fallback; double hashing rate = rebalance trigger                                                                                                  |
-| P3  | Heap compression           | zstd; CPU is free because no join processing                                                                                                                                                        |
-| P4  | Cross-tenant queries       | Out of scope by design — application context always knows the tenant                                                                                                                                |
-| P5  | STRUCT versioning          | `struct_version` in `Metadata`; lazy migration on read, background rewrite                                                                                                                          |
-| P6  | Multi-tenant sharing       | Tenant-defined permissions struct scoping user access                                                                                                                                               |
-| P7  | Many-to-many relations     | **Anchor Slots** — fixed `(STRUCT_ID, TENANT_ID)` address with live data; references never need rewriting. Same mechanism handles S2M and indexes.                                                  |
-| P8  | Stack data compression     | **Per-STRUCT_ID dictionaries** in memory bounded by `max_dict_memory`; updates journaled, applied to `dictionaries_file` by background task; pages carry dictionary version for backward compatibility |
-| P11 | Index maintenance cost     | Per-(STRUCT_ID, TENANT_ID) B+ trees with adaptive conversion from array at threshold; index entries point to anchors so property mutations don't cascade                                            |
-| P12 | Adaptive index threshold   | Default 50 items (`MAX_NON_UNIQUE_ELEMENTS`), tunable per-STRUCT_ID via proc-macro attribute; one-way atomic conversion                                                                             |
-| P13 | Anchor storage cost        | Accepted as design trade-off (2x live data only, history single-copy); opt-in pointer-only mode available for storage-constrained deployments                                                       |
+| #   | Problem                    | Resolution                                                                                                                                                                                                                           |
+| --- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| P1  | Heap overflow strategy     | zstd inline → hashed overflow block → **Heap Anchor stub** in the data file (hashed by `(CREATED_AT, SHARD_ID, TENANT_ID)`) addressing 4KB-padded entries appended to the heap-file tail; bounded 2-IO read regardless of value size |
+| P2  | Hash collision / page full | Tenants share pages naturally; double hashing as fallback; double hashing rate = rebalance trigger                                                                                                                                   |
+| P3  | Heap compression           | zstd; CPU is free because no join processing                                                                                                                                                                                         |
+| P4  | Cross-tenant queries       | Out of scope by design — application context always knows the tenant                                                                                                                                                                 |
+| P5  | STRUCT versioning          | `struct_version` (u8) in `Metadata`; lazy migration on read, background rewrite; chained migrations between any two registered versions                                                                                              |
+| P6  | Multi-tenant sharing       | Tenant-defined permissions struct scoping user access (see P14)                                                                                                                                                                      |
+| P7  | Many-to-many relations     | **Anchor Slots** — fixed `(STRUCT_ID, TENANT_ID, SHARD_ID)` address with live data; references never need rewriting. Same mechanism handles S2M and indexes.                                                                         |
+| P8  | Stack data compression     | **Per-STRUCT_ID dictionaries** in memory bounded by `max_dict_memory`; updates journaled, applied to `dictionaries_file` by background task; pages carry dictionary version for backward compatibility                               |
+| P11 | Index maintenance cost     | Per-(STRUCT_ID, TENANT_ID) B+ trees with adaptive conversion from array at threshold; index entries point to anchors so property mutations don't cascade                                                                             |
+| P12 | Adaptive index threshold   | Default 50 items (`MAX_NON_UNIQUE_ELEMENTS`), tunable per-STRUCT_ID via proc-macro attribute; one-way atomic conversion                                                                                                              |
+| P13 | Anchor storage cost        | Accepted as design trade-off (2x live data only, history single-copy); opt-in pointer-only mode available for storage-constrained deployments                                                                                        |
+| P14 | Permissions struct design  | `permission: Option<PermissionRef>` in `Metadata`; `None` is 1 byte under postcard; inline-list (auto-promoting to a small B+ tree) for ad-hoc shares; group reference for large-tenant ACLs                                         |
 
 ---
 
@@ -575,21 +823,13 @@ Background rebalance task with backpressure. Force-rebalance API for maintenance
 
 ---
 
-### 🟡 P10 — Slip ID Collision at Scale
+### ⏸ P10 — Offline-First Reconciliation (deferred)
 
-Routing ownership prevents true multi-writer conflicts. Slip is only needed for offline rejoin. Worst case: apply slips sequentially with a small queue per `(STRUCT_ID, TENANT_ID)`.
-
----
-
-### 🔴 P14 — Permissions Struct Design (new)
-
-**Problem:** The tenant-defines-permissions model is mentioned but not specified. How does a tenant express "user X can read these structs but only write that one"? How are permission changes propagated and enforced? How are permissions versioned alongside data?
-
-**Direction:** A reserved `STRUCT_ID = 1` for `Permissions` records with a well-defined schema: `(user_id, struct_id, allow_read, allow_write, allow_delete)`. Every access goes through a permission check on the tenant's permissions table — which itself is just another WaveDB lookup, so it benefits from the same caching.
+Earlier drafts described a Slip-ID reconciliation mechanism for clients that wrote while offline. **Deferred**: the current design assumes online-while-writing. Routing ownership prevents true multi-writer conflicts in the online case, so the slip mechanism is no longer on the critical path. Returning to offline-first is planned but explicitly out of scope for the first cut.
 
 ---
 
-### 🔴 P15 — Cross-Tenant Permission Sharing (new)
+### 🔴 P15 — Cross-Tenant Permission Sharing
 
 **Problem:** When a tenant shares data with another tenant (e.g., a contractor accessing client files), the anchor lives in the original tenant's partition but needs to be reachable from the recipient's session.
 
@@ -602,6 +842,7 @@ Routing ownership prevents true multi-writer conflicts. Slip is only needed for 
 - **Not OLAP.** Cross-tenant aggregations belong in a dedicated analytics pipeline.
 - **Not a general consensus system.** Consistency is tenant-scoped; multi-tenant eventual consistency is by design.
 - **Not a SQL replacement.** The query model is deliberately constrained.
+- **Not offline-first (yet).** See P10.
 
 ---
 
@@ -609,17 +850,19 @@ Routing ownership prevents true multi-writer conflicts. Slip is only needed for 
 
 Rust. Rationale:
 
-- `#[wave_db]` proc-macro enforces and generates ID/Metadata structure at compile time
-- `STRUCT_ID (u16)` numbering is a compile-time counter — the type system guarantees stability
-- `Mutex`-based ID locking is idiomatic
-- `repr(C)` page structs map directly to disk
-- `async` iterators integrate naturally for the `Iter<T>` collection API
+- `#[wave_db]` proc-macro enforces and generates ID/Metadata structure at compile time.
+- `STRUCT_ID (u20)` numbering is a compile-time counter — the type system guarantees stability.
+- `struct_version (u8)` is parsed from the trailing integer of the type name — `Message42` ⇒ version 42.
+- `Mutex`-based ID locking is idiomatic.
+- `repr(C)` page structs map directly to disk.
+- `async` iterators integrate naturally for the `Iter<T>` collection API.
+- The same source compiles to native (Tokio) and to browser (WASM via `wasm_bindgen_futures`, `fetch`, `gloo_net`).
 
 ---
 
 ## Status
 
-🔬 **Research Phase** — This document is a living design record. The core architecture is now defined; remaining open problems (P9, P10, P14, P15) are operational rather than foundational.
+🔬 **Research Phase** — This document is a living design record. The core architecture is now defined; remaining open problems (P9, P15) are operational rather than foundational, and P10 is intentionally deferred.
 
 ---
 
