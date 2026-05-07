@@ -14,7 +14,15 @@ serde.workspace = true
 postcard.workspace = true
 thiserror.workspace = true
 parking_lot.workspace = true
+# Phase 11 — real transports
+tokio-tungstenite.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+bytes.workspace = true
+fastbloom.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+proptest.workspace = true
