@@ -75,12 +75,12 @@ Every record has a composite ID of exactly **128 bits**:
 [ TENANT_ID (u48) | SHARD_ID (u12) | STRUCT_ID (u20) | CREATED_AT (u48, 100µs precision) ]
 ```
 
-| Field        | Type  | Description                                                                                                                                                                                                                           |
-| ------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TENANT_ID`  | `u48` | Identifies the owner of this record. `0` is reserved for the database system; `U48::MAX` is reserved for unauthenticated sessions.                                                                                                    |
-| `SHARD_ID`   | `u12` | Range-allocated to a Quick-Node. `0` for **Unique** data — tenant ownership solves uniqueness on its own. For **NonUnique** data, the writing Quick-Node mints `SHARD_ID` from the shard range it currently owns for this tenant.     |
-| `STRUCT_ID`  | `u20` | The table / object type, fixed at compile time. Incremental and unique across **all structs**; **shared between all versions of the same struct** (`Message1`, `Message2`, … all carry the same `STRUCT_ID`). See _Procedure Macros_. |
-| `CREATED_AT` | `u48` | 100µs ticks since a custom epoch defined in code.                                                                                                                                                                                     |
+| Field        | Type  | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------ | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TENANT_ID`  | `u48` | Identifies the owner of this record. `0` is reserved for the database system; `U48::MAX` is reserved for unauthenticated sessions.                                                                                                                                                                                                                                                                                                                             |
+| `SHARD_ID`   | `u12` | Range-allocated to a Quick-Node. `0` for **Unique** data — tenant ownership solves uniqueness on its own. For **NonUnique** data, the writing Quick-Node mints `SHARD_ID` from the shard range it currently owns for this tenant — **unless** the struct's `#[wave_db]` declaration sets `primary_anchor = field`, in which case `SHARD_ID` is the hash of that field, giving the anchor a content-addressed location. See _Anchor Slots → Anchor Addressing_. |
+| `STRUCT_ID`  | `u20` | The table / object type, fixed at compile time. Incremental and unique across **all structs**; **shared between all versions of the same struct** (`Message1`, `Message2`, … all carry the same `STRUCT_ID`). See _Procedure Macros_.                                                                                                                                                                                                                          |
+| `CREATED_AT` | `u48` | 100µs ticks since a custom epoch defined in code.                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 #### Why no slider anymore
 
@@ -145,7 +145,7 @@ pub struct Metadata {
 
 ## Procedure Macros
 
-WaveDB's object types are declared through a single `#[wave_db]` proc-macro that does four jobs at compile time:
+WaveDB's object types are declared through a single `#[wave_db]` proc-macro that does five jobs at compile time:
 
 1. **Implements `Id` and `Metadata` accessors.** Every annotated struct gets `.tenant_id()`, `.shard_id()`, `.struct_id()`, `.created_at()` plus full `Metadata` getters / setters by trait impl — no boilerplate at the call site.
 2. **Pins a permanent `STRUCT_ID` declared by the developer** via `#[wave_db(struct_id = N, …)]`. The convention is incremental — the next struct family takes the next free integer — and the value is **shared across every version of the same struct family**: `Message1`, `Message2`, …, `Message42` all declare the same `struct_id = N`. The macro validates uniqueness across the whole codebase at compile time; once assigned, the ID never changes.
@@ -166,6 +166,12 @@ pub type Message = Message42;
 
 Rolling forward or back is then **a one-line edit** — change `Message42` to `Message43` (or back to `Message41`) in the `pub type` and the rest of the application picks up the change. The `struct_id` does **not** change between versions, so cross-references and indexes remain valid across the upgrade. This naming convention is exactly what makes the rollback path in _Migrations_ a viable everyday operation.
 
+5. **Configures anchor addressing.** Two optional attributes change how the struct's anchor is hashed and what aliases it exposes:
+   - `primary_anchor = field` replaces the default node-allocated `SHARD_ID` with `hash(field)`, giving the struct a content-addressed primary anchor and a generated `find_by_<field>` accessor.
+   - `secondary_anchor = (field)` (one or more times, including compound keys like `secondary_anchor = (department, employee_number)`) registers additional anchor addresses that point back to the primary, with one generated accessor per declared key.
+
+   Both attributes round out as ordinary `async fn`s on the struct, so the application code never builds an anchor address by hand — the macro is the only thing that knows the precise hash layout. See _Anchor Slots → Anchor Addressing_ for the full semantics.
+
 ---
 
 ## Anchor Slots — Solving All Cross-Pointer References
@@ -180,8 +186,99 @@ Anchors are the universal solution for all cross-pointer references, including:
 - **Single-to-Many (S2M)** — tenant → orders, post → comments
 - **Indexes** — every index entry points to an anchor, never to a versioned record
 - **Bloom filter sync** — clients track anchors, not historical versions
+- **Alternate-key lookups** — a record reachable through more than one natural identifier (a `User` reachable by both `username` and `email`) uses **secondary anchors** described below.
 
-Anchors keep the full list of inbound references in an array on the slot itself, so the system can track every pointer that resolves through it.
+Anchors keep the full list of inbound references in an array on the slot itself, so the system can track every pointer that resolves through it. That same list also tracks any **secondary anchors** the record exposes, so the primary always knows about every alias that points at it — which is what makes deletes, moves, and property mutations safe across all of a record's anchor addresses.
+
+### Anchor Addressing
+
+By default, an anchor is hashed at `(STRUCT_ID, TENANT_ID, SHARD_ID)`. For Unique data, `SHARD_ID = 0` collapses this to `(STRUCT_ID, TENANT_ID)` — exactly one anchor per type per tenant. For NonUnique data, the writing Quick-Node mints `SHARD_ID` from its owned range, giving each new record a fresh anchor address.
+
+That's the default, and it's the right choice for the majority of structs. The `#[wave_db]` macro lets a struct opt into two more powerful addressing strategies when a record has natural keys.
+
+#### Property-hashed primary anchors
+
+Instead of using a node-allocated `SHARD_ID`, a struct can be addressed by **a hash of one of its fields**:
+
+```rust
+#[wave_db(struct_id = 25, NonUnique, primary_anchor = username)]
+pub struct User1 {
+    pub id:           Id,
+    pub metadata:     Metadata,
+    pub username:     String,
+    pub email:        String,
+    pub display_name: String,
+}
+pub type User = User1;
+```
+
+The macro hashes `username` into the `SHARD_ID` slot at write time. Three consequences:
+
+- **Content-addressed lookup.** Anyone who knows the username can find the user with one IO — no index walk required. The macro emits `User::find_by_username(&db, "alice").await?` and that resolves directly to the anchor.
+- **Implicit uniqueness.** Two users with the same username collide on the same anchor address; the engine surfaces this as a write error rather than silently duplicating, giving the struct "primary key" semantics for free.
+- **Routing locality.** Records cluster by hash, not by allocation order. A Quick-Node owning a shard range owns a contiguous slice of the property-hash space.
+
+Property-hashed anchors are the right choice when a struct has a stable natural key. Use the default node-allocated `SHARD_ID` when there isn't one, or when you specifically want the random distribution that a counter gives you.
+
+#### Secondary anchors
+
+A struct can also declare **additional anchor addresses that point back to the primary**:
+
+```rust
+#[wave_db(
+    struct_id        = 25,
+    NonUnique,
+    primary_anchor   = username,
+    secondary_anchor = (email),
+    secondary_anchor = (department, employee_number),
+)]
+pub struct User1 {
+    pub id:               Id,
+    pub metadata:         Metadata,
+    pub username:         String,
+    pub email:            String,
+    pub department:       String,
+    pub employee_number:  u32,
+    pub display_name:     String,
+}
+pub type User = User1;
+```
+
+This produces three anchor addresses, all resolving to the same record:
+
+| Anchor        | Hashed by                       | Slot contents                                  |
+| ------------- | ------------------------------- | ---------------------------------------------- |
+| **Primary**   | `username`                      | Live data + ref list (incl. secondary anchors) |
+| **Secondary** | `email`                         | Pointer back to the primary anchor             |
+| **Secondary** | `(department, employee_number)` | Pointer back to the primary anchor             |
+
+The macro emits one accessor per declared anchor:
+
+```rust
+impl User {
+    pub async fn find_by_username       (db: &Db, name: &str)          -> Result<Option<User>>;
+    pub async fn find_by_email          (db: &Db, email: &str)         -> Result<Option<User>>;
+    pub async fn find_by_department_and_employee_number
+                                        (db: &Db, dep: &str, n: u32)   -> Result<Option<User>>;
+}
+```
+
+Each call is a single hash → 1 IO for the primary, 2 IOs for the secondaries (secondary anchor → primary anchor → done).
+
+Secondary anchors live in the **primary anchor's reference list**, just like any other inbound pointer. The consequences:
+
+- **Atomic delete.** Deleting the primary cascades into deleting every secondary anchor in the same write batch — the primary's own reference list is the worklist.
+- **Consistent property mutation.** When the user changes their `email`, the engine deletes the old `hash(email)` secondary anchor, writes a new one at the new hash, and updates the primary's reference list — all under the same anchor lock.
+- **No phantom aliases.** Because the primary owns the list of secondaries, an orphan secondary anchor is impossible by construction. There is no scenario where you can read a secondary that points at a vanished primary.
+
+Secondary anchors are an alternative to discrete-value indexes (see _Index Structures_) for the common case of _"look up an object by exactly one of N natural keys."_ They cost one extra anchor slot per declared key (and one extra IO per non-primary lookup) and give O(1) point-lookup with no separate index file walk. They are not, however, a replacement for **range-ordered** indexes — for `WHERE created_at > X`, you still want a B+ tree.
+
+#### How this interacts with the rest of the engine
+
+- **Operating modes.** Inline-vs-pointer-only (below) applies to primary anchors. Secondary anchors are always pointer-only by construction — their entire job is to redirect.
+- **Versioning.** Versioned records are still hashed at `(STRUCT_ID, TENANT_ID, SHARD_ID, CREATED_AT)` regardless of how the anchor is addressed; only the _anchor's_ `SHARD_ID` is the property hash. The version chain is unchanged.
+- **Routing.** The Quick-Node owning the shard range that contains `hash(primary_anchor_field)` is the writer. The same range-ownership protocol from _Distributed Architecture_ covers it.
+- **`Id` semantics.** A record written through a property-hashed anchor still has a `created_at` field in its `Id`; only the `SHARD_ID` slot is committed to the property hash. Time-of-creation is not lost.
 
 ### Two Operating Modes
 
@@ -201,7 +298,7 @@ Inline mode trades disk space for one fewer I/O on the read path. Pointer-only m
 | **Anchor**    | `(STRUCT_ID, TENANT_ID, SHARD_ID)` — no timestamp | Live data (inline mode) **or** pointer (pointer-only mode), plus marker `current_version_at: created_at` |
 | **Versioned** | `(STRUCT_ID, TENANT_ID, SHARD_ID, CREATED_AT)`    | Full data + modification chain (`old_mod_id`, `new_mod_id`)                                              |
 
-`SHARD_ID` is `0` for Unique data, so its anchor key collapses to `(STRUCT_ID, TENANT_ID)` exactly as before. For NonUnique data, the shard range is the per-record discriminator that gives each anchor its own address.
+`SHARD_ID` is `0` for Unique data, so its anchor key collapses to `(STRUCT_ID, TENANT_ID)` exactly as before. For NonUnique data, `SHARD_ID` is either node-allocated or set to a property hash, depending on the struct's anchor addressing strategy (see _Anchor Addressing_ above).
 
 ### How Mutation Works
 
@@ -408,6 +505,8 @@ pub struct Message1 { ... }
 ```
 
 > **Index types:** Ordered indexes use the standard B+ tree shape described above. Discrete (value-bucketed) indexes use a hash bucket → array-or-tree model — each bucket starts as an array and promotes to a per-bucket B+ tree if it grows past the threshold.
+
+> **When to prefer secondary anchors over a discrete index:** if the only thing you need from a property is a _point lookup_ by exact value (no range scans, no ordered iteration), a `secondary_anchor` declared on the struct is cheaper than a discrete index — it costs one anchor slot per record instead of a per-tenant index file walk, and the macro generates the typed accessor for you. Reach for a discrete index when the same property needs to support listing all records that share a value, or when the property is added retroactively to an existing struct without a schema migration.
 
 ### Deleted is a First-Class Index
 

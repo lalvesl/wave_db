@@ -1,0 +1,12 @@
+[package]
+name    = "wavedb-test-cluster"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wavedb-core = { path = "../wavedb-core" }
+tokio.workspace = true
