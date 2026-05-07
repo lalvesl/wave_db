@@ -874,8 +874,14 @@ dependencies = [
 name = "wavedb"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
+ "postcard",
+ "serde",
+ "tempfile",
+ "tokio",
  "wavedb-core",
  "wavedb-macros",
+ "wavedb-net",
  "wavedb-storage",
 ]
 
@@ -905,6 +911,7 @@ dependencies = [
 name = "wavedb-net"
 version = "0.1.0"
 dependencies = [
+ "parking_lot",
  "postcard",
  "serde",
  "tempfile",
