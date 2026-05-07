@@ -135,7 +135,8 @@ impl Page {
         self.directory.retain(|e| e.id != id);
         let removed = self.directory.len() < before;
         if removed {
-            self.header.entry_count = u32::try_from(self.directory.len()).expect("entry count overflow");
+            self.header.entry_count =
+                u32::try_from(self.directory.len()).expect("entry count overflow");
         }
         removed
     }

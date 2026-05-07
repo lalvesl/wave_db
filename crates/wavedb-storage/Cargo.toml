@@ -1,5 +1,5 @@
 [package]
-name    = "wavedb-storage"
+name = "wavedb-storage"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,15 +8,15 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
-wavedb-core    = { path = "../wavedb-core" }
-serde.workspace     = true
-postcard.workspace  = true
+wavedb-core = { path = "../wavedb-core" }
+serde.workspace = true
+postcard.workspace = true
 byteorder.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
-zstd.workspace      = true
+zstd.workspace = true
 crc32fast.workspace = true
 
 [dev-dependencies]
-proptest.workspace  = true
-tempfile.workspace  = true
+proptest.workspace = true
+tempfile.workspace = true

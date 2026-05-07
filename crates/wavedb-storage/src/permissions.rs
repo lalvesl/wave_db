@@ -92,13 +92,15 @@ pub fn check_access(
             }
         }
         Some(PermissionRef::Group(group_id)) => {
-            groups.get(*group_id).map_or(PermissionResult::Denied, |group| {
-                if group.users.contains(&user) {
-                    PermissionResult::Allowed
-                } else {
-                    PermissionResult::Denied
-                }
-            })
+            groups
+                .get(*group_id)
+                .map_or(PermissionResult::Denied, |group| {
+                    if group.users.contains(&user) {
+                        PermissionResult::Allowed
+                    } else {
+                        PermissionResult::Denied
+                    }
+                })
         }
     }
 }

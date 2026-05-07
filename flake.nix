@@ -11,12 +11,11 @@
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      flake-utils,
-      rust-overlay,
-      ...
+    { self
+    , nixpkgs
+    , flake-utils
+    , rust-overlay
+    , ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -31,6 +30,7 @@
             "rust-src"
             "rust-analyzer"
             "clippy"
+            "rustfmt"
           ];
         };
       in
@@ -41,6 +41,9 @@
             rustToolchain
             cargo-mutants
             sqlx-cli
+            nixpkgs-fmt
+            taplo
+            prettier
           ];
 
           buildInputs =
@@ -57,6 +60,24 @@
           shellHook = ''
             export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig"
           '';
+        };
+        apps.fmt = {
+          type = "app";
+          program = "${pkgs.writeShellApplication {
+            name = "fmt";
+            runtimeInputs = with pkgs; [
+              rustToolchain
+              nixpkgs-fmt
+              taplo
+              prettier
+            ];
+            text = ''
+              cargo fmt --all
+              nixpkgs-fmt .
+              taplo fmt
+              prettier --write "**/*.md"
+            '';
+          }}/bin/fmt";
         };
       }
     );

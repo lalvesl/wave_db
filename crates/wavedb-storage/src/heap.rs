@@ -125,7 +125,10 @@ impl HeapFile {
 
         // Pad buffer to aligned offset
         if aligned_offset > self.buffer.len() as u64 {
-            self.buffer.resize(usize::try_from(aligned_offset).expect("aligned offset overflow"), 0);
+            self.buffer.resize(
+                usize::try_from(aligned_offset).expect("aligned offset overflow"),
+                0,
+            );
         }
 
         let anchor = HeapAnchor {

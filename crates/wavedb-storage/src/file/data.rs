@@ -46,7 +46,8 @@ impl DataFile {
             id.tenant_id(),
             id.shard_id(),
             self.page_count,
-        )).expect("page index overflow");
+        ))
+        .expect("page index overflow");
 
         let bytes = slot.to_bytes()?;
         let mut pages = self.pages.write();
@@ -58,8 +59,10 @@ impl DataFile {
                 id.tenant_id(),
                 id.shard_id(),
                 self.page_count,
-            )).expect("step overflow");
-            let alt_idx = (page_idx + step) % usize::try_from(self.page_count).expect("page count overflow");
+            ))
+            .expect("step overflow");
+            let alt_idx =
+                (page_idx + step) % usize::try_from(self.page_count).expect("page count overflow");
             if !pages[alt_idx].insert(key.raw(), &bytes) {
                 return Err(crate::StorageError::PageFull(alt_idx as u64));
             }
@@ -83,7 +86,8 @@ impl DataFile {
             id.tenant_id(),
             id.shard_id(),
             self.page_count,
-        )).expect("page index overflow");
+        ))
+        .expect("page index overflow");
 
         {
             let pages = self.pages.read();
@@ -100,8 +104,10 @@ impl DataFile {
                 id.tenant_id(),
                 id.shard_id(),
                 self.page_count,
-            )).expect("step overflow");
-            let alt_idx = (page_idx + step) % usize::try_from(self.page_count).expect("page count overflow");
+            ))
+            .expect("step overflow");
+            let alt_idx =
+                (page_idx + step) % usize::try_from(self.page_count).expect("page count overflow");
             if let Some(bytes) = pages[alt_idx].lookup(key.raw()) {
                 let slot = AnchorSlot::from_bytes(bytes)?;
                 return Ok(Some(slot));
@@ -120,13 +126,16 @@ impl DataFile {
             id.shard_id(),
             id.created_at(),
             self.page_count,
-        )).expect("page index overflow");
+        ))
+        .expect("page index overflow");
 
         let bytes = rec.to_bytes()?;
         {
             let mut pages = self.pages.write();
             if !pages[page_idx].insert(rec.id, &bytes) {
-                return Err(crate::StorageError::PageFull(u64::try_from(page_idx).unwrap()));
+                return Err(crate::StorageError::PageFull(
+                    u64::try_from(page_idx).unwrap(),
+                ));
             }
         }
 
@@ -147,7 +156,8 @@ impl DataFile {
             id.shard_id(),
             id.created_at(),
             self.page_count,
-        )).expect("page index overflow");
+        ))
+        .expect("page index overflow");
 
         {
             let pages = self.pages.read();

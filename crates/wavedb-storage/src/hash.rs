@@ -7,7 +7,7 @@
 ///
 /// The primary hash maps `(struct_id, tenant_id, shard_id)` to a page.
 /// For versioned records, `created_at` is included in the hash.
-pub fn page_hash(struct_id: u32, tenant_id: u64, shard_id: u16, page_count: u64) -> u64 {
+pub const fn page_hash(struct_id: u32, tenant_id: u64, shard_id: u16, page_count: u64) -> u64 {
     let mut h: u64 = 14_695_981_039_346_656_037; // FNV offset basis
     let prime: u64 = 1_099_511_628_211; // FNV prime
 
@@ -27,7 +27,7 @@ pub fn page_hash(struct_id: u32, tenant_id: u64, shard_id: u16, page_count: u64)
 }
 
 /// Hash a versioned record key (includes `created_at`).
-pub fn versioned_hash(
+pub const fn versioned_hash(
     struct_id: u32,
     tenant_id: u64,
     shard_id: u16,

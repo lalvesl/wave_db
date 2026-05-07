@@ -1,5 +1,5 @@
 [package]
-name    = "wavedb-net"
+name = "wavedb-net"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -9,10 +9,10 @@ workspace = true
 
 [dependencies]
 wavedb-core = { path = "../wavedb-core" }
-tokio.workspace     = true
-serde.workspace     = true
-postcard.workspace  = true
+tokio.workspace = true
+serde.workspace = true
+postcard.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-tempfile.workspace  = true
+tempfile.workspace = true
