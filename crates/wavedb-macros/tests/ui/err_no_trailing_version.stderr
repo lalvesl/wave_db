@@ -1,0 +1,13 @@
+error: struct name `Foo` must end with a version number (e.g. `Foo1`)
+ --> tests/ui/err_no_trailing_version.rs:6:12
+  |
+6 | pub struct Foo {
+  |            ^^^
+
+warning: unused imports: `Id` and `Metadata`
+ --> tests/ui/err_no_trailing_version.rs:1:19
+  |
+1 | use wavedb_core::{Id, Metadata};
+  |                   ^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

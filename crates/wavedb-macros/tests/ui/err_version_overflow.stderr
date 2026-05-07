@@ -1,0 +1,13 @@
+error: trailing version `300` in `Foo300` does not fit in u8 (0..=255)
+ --> tests/ui/err_version_overflow.rs:6:12
+  |
+6 | pub struct Foo300 {
+  |            ^^^^^^
+
+warning: unused imports: `Id` and `Metadata`
+ --> tests/ui/err_version_overflow.rs:1:19
+  |
+1 | use wavedb_core::{Id, Metadata};
+  |                   ^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

@@ -1,0 +1,13 @@
+error: missing `struct_id = N` in #[wave_db]
+ --> tests/ui/err_no_struct_id.rs:6:12
+  |
+6 | pub struct Foo1 {
+  |            ^^^^
+
+warning: unused imports: `Id` and `Metadata`
+ --> tests/ui/err_no_struct_id.rs:1:19
+  |
+1 | use wavedb_core::{Id, Metadata};
+  |                   ^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

@@ -1,0 +1,13 @@
+error: struct_id 1048576 does not fit in u20 (max 1048575)
+ --> tests/ui/err_struct_id_too_big.rs:6:12
+  |
+6 | pub struct Foo1 {
+  |            ^^^^
+
+warning: unused imports: `Id` and `Metadata`
+ --> tests/ui/err_struct_id_too_big.rs:1:19
+  |
+1 | use wavedb_core::{Id, Metadata};
+  |                   ^^  ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
