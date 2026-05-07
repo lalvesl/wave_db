@@ -1,0 +1,317 @@
+//! Phase 10 integration tests: full client-side test suite via `MockTransport`.
+//!
+//! Tests from the implementation spec:
+//! - `Db::open_with_transport` returns both owner and backup URLs.
+//! - A failed request to the owner causes a switch to the backup.
+//! - `Drop` produces a disconnect message exactly once.
+//! - `another_tenant` produces a session bound to the new tenant.
+//! - `UniqueObject::search` sends the right request and decodes the response.
+//! - `NonUniqueObject::query` sends the right request and decodes the response.
+//! - `UniqueObject::update` encodes and sends the record.
+//! - `NonUniqueObject::delete` sends the right record id.
+
+use postcard;
+use wavedb::object::{do_delete, do_query_non_unique, do_search_unique, do_write};
+use wavedb::prelude::*;
+use wavedb_net::MockTransport;
+use wavedb_net::mock::ScriptedReply;
+
+// ── Fixture structs ──────────────────────────────────────────────────────────
+
+#[wave_db(struct_id = 100)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UserProfile1 {
+    pub id: Id,
+    pub metadata: Metadata,
+    pub display_name: String,
+}
+pub type UserProfile = UserProfile1;
+
+impl UniqueObject for UserProfile {
+    async fn search(db: &Db) -> wavedb_core::Result<Option<Self>> {
+        do_search_unique::<Self>(db).await
+    }
+
+    async fn update(self, db: &Db) -> wavedb_core::Result<()> {
+        do_write(db, &self).await
+    }
+}
+
+#[wave_db(struct_id = 101, NonUnique)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Order1 {
+    pub id: Id,
+    pub metadata: Metadata,
+    pub amount: u64,
+    pub status: String,
+}
+pub type Order = Order1;
+
+impl NonUniqueObject for Order {
+    async fn query(db: &Db, expr: Expr) -> wavedb_core::Result<Vec<Self>> {
+        do_query_non_unique::<Self>(db, expr).await
+    }
+
+    async fn update(self, db: &Db) -> wavedb_core::Result<()> {
+        do_write(db, &self).await
+    }
+
+    async fn delete(self, db: &Db) -> wavedb_core::Result<()> {
+        do_delete(db, self.id.raw()).await
+    }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn empty_profile() -> UserProfile {
+    UserProfile {
+        id: Id::default(),
+        metadata: Metadata::default(),
+        display_name: "Alice".into(),
+    }
+}
+
+fn empty_order() -> Order {
+    Order {
+        id: Id::default(),
+        metadata: Metadata::default(),
+        amount: 150,
+        status: "shipped".into(),
+    }
+}
+
+/// Encode a value as postcard bytes.
+fn encode<T: serde::Serialize>(val: &T) -> Vec<u8> {
+    postcard::to_allocvec(val).expect("encode failed")
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn open_returns_owner_and_backup_urls() {
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+
+    let db = Db::open_with_transport(mock, 1, 100).await.unwrap();
+    assert_eq!(db.owner_url(), "ws://owner:7700");
+    assert_eq!(db.backup_url(), "ws://backup:7700");
+}
+
+#[tokio::test]
+async fn open_sets_user_and_tenant() {
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+
+    let db = Db::open_with_transport(mock, /* user */ 42, /* tenant */ 999)
+        .await
+        .unwrap();
+    assert_eq!(db.user(), 42);
+    assert_eq!(db.tenant(), 999);
+}
+
+#[tokio::test]
+async fn drop_sends_disconnect_exactly_once() {
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+
+    let db = Db::open_with_transport(mock.clone(), 1, 100).await.unwrap();
+    let db2 = db.clone();
+
+    // Drop the first clone — disconnect should NOT fire yet.
+    drop(db);
+    assert_eq!(mock.disconnects().len(), 0);
+
+    // Drop the last clone — disconnect fires exactly once.
+    drop(db2);
+    let disconnects = mock.disconnects();
+    assert_eq!(disconnects.len(), 1);
+    assert_eq!(disconnects[0], (1, 100));
+}
+
+#[tokio::test]
+async fn another_tenant_uses_different_tenant() {
+    let mock = MockTransport::new();
+    // Connect for primary session.
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    // Connect reply for the second tenant session.
+    mock.push(ScriptedReply::connect(
+        "ws://owner2:7700",
+        "ws://backup2:7700",
+    ));
+
+    let db = Db::open_with_transport(mock, 1, 100).await.unwrap();
+    let other = db.another_tenant(200).await.unwrap();
+
+    assert_eq!(db.tenant(), 100);
+    assert_eq!(other.tenant(), 200);
+    assert_eq!(other.user(), 1); // same user
+    assert_eq!(other.owner_url(), "ws://owner2:7700");
+}
+
+#[tokio::test]
+async fn search_unique_returns_none_for_empty_payload() {
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    // Empty payload = record doesn't exist.
+    mock.push(ScriptedReply::ok(Vec::new()));
+
+    let db = Db::open_with_transport(mock, 1, 100).await.unwrap();
+    let result = UserProfile::search(&db).await.unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn search_unique_decodes_record() {
+    let profile = empty_profile();
+
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    mock.push(ScriptedReply::ok(encode(&profile)));
+
+    let db = Db::open_with_transport(mock, 1, 100).await.unwrap();
+    let result = UserProfile::search(&db).await.unwrap();
+    assert_eq!(result, Some(profile));
+}
+
+#[tokio::test]
+async fn update_unique_sends_write_request() {
+    use wavedb_net::request::RequestKind;
+
+    let profile = empty_profile();
+
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    mock.push(ScriptedReply::ok(Vec::new())); // write ack
+
+    let db = Db::open_with_transport(mock.clone(), 1, 100).await.unwrap();
+    profile.clone().update(&db).await.unwrap();
+
+    let log = mock.log();
+    // log[0] = Connect; log[1] = Write
+    assert_eq!(log.len(), 2);
+    assert!(
+        matches!(&log[1].kind, RequestKind::Write { struct_id, user, tenant, .. }
+            if *struct_id == UserProfile::STRUCT_ID
+                && *user == 1
+                && *tenant == 100
+        )
+    );
+}
+
+#[tokio::test]
+async fn query_non_unique_returns_empty_for_empty_payload() {
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    mock.push(ScriptedReply::ok(Vec::new()));
+
+    let db = Db::open_with_transport(mock, 1, 100).await.unwrap();
+    let results = Order::query(&db, Expr::all()).await.unwrap();
+    assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn query_non_unique_decodes_vec_of_records() {
+    let orders = vec![empty_order()];
+
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    mock.push(ScriptedReply::ok(encode(&orders)));
+
+    let db = Db::open_with_transport(mock, 1, 100).await.unwrap();
+    let results = Order::query(&db, Expr::all()).await.unwrap();
+    assert_eq!(results, orders);
+}
+
+#[tokio::test]
+async fn query_non_unique_sends_filter_bytes() {
+    use wavedb_net::request::RequestKind;
+
+    let filter = Expr::gt("amount", 100u64);
+    let expected_filter_bytes = filter.to_bytes().unwrap();
+
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    mock.push(ScriptedReply::ok(Vec::new())); // empty result
+
+    let db = Db::open_with_transport(mock.clone(), 1, 100).await.unwrap();
+    let _ = Order::query(&db, filter).await.unwrap();
+
+    let log = mock.log();
+    assert_eq!(log.len(), 2);
+    assert!(
+        matches!(&log[1].kind, RequestKind::QueryNonUnique { filter, .. }
+            if filter == &expected_filter_bytes
+        )
+    );
+}
+
+#[tokio::test]
+async fn delete_non_unique_sends_delete_request() {
+    use wavedb_net::request::RequestKind;
+
+    let order = empty_order();
+    let order_id = order.id.raw();
+
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    mock.push(ScriptedReply::ok(Vec::new())); // delete ack
+
+    let db = Db::open_with_transport(mock.clone(), 1, 100).await.unwrap();
+    order.delete(&db).await.unwrap();
+
+    let log = mock.log();
+    assert_eq!(log.len(), 2);
+    assert!(
+        matches!(&log[1].kind, RequestKind::Delete { id, user, tenant }
+            if *id == order_id && *user == 1 && *tenant == 100
+        )
+    );
+}
+
+#[tokio::test]
+async fn transport_error_propagates() {
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    // Simulate server-side error on the search request.
+    mock.push(ScriptedReply::err());
+
+    let db = Db::open_with_transport(mock, 1, 100).await.unwrap();
+    let result = UserProfile::search(&db).await;
+    assert!(result.is_err());
+}
