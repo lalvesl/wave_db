@@ -139,8 +139,8 @@ impl MigrationRegistry {
 
             if let Some(neighbors) = self.forward.get(&current) {
                 for &(next, _has_rollback) in neighbors {
-                    if !visited.contains_key(&next) {
-                        visited.insert(next, current);
+                    if let std::collections::hash_map::Entry::Vacant(e) = visited.entry(next) {
+                        e.insert(current);
                         queue.push_back(next);
                     }
                 }
