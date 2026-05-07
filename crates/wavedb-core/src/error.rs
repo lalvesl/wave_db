@@ -66,6 +66,10 @@ pub enum Error {
         to: u8,
     },
 
+    /// A transport-level failure (connection refused, timeout, etc.).
+    #[error("transport error: {0}")]
+    Transport(String),
+
     /// Generic catch-all for cases not covered above.
     #[error("{0}")]
     Other(String),

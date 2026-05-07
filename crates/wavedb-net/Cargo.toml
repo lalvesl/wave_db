@@ -13,6 +13,8 @@ tokio.workspace = true
 serde.workspace = true
 postcard.workspace = true
 thiserror.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
