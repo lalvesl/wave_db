@@ -1,0 +1,13 @@
+[package]
+name    = "wavedb"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wavedb-core   = { path = "../wavedb-core" }
+wavedb-macros = { path = "../wavedb-macros" }
+wavedb-storage = { path = "../wavedb-storage" }
