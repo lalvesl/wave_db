@@ -1,16 +1,29 @@
 //! `WaveDB` network transport layer.
 //!
-//! Provides the [`Transport`] trait and:
-//! - A [`MockTransport`] for in-process tests (Phase 10).
-//! - Stubs for HTTP POST and WebSocket transports (Phase 11).
+//! Provides the [`Transport`] trait and concrete implementations:
+//!
+//! | Module | Implementation |
+//! |--------|---------------|
+//! | [`mock`] | In-process scripted transport for unit tests |
+//! | [`http`] | HTTP POST single-queue client + piggyback notifications |
+//! | [`ws`]   | WebSocket full-duplex client (server-push capable) |
+//! | [`notify`] | Bloom-filter event bus for object-changed events |
+//! | [`frame`]  | Postcard-based framing helpers |
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod frame;
+pub mod http;
 pub mod mock;
+pub mod notify;
 pub mod request;
+pub mod ws;
 
+pub use http::HttpClient;
 pub use mock::MockTransport;
+pub use notify::EventBus;
 pub use request::{TransportRequest, TransportResponse};
+pub use ws::WsClient;
 
 use std::future::Future;
 use wavedb_core::Result;
