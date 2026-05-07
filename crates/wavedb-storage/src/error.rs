@@ -12,7 +12,9 @@ pub enum StorageError {
     Serialization(#[from] postcard::Error),
 
     /// Page checksum mismatch.
-    #[error("checksum mismatch on page {page_index}: expected {expected:#010x}, got {actual:#010x}")]
+    #[error(
+        "checksum mismatch on page {page_index}: expected {expected:#010x}, got {actual:#010x}"
+    )]
     ChecksumMismatch {
         /// Index of the page with the bad checksum.
         page_index: u64,

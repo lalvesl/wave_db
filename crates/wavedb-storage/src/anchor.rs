@@ -9,13 +9,19 @@ pub struct AnchorKey(pub u128);
 
 impl AnchorKey {
     /// Create from raw u128.
-    pub const fn from_raw(raw: u128) -> Self { Self(raw) }
+    pub const fn from_raw(raw: u128) -> Self {
+        Self(raw)
+    }
     /// Return raw u128.
-    pub const fn raw(self) -> u128 { self.0 }
+    pub const fn raw(self) -> u128 {
+        self.0
+    }
 }
 
 impl From<wavedb_core::Id> for AnchorKey {
-    fn from(id: wavedb_core::Id) -> Self { Self(id.anchor_key().raw()) }
+    fn from(id: wavedb_core::Id) -> Self {
+        Self(id.anchor_key().raw())
+    }
 }
 
 /// How the primary anchor stores its data.
@@ -59,7 +65,9 @@ impl AnchorSlot {
         Self {
             kind: AnchorKind::Primary {
                 current_version_at,
-                mode: AnchorMode::Inline { bytes: bytes.to_vec() },
+                mode: AnchorMode::Inline {
+                    bytes: bytes.to_vec(),
+                },
                 secondaries: Vec::new(),
             },
             references: Vec::new(),
@@ -80,40 +88,61 @@ impl AnchorSlot {
 
     /// Create a secondary anchor.
     pub fn secondary(primary: AnchorKey, marker: u64) -> Self {
-        Self { kind: AnchorKind::Secondary { primary, marker }, references: Vec::new() }
+        Self {
+            kind: AnchorKind::Secondary { primary, marker },
+            references: Vec::new(),
+        }
     }
 
     /// Create a primary tombstone.
     pub fn primary_tombstone(final_version_at: u64) -> Self {
-        Self { kind: AnchorKind::PrimaryTombstone { final_version_at }, references: Vec::new() }
+        Self {
+            kind: AnchorKind::PrimaryTombstone { final_version_at },
+            references: Vec::new(),
+        }
     }
 
     /// Create a secondary tombstone.
     pub fn secondary_tombstone() -> Self {
-        Self { kind: AnchorKind::SecondaryTombstone, references: Vec::new() }
+        Self {
+            kind: AnchorKind::SecondaryTombstone,
+            references: Vec::new(),
+        }
     }
 
     /// Is this a live primary?
-    pub fn is_live_primary(&self) -> bool { matches!(self.kind, AnchorKind::Primary { .. }) }
+    pub fn is_live_primary(&self) -> bool {
+        matches!(self.kind, AnchorKind::Primary { .. })
+    }
 
     /// Is this a tombstone?
     pub fn is_tombstone(&self) -> bool {
-        matches!(self.kind, AnchorKind::PrimaryTombstone { .. } | AnchorKind::SecondaryTombstone)
+        matches!(
+            self.kind,
+            AnchorKind::PrimaryTombstone { .. } | AnchorKind::SecondaryTombstone
+        )
     }
 
     /// Get inline bytes if available.
     pub fn inline_bytes(&self) -> Option<&[u8]> {
         match &self.kind {
-            AnchorKind::Primary { mode: AnchorMode::Inline { bytes }, .. } => Some(bytes),
+            AnchorKind::Primary {
+                mode: AnchorMode::Inline { bytes },
+                ..
+            } => Some(bytes),
             _ => None,
         }
     }
 
     /// Serialize to bytes.
-    pub fn to_bytes(&self) -> crate::StorageResult<Vec<u8>> { Ok(postcard::to_allocvec(self)?) }
+    pub fn to_bytes(&self) -> crate::StorageResult<Vec<u8>> {
+        Ok(postcard::to_allocvec(self)?)
+    }
 
     /// Deserialize from bytes.
-    pub fn from_bytes(bytes: &[u8]) -> crate::StorageResult<Self> { Ok(postcard::from_bytes(bytes)?) }
+    pub fn from_bytes(bytes: &[u8]) -> crate::StorageResult<Self> {
+        Ok(postcard::from_bytes(bytes)?)
+    }
 }
 
 #[cfg(test)]

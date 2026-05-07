@@ -1,11 +1,11 @@
 //! The data file: hash-mapped pages holding anchor slots and versioned records.
 
+use crate::StorageResult;
 use crate::anchor::{AnchorKey, AnchorSlot};
 use crate::cache::Cache;
 use crate::hash;
 use crate::page::Page;
 use crate::versioned::VersionedRecord;
-use crate::StorageResult;
 use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
 
@@ -42,7 +42,10 @@ impl DataFile {
     pub fn write_anchor(&self, key: AnchorKey, slot: &AnchorSlot) -> StorageResult<()> {
         let id = wavedb_core::Id::from_raw(key.raw());
         let page_idx = hash::page_hash(
-            id.struct_id(), id.tenant_id(), id.shard_id(), self.page_count,
+            id.struct_id(),
+            id.tenant_id(),
+            id.shard_id(),
+            self.page_count,
         ) as usize;
 
         let bytes = slot.to_bytes()?;
@@ -51,7 +54,10 @@ impl DataFile {
         if !pages[page_idx].insert(key.raw(), &bytes) {
             // Try double-hashing
             let step = hash::double_hash_step(
-                id.struct_id(), id.tenant_id(), id.shard_id(), self.page_count,
+                id.struct_id(),
+                id.tenant_id(),
+                id.shard_id(),
+                self.page_count,
             ) as usize;
             let alt_idx = (page_idx + step) % self.page_count as usize;
             if !pages[alt_idx].insert(key.raw(), &bytes) {
@@ -73,7 +79,10 @@ impl DataFile {
 
         let id = wavedb_core::Id::from_raw(key.raw());
         let page_idx = hash::page_hash(
-            id.struct_id(), id.tenant_id(), id.shard_id(), self.page_count,
+            id.struct_id(),
+            id.tenant_id(),
+            id.shard_id(),
+            self.page_count,
         ) as usize;
 
         let pages = self.pages.read();
@@ -86,7 +95,10 @@ impl DataFile {
 
         // Check double-hash page
         let step = hash::double_hash_step(
-            id.struct_id(), id.tenant_id(), id.shard_id(), self.page_count,
+            id.struct_id(),
+            id.tenant_id(),
+            id.shard_id(),
+            self.page_count,
         ) as usize;
         let alt_idx = (page_idx + step) % self.page_count as usize;
         if let Some(bytes) = pages[alt_idx].lookup(key.raw()) {
@@ -101,7 +113,10 @@ impl DataFile {
     pub fn write_versioned(&self, rec: &VersionedRecord) -> StorageResult<()> {
         let id = wavedb_core::Id::from_raw(rec.id);
         let page_idx = hash::versioned_hash(
-            id.struct_id(), id.tenant_id(), id.shard_id(), id.created_at(),
+            id.struct_id(),
+            id.tenant_id(),
+            id.shard_id(),
+            id.created_at(),
             self.page_count,
         ) as usize;
 
@@ -124,7 +139,10 @@ impl DataFile {
         }
 
         let page_idx = hash::versioned_hash(
-            id.struct_id(), id.tenant_id(), id.shard_id(), id.created_at(),
+            id.struct_id(),
+            id.tenant_id(),
+            id.shard_id(),
+            id.created_at(),
             self.page_count,
         ) as usize;
 
@@ -138,13 +156,19 @@ impl DataFile {
     }
 
     /// Get the file path.
-    pub fn path(&self) -> &Path { &self.path }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 
     /// Get the page size.
-    pub fn page_size(&self) -> usize { self.page_size }
+    pub fn page_size(&self) -> usize {
+        self.page_size
+    }
 
     /// Get the page count.
-    pub fn page_count(&self) -> u64 { self.page_count }
+    pub fn page_count(&self) -> u64 {
+        self.page_count
+    }
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::meta::ParseNestedMeta;
-use syn::{parse_macro_input, ItemStruct, LitInt, LitStr};
+use syn::{ItemStruct, LitInt, LitStr, parse_macro_input};
 
 /// Parsed arguments from the `#[wave_db(...)]` attribute.
 struct WaveDbArgs {
@@ -82,18 +82,14 @@ fn parse_trailing_version(name: &str, span: proc_macro2::Span) -> syn::Result<u8
     if digits.is_empty() {
         return Err(syn::Error::new(
             span,
-            format!(
-                "struct name `{name}` must end with a version number (e.g. `{name}1`)"
-            ),
+            format!("struct name `{name}` must end with a version number (e.g. `{name}1`)"),
         ));
     }
 
     digits.parse::<u8>().map_err(|_| {
         syn::Error::new(
             span,
-            format!(
-                "trailing version `{digits}` in `{name}` does not fit in u8 (0..=255)"
-            ),
+            format!("trailing version `{digits}` in `{name}` does not fit in u8 (0..=255)"),
         )
     })
 }
@@ -170,10 +166,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate primary_anchor accessor if specified
     let primary_accessor = args.primary_anchor.as_ref().map(|field| {
-        let find_fn_name = syn::Ident::new(
-            &format!("find_by_{field}"),
-            field.span(),
-        );
+        let find_fn_name = syn::Ident::new(&format!("find_by_{field}"), field.span());
         quote! {
             /// Look up a record by its primary anchor field.
             pub fn primary_anchor_field() -> &'static str {
@@ -219,4 +212,3 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     expanded.into()
 }
-

@@ -46,10 +46,14 @@ impl Cache {
     }
 
     /// Number of cached anchors.
-    pub fn anchor_count(&self) -> usize { self.anchors.read().len() }
+    pub fn anchor_count(&self) -> usize {
+        self.anchors.read().len()
+    }
 
     /// Number of cached versioned records.
-    pub fn versioned_count(&self) -> usize { self.versioned.read().len() }
+    pub fn versioned_count(&self) -> usize {
+        self.versioned.read().len()
+    }
 
     /// Approximate memory usage in bytes.
     pub fn estimated_bytes(&self) -> usize {
@@ -59,7 +63,9 @@ impl Cache {
 }
 
 impl Default for Cache {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

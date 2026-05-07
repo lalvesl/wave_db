@@ -4,8 +4,7 @@ use crate::permission::PermissionRef;
 
 /// Per-record metadata that tracks the version chain, authorship,
 /// and access rules for a `WaveDB` object.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct Metadata {
     /// ID of the previous version of this object (`0u128` if this is the first).
     pub old_modification_id: u128,
@@ -23,7 +22,6 @@ pub struct Metadata {
     /// tenant's own users can touch this record).
     pub permission: Option<PermissionRef>,
 }
-
 
 impl PartialEq for Metadata {
     fn eq(&self, other: &Self) -> bool {
@@ -84,7 +82,11 @@ mod tests {
     fn none_permission_compact() {
         let perm: Option<crate::PermissionRef> = None;
         let bytes = postcard::to_allocvec(&perm).unwrap();
-        assert_eq!(bytes.len(), 1, "None permission must be 1 byte under postcard");
+        assert_eq!(
+            bytes.len(),
+            1,
+            "None permission must be 1 byte under postcard"
+        );
     }
 
     #[test]
