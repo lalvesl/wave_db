@@ -53,7 +53,12 @@ pub fn versioned_hash(
 ///
 /// Returns the step size for probing the next candidate page.
 /// The step is always odd to ensure coprimality with any power-of-2 page count.
-pub fn double_hash_step(struct_id: u32, tenant_id: u64, shard_id: u16, page_count: u64) -> u64 {
+pub const fn double_hash_step(
+    struct_id: u32,
+    tenant_id: u64,
+    shard_id: u16,
+    page_count: u64,
+) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // different basis for second hash
     let prime: u64 = 1_099_511_628_211;
 

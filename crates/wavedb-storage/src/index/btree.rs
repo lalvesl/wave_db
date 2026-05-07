@@ -53,7 +53,7 @@ impl BTreeIndex {
     }
 
     /// Bulk-load from sorted entries (more efficient than repeated inserts).
-    pub fn from_sorted(entries: Vec<(IndexKey, AnchorKey)>) -> Self {
+    pub fn from_sorted(entries: &[(IndexKey, AnchorKey)]) -> Self {
         let count = entries.len();
         if entries.is_empty() {
             return Self::new();
@@ -227,7 +227,7 @@ mod tests {
         let entries: Vec<_> = (0..200)
             .map(|i| (IndexKey(i * 10), AnchorKey::from_raw(i as u128)))
             .collect();
-        let tree = BTreeIndex::from_sorted(entries);
+        let tree = BTreeIndex::from_sorted(&entries);
         assert_eq!(tree.len(), 200);
 
         // Every entry should be found
@@ -245,7 +245,7 @@ mod tests {
         let entries: Vec<_> = (0..100)
             .map(|i| (IndexKey(i), AnchorKey::from_raw(i as u128)))
             .collect();
-        let tree = BTreeIndex::from_sorted(entries);
+        let tree = BTreeIndex::from_sorted(&entries);
         let result = tree.range(IndexKey(25)..IndexKey(75));
         assert_eq!(result.len(), 50);
         assert_eq!(result[0].0, IndexKey(25));
@@ -270,7 +270,7 @@ mod tests {
         let entries: Vec<_> = (0..10)
             .map(|i| (IndexKey(i), AnchorKey::from_raw(i as u128)))
             .collect();
-        let mut tree = BTreeIndex::from_sorted(entries);
+        let mut tree = BTreeIndex::from_sorted(&entries);
         assert!(tree.remove(&IndexKey(5)));
         assert!(tree.lookup(&IndexKey(5)).is_none());
         assert_eq!(tree.len(), 9);
@@ -281,7 +281,7 @@ mod tests {
         let entries: Vec<_> = (0..100)
             .map(|i| (IndexKey(i * 3), AnchorKey::from_raw(i as u128)))
             .collect();
-        let tree = BTreeIndex::from_sorted(entries);
+        let tree = BTreeIndex::from_sorted(&entries);
         let all = tree.all_sorted();
         for w in all.windows(2) {
             assert!(w[0].0 < w[1].0, "entries must be in sorted order");

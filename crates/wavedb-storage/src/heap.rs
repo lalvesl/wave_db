@@ -76,7 +76,7 @@ impl HeapFile {
     }
 
     /// Set the max inline size threshold.
-    pub fn set_max_inline(&mut self, max: usize) {
+    pub const fn set_max_inline(&mut self, max: usize) {
         self.max_inline = max;
     }
 
@@ -91,7 +91,7 @@ impl HeapFile {
         }
 
         // Step 2/3: store in heap file with 4KB alignment
-        let anchor = self.append_aligned(&compressed)?;
+        let anchor = self.append_aligned(&compressed);
         // 1 IO for the anchor write
         Ok((HeapStorageResult::HeapStored(anchor), 1))
     }
@@ -100,8 +100,8 @@ impl HeapFile {
     ///
     /// Returns the decompressed data and the number of IO operations used.
     pub fn read(&self, anchor: &HeapAnchor) -> crate::StorageResult<(Vec<u8>, u32)> {
-        let start = anchor.offset as usize;
-        let end = start + anchor.size as usize;
+        let start = usize::try_from(anchor.offset).expect("heap offset overflow");
+        let end = start + usize::try_from(anchor.size).expect("heap size overflow");
 
         if end > self.buffer.len() {
             return Err(crate::StorageError::Other(format!(
@@ -119,13 +119,13 @@ impl HeapFile {
     }
 
     /// Append data to the heap file with 4KB alignment.
-    fn append_aligned(&mut self, data: &[u8]) -> crate::StorageResult<HeapAnchor> {
+    fn append_aligned(&mut self, data: &[u8]) -> HeapAnchor {
         // Align tail to 4KB boundary
         let aligned_offset = align_up(self.tail, HEAP_ALIGNMENT);
 
         // Pad buffer to aligned offset
         if aligned_offset > self.buffer.len() as u64 {
-            self.buffer.resize(aligned_offset as usize, 0);
+            self.buffer.resize(usize::try_from(aligned_offset).expect("aligned offset overflow"), 0);
         }
 
         let anchor = HeapAnchor {
@@ -137,7 +137,7 @@ impl HeapFile {
         self.buffer.extend_from_slice(data);
         self.tail = aligned_offset + data.len() as u64;
 
-        Ok(anchor)
+        anchor
     }
 
     /// Flush the in-memory buffer to disk.

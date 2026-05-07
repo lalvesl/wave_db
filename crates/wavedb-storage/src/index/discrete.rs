@@ -81,7 +81,7 @@ impl DiscreteIndex {
     }
 
     /// Total number of entries across all buckets.
-    pub fn total_count(&self) -> usize {
+    pub const fn total_count(&self) -> usize {
         self.total_count
     }
 

@@ -178,7 +178,7 @@ impl Journal {
         let mut buf = Vec::new();
         for entry in entries {
             let entry_bytes = postcard::to_allocvec(entry)?;
-            let len = entry_bytes.len() as u32;
+            let len = u32::try_from(entry_bytes.len()).expect("journal entry too large");
             buf.extend_from_slice(&len.to_le_bytes());
             buf.extend_from_slice(&entry_bytes);
         }

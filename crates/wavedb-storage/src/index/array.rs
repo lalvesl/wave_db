@@ -15,7 +15,7 @@ pub struct ArrayIndex {
 
 impl ArrayIndex {
     /// Create an empty array index.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             entries: Vec::new(),
         }

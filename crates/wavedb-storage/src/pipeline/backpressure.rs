@@ -15,9 +15,10 @@ pub struct Backpressure {
     warn_threshold: f64,
 }
 
+#[allow(clippy::cast_precision_loss)]
 impl Backpressure {
     /// Create a new backpressure controller.
-    pub fn new(max_size: usize) -> Self {
+    pub const fn new(max_size: usize) -> Self {
         Self {
             current_usage: AtomicUsize::new(0),
             max_size,
@@ -52,7 +53,7 @@ impl Backpressure {
     }
 
     /// Maximum cache size.
-    pub fn max_size(&self) -> usize {
+    pub const fn max_size(&self) -> usize {
         self.max_size
     }
 

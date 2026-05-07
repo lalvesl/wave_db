@@ -35,10 +35,11 @@ impl PageHeader {
     pub const SIZE: usize = 20; // 5 × u32
 
     /// Create a new empty page header for a given page size.
-    pub fn new(page_size: u32) -> Self {
+    pub const fn new(page_size: u32) -> Self {
         Self {
             checksum: 0,
             entry_count: 0,
+            #[allow(clippy::cast_possible_truncation)]
             stack_offset: Self::SIZE as u32,
             heap_offset: page_size,
             dict_version: 0,
@@ -46,7 +47,7 @@ impl PageHeader {
     }
 
     /// How many free bytes remain between stack and heap regions.
-    pub fn free_space(&self) -> u32 {
+    pub const fn free_space(&self) -> u32 {
         self.heap_offset.saturating_sub(self.stack_offset)
     }
 }
@@ -83,7 +84,7 @@ pub struct Page {
 impl Page {
     /// Create a new empty page.
     pub fn new(page_size: usize) -> Self {
-        let header = PageHeader::new(page_size as u32);
+        let header = PageHeader::new(u32::try_from(page_size).expect("page size overflow"));
         Self {
             header,
             directory: Vec::new(),
@@ -103,8 +104,8 @@ impl Page {
 
     /// Insert an object into the page. Returns `false` if there isn't enough space.
     pub fn insert(&mut self, id: u128, bytes: &[u8]) -> bool {
-        let dir_entry_cost = DirEntry::SIZE as u32;
-        let needed = dir_entry_cost + bytes.len() as u32;
+        let dir_entry_cost = u32::try_from(DirEntry::SIZE).expect("dir entry size overflow");
+        let needed = dir_entry_cost + u32::try_from(bytes.len()).expect("object too large");
 
         if self.header.free_space() < needed {
             return false;
@@ -117,10 +118,10 @@ impl Page {
         self.directory.push(DirEntry {
             id,
             offset,
-            size: bytes.len() as u32,
+            size: u32::try_from(bytes.len()).expect("object too large for u32"),
         });
 
-        self.header.stack_offset = end as u32;
+        self.header.stack_offset = u32::try_from(end).expect("stack offset overflow");
         self.header.entry_count += 1;
         true
     }
@@ -134,7 +135,7 @@ impl Page {
         self.directory.retain(|e| e.id != id);
         let removed = self.directory.len() < before;
         if removed {
-            self.header.entry_count = self.directory.len() as u32;
+            self.header.entry_count = u32::try_from(self.directory.len()).expect("entry count overflow");
         }
         removed
     }

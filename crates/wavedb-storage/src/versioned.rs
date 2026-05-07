@@ -17,7 +17,7 @@ pub struct VersionedRecord {
 
 impl VersionedRecord {
     /// Create a new versioned record (first version).
-    pub fn new(id: u128, data: Vec<u8>) -> Self {
+    pub const fn new(id: u128, data: Vec<u8>) -> Self {
         Self {
             id,
             data,
@@ -27,7 +27,7 @@ impl VersionedRecord {
     }
 
     /// Is this the live (most recent) version?
-    pub fn is_live(&self) -> bool {
+    pub const fn is_live(&self) -> bool {
         self.new_modification_id == 0
     }
 

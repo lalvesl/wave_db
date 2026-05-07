@@ -30,7 +30,7 @@ pub struct AdaptiveIndex {
 
 impl AdaptiveIndex {
     /// Create a new adaptive index with the default threshold.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             state: IndexState::Array(ArrayIndex::new()),
             threshold: DEFAULT_MAX_NON_UNIQUE_ELEMENTS,
@@ -39,7 +39,7 @@ impl AdaptiveIndex {
     }
 
     /// Create with a custom threshold (e.g. from `btree_threshold = K`).
-    pub fn with_threshold(threshold: u32) -> Self {
+    pub const fn with_threshold(threshold: u32) -> Self {
         Self {
             state: IndexState::Array(ArrayIndex::new()),
             threshold,
@@ -48,12 +48,12 @@ impl AdaptiveIndex {
     }
 
     /// Whether the index has been promoted to a B+ tree.
-    pub fn is_tree(&self) -> bool {
+    pub const fn is_tree(&self) -> bool {
         self.converted
     }
 
     /// The configured array→tree conversion threshold.
-    pub fn threshold(&self) -> u32 {
+    pub const fn threshold(&self) -> u32 {
         self.threshold
     }
 
@@ -64,7 +64,7 @@ impl AdaptiveIndex {
             IndexState::Array(ArrayIndex::new()), // placeholder
         ) {
             let entries = array.into_entries();
-            self.state = IndexState::BTree(BTreeIndex::from_sorted(entries));
+            self.state = IndexState::BTree(BTreeIndex::from_sorted(&entries));
             self.converted = true;
         }
     }

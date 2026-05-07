@@ -92,16 +92,13 @@ pub fn check_access(
             }
         }
         Some(PermissionRef::Group(group_id)) => {
-            if let Some(group) = groups.get(*group_id) {
+            groups.get(*group_id).map_or(PermissionResult::Denied, |group| {
                 if group.users.contains(&user) {
                     PermissionResult::Allowed
                 } else {
                     PermissionResult::Denied
                 }
-            } else {
-                // Group not found — deny access
-                PermissionResult::Denied
-            }
+            })
         }
     }
 }
@@ -177,7 +174,7 @@ impl PromotablePermissionList {
     }
 
     /// Whether this list has been promoted.
-    pub fn is_promoted(&self) -> bool {
+    pub const fn is_promoted(&self) -> bool {
         matches!(self, Self::Tree(_))
     }
 }

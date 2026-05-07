@@ -41,25 +41,25 @@ impl DataFile {
     /// Write an anchor slot at the given key.
     pub fn write_anchor(&self, key: AnchorKey, slot: &AnchorSlot) -> StorageResult<()> {
         let id = wavedb_core::Id::from_raw(key.raw());
-        let page_idx = hash::page_hash(
+        let page_idx = usize::try_from(hash::page_hash(
             id.struct_id(),
             id.tenant_id(),
             id.shard_id(),
             self.page_count,
-        ) as usize;
+        )).expect("page index overflow");
 
         let bytes = slot.to_bytes()?;
         let mut pages = self.pages.write();
 
         if !pages[page_idx].insert(key.raw(), &bytes) {
             // Try double-hashing
-            let step = hash::double_hash_step(
+            let step = usize::try_from(hash::double_hash_step(
                 id.struct_id(),
                 id.tenant_id(),
                 id.shard_id(),
                 self.page_count,
-            ) as usize;
-            let alt_idx = (page_idx + step) % self.page_count as usize;
+            )).expect("step overflow");
+            let alt_idx = (page_idx + step) % usize::try_from(self.page_count).expect("page count overflow");
             if !pages[alt_idx].insert(key.raw(), &bytes) {
                 return Err(crate::StorageError::PageFull(alt_idx as u64));
             }
@@ -78,32 +78,34 @@ impl DataFile {
         }
 
         let id = wavedb_core::Id::from_raw(key.raw());
-        let page_idx = hash::page_hash(
+        let page_idx = usize::try_from(hash::page_hash(
             id.struct_id(),
             id.tenant_id(),
             id.shard_id(),
             self.page_count,
-        ) as usize;
+        )).expect("page index overflow");
 
-        let pages = self.pages.read();
+        {
+            let pages = self.pages.read();
 
-        // Check primary page
-        if let Some(bytes) = pages[page_idx].lookup(key.raw()) {
-            let slot = AnchorSlot::from_bytes(bytes)?;
-            return Ok(Some(slot));
-        }
+            // Check primary page
+            if let Some(bytes) = pages[page_idx].lookup(key.raw()) {
+                let slot = AnchorSlot::from_bytes(bytes)?;
+                return Ok(Some(slot));
+            }
 
-        // Check double-hash page
-        let step = hash::double_hash_step(
-            id.struct_id(),
-            id.tenant_id(),
-            id.shard_id(),
-            self.page_count,
-        ) as usize;
-        let alt_idx = (page_idx + step) % self.page_count as usize;
-        if let Some(bytes) = pages[alt_idx].lookup(key.raw()) {
-            let slot = AnchorSlot::from_bytes(bytes)?;
-            return Ok(Some(slot));
+            // Check double-hash page
+            let step = usize::try_from(hash::double_hash_step(
+                id.struct_id(),
+                id.tenant_id(),
+                id.shard_id(),
+                self.page_count,
+            )).expect("step overflow");
+            let alt_idx = (page_idx + step) % usize::try_from(self.page_count).expect("page count overflow");
+            if let Some(bytes) = pages[alt_idx].lookup(key.raw()) {
+                let slot = AnchorSlot::from_bytes(bytes)?;
+                return Ok(Some(slot));
+            }
         }
 
         Ok(None)
@@ -112,19 +114,20 @@ impl DataFile {
     /// Write a versioned record.
     pub fn write_versioned(&self, rec: &VersionedRecord) -> StorageResult<()> {
         let id = wavedb_core::Id::from_raw(rec.id);
-        let page_idx = hash::versioned_hash(
+        let page_idx = usize::try_from(hash::versioned_hash(
             id.struct_id(),
             id.tenant_id(),
             id.shard_id(),
             id.created_at(),
             self.page_count,
-        ) as usize;
+        )).expect("page index overflow");
 
         let bytes = rec.to_bytes()?;
-        let mut pages = self.pages.write();
-
-        if !pages[page_idx].insert(rec.id, &bytes) {
-            return Err(crate::StorageError::PageFull(page_idx as u64));
+        {
+            let mut pages = self.pages.write();
+            if !pages[page_idx].insert(rec.id, &bytes) {
+                return Err(crate::StorageError::PageFull(u64::try_from(page_idx).unwrap()));
+            }
         }
 
         self.cache.put_versioned(rec.clone());
@@ -138,18 +141,20 @@ impl DataFile {
             return Ok(Some(rec));
         }
 
-        let page_idx = hash::versioned_hash(
+        let page_idx = usize::try_from(hash::versioned_hash(
             id.struct_id(),
             id.tenant_id(),
             id.shard_id(),
             id.created_at(),
             self.page_count,
-        ) as usize;
+        )).expect("page index overflow");
 
-        let pages = self.pages.read();
-        if let Some(bytes) = pages[page_idx].lookup(id.raw()) {
-            let rec = VersionedRecord::from_bytes(bytes)?;
-            return Ok(Some(rec));
+        {
+            let pages = self.pages.read();
+            if let Some(bytes) = pages[page_idx].lookup(id.raw()) {
+                let rec = VersionedRecord::from_bytes(bytes)?;
+                return Ok(Some(rec));
+            }
         }
 
         Ok(None)
@@ -161,12 +166,12 @@ impl DataFile {
     }
 
     /// Get the page size.
-    pub fn page_size(&self) -> usize {
+    pub const fn page_size(&self) -> usize {
         self.page_size
     }
 
     /// Get the page count.
-    pub fn page_count(&self) -> u64 {
+    pub const fn page_count(&self) -> u64 {
         self.page_count
     }
 }

@@ -75,7 +75,7 @@ impl AnchorSlot {
     }
 
     /// Create a new pointer-only primary anchor.
-    pub fn pointer(versioned_id: u128, current_version_at: u64) -> Self {
+    pub const fn pointer(versioned_id: u128, current_version_at: u64) -> Self {
         Self {
             kind: AnchorKind::Primary {
                 current_version_at,
@@ -87,7 +87,7 @@ impl AnchorSlot {
     }
 
     /// Create a secondary anchor.
-    pub fn secondary(primary: AnchorKey, marker: u64) -> Self {
+    pub const fn secondary(primary: AnchorKey, marker: u64) -> Self {
         Self {
             kind: AnchorKind::Secondary { primary, marker },
             references: Vec::new(),
@@ -95,7 +95,7 @@ impl AnchorSlot {
     }
 
     /// Create a primary tombstone.
-    pub fn primary_tombstone(final_version_at: u64) -> Self {
+    pub const fn primary_tombstone(final_version_at: u64) -> Self {
         Self {
             kind: AnchorKind::PrimaryTombstone { final_version_at },
             references: Vec::new(),
@@ -103,7 +103,7 @@ impl AnchorSlot {
     }
 
     /// Create a secondary tombstone.
-    pub fn secondary_tombstone() -> Self {
+    pub const fn secondary_tombstone() -> Self {
         Self {
             kind: AnchorKind::SecondaryTombstone,
             references: Vec::new(),
@@ -111,12 +111,12 @@ impl AnchorSlot {
     }
 
     /// Is this a live primary?
-    pub fn is_live_primary(&self) -> bool {
+    pub const fn is_live_primary(&self) -> bool {
         matches!(self.kind, AnchorKind::Primary { .. })
     }
 
     /// Is this a tombstone?
-    pub fn is_tombstone(&self) -> bool {
+    pub const fn is_tombstone(&self) -> bool {
         matches!(
             self.kind,
             AnchorKind::PrimaryTombstone { .. } | AnchorKind::SecondaryTombstone

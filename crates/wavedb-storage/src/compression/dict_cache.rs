@@ -66,14 +66,16 @@ impl DictCache {
         // Evict until we have room
         self.evict_until(dict_size);
 
-        let mut entries = self.entries.write();
-        entries.insert(
-            key,
-            CacheEntry {
-                dict: Arc::clone(&dict),
-                access_count: 1,
-            },
-        );
+        {
+            let mut entries = self.entries.write();
+            entries.insert(
+                key,
+                CacheEntry {
+                    dict: Arc::clone(&dict),
+                    access_count: 1,
+                },
+            );
+        }
         *self.current_memory.write() += dict_size;
 
         Ok(dict)
@@ -85,18 +87,20 @@ impl DictCache {
         let dict_size = dict.data.len();
         self.evict_until(dict_size);
 
-        let mut entries = self.entries.write();
-        // Remove old version if present
-        if let Some(old) = entries.remove(&key) {
-            *self.current_memory.write() -= old.dict.data.len();
+        {
+            let mut entries = self.entries.write();
+            // Remove old version if present
+            if let Some(old) = entries.remove(&key) {
+                *self.current_memory.write() -= old.dict.data.len();
+            }
+            entries.insert(
+                key,
+                CacheEntry {
+                    dict: Arc::new(dict),
+                    access_count: 1,
+                },
+            );
         }
-        entries.insert(
-            key,
-            CacheEntry {
-                dict: Arc::new(dict),
-                access_count: 1,
-            },
-        );
         *self.current_memory.write() += dict_size;
     }
 

@@ -34,6 +34,7 @@ impl WaveDbArgs {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn parse(&mut self, meta: ParseNestedMeta<'_>) -> syn::Result<()> {
         if meta.path.is_ident("struct_id") {
             let value = meta.value()?;
