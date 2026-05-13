@@ -2393,8 +2393,19 @@ dependencies = [
 name = "wavedb-slow-node"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "bytes",
+ "clap",
+ "parking_lot",
+ "postcard",
+ "reqwest",
+ "serde",
+ "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "wavedb-core",
+ "wavedb-net",
  "wavedb-storage",
 ]
 
