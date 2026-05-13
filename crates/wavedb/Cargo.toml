@@ -9,18 +9,18 @@ workspace = true
 
 [features]
 default = ["native"]
-# Native (Tokio-backed) build — HTTP/WebSocket transports.
-native = ["dep:tokio"]
+# Native (tokio-backed) build — HTTP/WebSocket transports, file storage.
+native = ["dep:tokio", "dep:wavedb-storage", "wavedb-net/native"]
 # WASM build — gloo-net + wasm-bindgen-futures (Phase 15).
 wasm = []
 
 [dependencies]
 wavedb-core = { path = "../wavedb-core" }
 wavedb-macros = { path = "../wavedb-macros" }
-wavedb-storage = { path = "../wavedb-storage" }
+wavedb-storage = { path = "../wavedb-storage", optional = true }
 # wavedb-net is always a dependency (provides request/response types for the
 # erased transport closures).  The `native` feature just adds tokio on top.
-wavedb-net = { path = "../wavedb-net" }
+wavedb-net = { path = "../wavedb-net", default-features = false }
 serde.workspace = true
 postcard.workspace = true
 parking_lot.workspace = true

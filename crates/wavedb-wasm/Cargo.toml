@@ -7,5 +7,24 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
-wavedb-core = { path = "../wavedb-core" }
+wavedb = { path = "../wavedb", default-features = false, features = ["wasm"] }
+
+# WASM-only dependencies — compiled only when targeting wasm32-unknown-unknown.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+gloo-net = { version = "0.6", features = ["http", "websocket"] }
+gloo-storage = "0.3"
+js-sys = "0.3"
+
+futures = "0.3"
+serde-wasm-bindgen = "0.6"
+wavedb-net = { path = "../wavedb-net", default-features = false }
+web-sys = { workspace = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
