@@ -91,7 +91,10 @@ mod tests {
 
     #[test]
     fn roundtrip_framed() {
-        let msg = Msg { x: 42, s: "hello".into() };
+        let msg = Msg {
+            x: 42,
+            s: "hello".into(),
+        };
         let framed = encode(&msg).unwrap();
         let mut buf = BytesMut::from(framed.as_ref());
         let decoded: Msg = decode(&mut buf).unwrap().unwrap();
@@ -101,7 +104,10 @@ mod tests {
 
     #[test]
     fn partial_frame_returns_none() {
-        let msg = Msg { x: 7, s: "partial".into() };
+        let msg = Msg {
+            x: 7,
+            s: "partial".into(),
+        };
         let framed = encode(&msg).unwrap();
         // Give only half the bytes.
         let mut buf = BytesMut::from(&framed[..framed.len() / 2]);
@@ -111,8 +117,14 @@ mod tests {
 
     #[test]
     fn two_frames_in_one_buffer() {
-        let m1 = Msg { x: 1, s: "one".into() };
-        let m2 = Msg { x: 2, s: "two".into() };
+        let m1 = Msg {
+            x: 1,
+            s: "one".into(),
+        };
+        let m2 = Msg {
+            x: 2,
+            s: "two".into(),
+        };
         let mut combined = BytesMut::new();
         combined.extend_from_slice(&encode(&m1).unwrap());
         combined.extend_from_slice(&encode(&m2).unwrap());
@@ -126,7 +138,10 @@ mod tests {
 
     #[test]
     fn unframed_payload_roundtrip() {
-        let msg = Msg { x: 99, s: "payload".into() };
+        let msg = Msg {
+            x: 99,
+            s: "payload".into(),
+        };
         let bytes = encode_payload(&msg).unwrap();
         let decoded: Msg = decode_payload(&bytes).unwrap();
         assert_eq!(msg, decoded);

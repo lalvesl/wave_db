@@ -47,9 +47,7 @@ struct WsClientInner {
     /// Outbound message sender (the write half of the WS connection).
     tx: tokio::sync::Mutex<
         futures_util::stream::SplitSink<
-            tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<TcpStream>,
-            >,
+            tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
             Message,
         >,
     >,
@@ -162,7 +160,10 @@ impl Transport for WsClient {
         let (tx, rx) = oneshot::channel();
         {
             let mut pending = self.inner.pending.lock();
-            pending.push_back(WsPending { seq: req.seq, reply: tx });
+            pending.push_back(WsPending {
+                seq: req.seq,
+                reply: tx,
+            });
         }
 
         let msg = encode_payload(&req)?;
@@ -182,10 +183,7 @@ impl Transport for WsClient {
         use crate::request::RequestKind;
         let client = self.clone();
         tokio::spawn(async move {
-            let req = TransportRequest::new(
-                u64::MAX,
-                RequestKind::Disconnect { user, tenant },
-            );
+            let req = TransportRequest::new(u64::MAX, RequestKind::Disconnect { user, tenant });
             let _ = client.send(req).await;
         });
     }
@@ -269,7 +267,9 @@ impl Drop for WsTestServer {
 
 /// Handle one WebSocket client connection.
 async fn handle_ws_connection(stream: TcpStream, state: WsTestServerState) {
-    let Ok(ws_stream) = accept_async(stream).await else { return };
+    let Ok(ws_stream) = accept_async(stream).await else {
+        return;
+    };
     let (mut write, mut read) = ws_stream.split();
 
     while let Some(msg) = read.next().await {
@@ -288,18 +288,26 @@ async fn handle_ws_connection(stream: TcpStream, state: WsTestServerState) {
         let seq = req.seq;
         state.received.lock().push(req);
 
-        let resp = state.script.lock().pop_front().unwrap_or(TransportResponse {
-            seq,
-            payload: Vec::new(),
-            owner_url: None,
-            backup_url: None,
-            notifications: Vec::new(),
-        });
+        let resp = state
+            .script
+            .lock()
+            .pop_front()
+            .unwrap_or(TransportResponse {
+                seq,
+                payload: Vec::new(),
+                owner_url: None,
+                backup_url: None,
+                notifications: Vec::new(),
+            });
 
         let Ok(resp_bytes) = encode_payload(&resp) else {
             break;
         };
-        if write.send(Message::Binary(resp_bytes.to_vec().into())).await.is_err() {
+        if write
+            .send(Message::Binary(resp_bytes.to_vec().into()))
+            .await
+            .is_err()
+        {
             break;
         }
     }
@@ -326,7 +334,13 @@ mod tests {
         let (client, read_loop) = WsClient::connect(&server.ws_url()).await.unwrap();
         let _rl = tokio::spawn(read_loop);
 
-        let req = TransportRequest::new(1, RequestKind::Connect { user: 1, tenant: 100 });
+        let req = TransportRequest::new(
+            1,
+            RequestKind::Connect {
+                user: 1,
+                tenant: 100,
+            },
+        );
         let resp = client.send(req).await.unwrap();
 
         assert_eq!(resp.seq, 1);

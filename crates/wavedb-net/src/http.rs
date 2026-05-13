@@ -149,9 +149,7 @@ impl HttpClient {
                 {
                     if let Ok(bytes) = resp.bytes().await {
                         if !bytes.is_empty() {
-                            if let Ok(tr) =
-                                decode_payload::<TransportResponse>(&bytes)
-                            {
+                            if let Ok(tr) = decode_payload::<TransportResponse>(&bytes) {
                                 self.dispatch_notifications(&tr.notifications);
                             }
                         }
@@ -192,10 +190,7 @@ impl HttpClient {
     }
 
     /// Publish notifications to the local event bus.
-    fn dispatch_notifications(
-        &self,
-        notifications: &[crate::request::Notification],
-    ) {
+    fn dispatch_notifications(&self, notifications: &[crate::request::Notification]) {
         for n in notifications {
             let event = if n.deleted {
                 AnchorEvent::deleted(n.anchor_id)
@@ -212,7 +207,10 @@ impl Transport for HttpClient {
         let (tx, rx) = oneshot::channel();
         {
             let mut queue = self.inner.queue.lock();
-            queue.push_back(PendingRequest { request: req, reply: tx });
+            queue.push_back(PendingRequest {
+                request: req,
+                reply: tx,
+            });
         }
         self.inner.notify.notify_one();
         rx.await
@@ -267,10 +265,7 @@ impl Default for TestServerState {
 
 /// Handle a POST to `/` — deserialise the body as a [`TransportRequest`] and
 /// return a scripted [`TransportResponse`].
-async fn handle_post(
-    State(state): State<TestServerState>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn handle_post(State(state): State<TestServerState>, body: Bytes) -> impl IntoResponse {
     if body.is_empty() {
         // Idle keep-alive tick — return empty 200.
         return (StatusCode::OK, Bytes::new());
@@ -283,16 +278,22 @@ async fn handle_post(
 
     state.received.lock().push(req.clone());
 
-    let resp = state.script.lock().pop_front().unwrap_or(TransportResponse {
-        seq: req.seq,
-        payload: Vec::new(),
-        owner_url: None,
-        backup_url: None,
-        notifications: Vec::new(),
-    });
+    let resp = state
+        .script
+        .lock()
+        .pop_front()
+        .unwrap_or(TransportResponse {
+            seq: req.seq,
+            payload: Vec::new(),
+            owner_url: None,
+            backup_url: None,
+            notifications: Vec::new(),
+        });
 
-    encode_payload(&resp)
-        .map_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |bytes| (StatusCode::OK, bytes))
+    encode_payload(&resp).map_or_else(
+        |_| (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
+        |bytes| (StatusCode::OK, bytes),
+    )
 }
 
 /// An in-process HTTP server for testing the [`HttpClient`].
@@ -365,7 +366,13 @@ mod tests {
         let client2 = client.clone();
         let _worker = tokio::spawn(async move { client2.run().await });
 
-        let req = TransportRequest::new(1, RequestKind::Connect { user: 1, tenant: 100 });
+        let req = TransportRequest::new(
+            1,
+            RequestKind::Connect {
+                user: 1,
+                tenant: 100,
+            },
+        );
         let resp = client.send(req).await.unwrap();
         assert_eq!(resp.seq, 1);
         assert_eq!(resp.owner_url.as_deref(), Some("http://owner"));
@@ -394,10 +401,7 @@ mod tests {
         for i in 1u64..=3 {
             let c = client.clone();
             handles.push(tokio::spawn(async move {
-                let req = TransportRequest::new(
-                    i,
-                    RequestKind::Disconnect { user: 0, tenant: 0 },
-                );
+                let req = TransportRequest::new(i, RequestKind::Disconnect { user: 0, tenant: 0 });
                 c.send(req).await.unwrap()
             }));
         }
