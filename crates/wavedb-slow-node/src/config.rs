@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "wavedb-slow-node", about = "WaveDB Slow-Node — cold history store")]
+#[command(
+    name = "wavedb-slow-node",
+    about = "WaveDB Slow-Node — cold history store"
+)]
 pub struct Args {
     /// Socket address to listen on.
     #[arg(long, default_value = "0.0.0.0:7800")]

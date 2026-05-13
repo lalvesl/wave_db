@@ -51,7 +51,11 @@ impl HistoryStore {
 
         for entry in journal.all_entries() {
             if let JournalEntry::WriteVersioned { record } = entry {
+                // These u128 fields hold u64 values packed into u128 at flush
+                // time; the upper 64 bits are always zero.
+                #[allow(clippy::cast_possible_truncation)]
                 let tenant = record.old_modification_id as u64;
+                #[allow(clippy::cast_possible_truncation)]
                 let write_seq = record.new_modification_id as u64;
                 if let Ok(bytes) = record.to_bytes() {
                     index.insert((tenant, record.id), bytes);
@@ -74,26 +78,26 @@ impl HistoryStore {
     /// Apply a [`FlushBatch`]: journal all records and update the in-memory index.
     ///
     /// Returns the write sequence that was durably stored.
-    pub fn apply_flush(
-        &self,
-        batch: FlushBatch,
-    ) -> wavedb_storage::StorageResult<u64> {
+    pub fn apply_flush(&self, batch: FlushBatch) -> wavedb_storage::StorageResult<u64> {
+        let write_seq = batch.write_seq;
+        let tenant = batch.tenant;
         let mut guard = self.inner.lock();
         for record in batch.records {
             let journaled = VersionedRecord {
-                old_modification_id: u128::from(batch.tenant),
-                new_modification_id: u128::from(batch.write_seq),
+                old_modification_id: u128::from(tenant),
+                new_modification_id: u128::from(write_seq),
                 ..record.clone()
             };
             let bytes = journaled.to_bytes()?;
             guard
                 .journal
                 .append(JournalEntry::WriteVersioned { record: journaled })?;
-            guard.index.insert((batch.tenant, record.id), bytes);
+            guard.index.insert((tenant, record.id), bytes);
         }
         guard.journal.flush()?;
-        guard.watermark.advance(batch.tenant, batch.write_seq);
-        Ok(batch.write_seq)
+        guard.watermark.advance(tenant, write_seq);
+        drop(guard);
+        Ok(write_seq)
     }
 
     /// Look up a versioned record by `(tenant, record_id)`.

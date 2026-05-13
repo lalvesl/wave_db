@@ -42,16 +42,16 @@ async fn handle_flush(
         Err(_) => return (StatusCode::BAD_REQUEST, Bytes::new()),
     };
 
-    match store.apply_flush(batch) {
-        Ok(write_seq) => {
+    store.apply_flush(batch).map_or_else(
+        |_| (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
+        |write_seq| {
             let ack = FlushAck { write_seq };
             encode_payload(&ack).map_or(
                 (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
                 |b| (StatusCode::OK, b),
             )
-        }
-        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
-    }
+        },
+    )
 }
 
 // ── History handler ───────────────────────────────────────────────────────────
