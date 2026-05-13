@@ -1,22 +1,14 @@
 //! WaveDB Quick-Node server binary.
-//!
-//! A Quick-Node owns a configurable set of `(TENANT_ID, SHARD_ID)` partitions,
-//! serves client requests over HTTP POST and WebSocket, replicates writes to
-//! peer nodes, and periodically flushes history to a Slow-Node.
 
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
 
-mod config;
-mod node;
-mod ownership;
-mod replication;
-mod ring;
-mod server;
-
-use config::{Args, Config};
-use node::QuickNode;
+use wavedb_quick_node::{
+    config::{Args, Config},
+    node::QuickNode,
+    server,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

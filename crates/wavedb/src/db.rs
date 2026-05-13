@@ -196,7 +196,7 @@ impl Db {
     }
 
     /// Send a typed [`RequestKind`] and return the raw payload bytes.
-    pub(crate) async fn send(&self, kind: RequestKind) -> Result<Vec<u8>> {
+    pub async fn send(&self, kind: RequestKind) -> Result<Vec<u8>> {
         let seq = self.inner.seq.fetch_add(1, Ordering::Relaxed);
         let req = TransportRequest::new(seq, kind);
         let resp = self.raw_send(req).await?;

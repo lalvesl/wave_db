@@ -1,16 +1,14 @@
 //! WaveDB Slow-Node — cold history store.
 
-mod config;
-mod flush;
-mod server;
-mod store;
-
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use config::{Args, Config};
-use store::HistoryStore;
+use wavedb_slow_node::{
+    config::{Args, Config},
+    server,
+    store::HistoryStore,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
