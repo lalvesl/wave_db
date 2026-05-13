@@ -7,6 +7,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[lib]
+name = "wavedb_quick_node"
+path = "src/lib.rs"
+
 [[bin]]
 name = "wavedb-quick-node"
 path = "src/main.rs"

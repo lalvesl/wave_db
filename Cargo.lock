@@ -2429,8 +2429,18 @@ dependencies = [
 name = "wavedb-test-cluster"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "bytes",
+ "postcard",
+ "reqwest",
+ "serde",
  "tokio",
+ "wavedb",
  "wavedb-core",
+ "wavedb-net",
+ "wavedb-quick-node",
+ "wavedb-slow-node",
+ "wavedb-storage",
 ]
 
 [[package]]
