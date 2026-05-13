@@ -29,10 +29,7 @@ pub fn router(store: HistoryStore) -> Router {
 
 // ── Flush handler ─────────────────────────────────────────────────────────────
 
-async fn handle_flush(
-    State(store): State<Arc<HistoryStore>>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn handle_flush(State(store): State<Arc<HistoryStore>>, body: Bytes) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -46,20 +43,16 @@ async fn handle_flush(
         |_| (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
         |write_seq| {
             let ack = FlushAck { write_seq };
-            encode_payload(&ack).map_or(
-                (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
-                |b| (StatusCode::OK, b),
-            )
+            encode_payload(&ack).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+                (StatusCode::OK, b)
+            })
         },
     )
 }
 
 // ── History handler ───────────────────────────────────────────────────────────
 
-async fn handle_history(
-    State(store): State<Arc<HistoryStore>>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn handle_history(State(store): State<Arc<HistoryStore>>, body: Bytes) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -71,10 +64,9 @@ async fn handle_history(
 
     let data = store.get(req.tenant, req.record_id).unwrap_or_default();
     let resp = HistoryReadResponse { data };
-    encode_payload(&resp).map_or(
-        (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
-        |b| (StatusCode::OK, b),
-    )
+    encode_payload(&resp).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+        (StatusCode::OK, b)
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
