@@ -92,12 +92,10 @@ impl OwnershipMap {
     pub fn remove(&self, tenant: u64, range: ShardRange) -> bool {
         let target = PartitionOwnership { tenant, range };
         let mut guard = self.inner.write();
-        if let Some(pos) = guard.iter().position(|p| p == &target) {
+        guard.iter().position(|p| p == &target).is_some_and(|pos| {
             guard.swap_remove(pos);
             true
-        } else {
-            false
-        }
+        })
     }
 
     /// Returns `true` if this node owns `(tenant, shard)`.

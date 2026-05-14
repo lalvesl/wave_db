@@ -11,6 +11,8 @@ use wavedb_test_cluster::{ClusterSpec, TestCluster};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use wavedb_net::request::RequestKind;
+
     // ── Spawn cluster ────────────────────────────────────────────────────────
     let mut cluster = TestCluster::spawn(ClusterSpec {
         num_quick_nodes: 2,
@@ -32,7 +34,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Write to node 0 ──────────────────────────────────────────────────────
     let db0 = cluster.open_user_via(1, 42, 0).await;
-    use wavedb_net::request::RequestKind;
     let resp = db0
         .send(RequestKind::Write {
             struct_id: 1,

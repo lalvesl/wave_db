@@ -39,7 +39,7 @@
 //!   the complete immutable history of each record.
 //! - **Authorship** — `user` (u48) and `device_created` capture who wrote each
 //!   version and from which device.
-//! - **Access control** — `permission: Option<`[`PermissionRef`]`>`.  `None`
+//! - **Access control** — <code>permission: Option<[PermissionRef]></code>.  `None`
 //!   (the common case) means tenant-wide access; postcard encodes it in 1 byte.
 //!
 //! ## Operation modes

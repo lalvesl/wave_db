@@ -48,11 +48,11 @@ fn compose(order: Order1, items: &[OrderItem1]) -> OrderSummary1 {
         metadata: order.metadata,
         customer: order.customer,
         amount_cents: order.amount_cents,
-        item_count: items.len() as u32,
+        item_count: u32::try_from(items.len()).unwrap_or(u32::MAX),
     }
 }
 
-fn decompose(summary: OrderSummary1) -> (Order1, Vec<OrderItem1>) {
+fn decompose(summary: &OrderSummary1) -> (Order1, Vec<OrderItem1>) {
     let order = Order1 {
         id: summary.id,
         metadata: summary.metadata.clone(),
@@ -127,7 +127,7 @@ fn main() {
     println!("Composed: {:?}", summary.item_count);
 
     // Execute rollback (lookup-first strategy — items missing from history store)
-    let (recovered_order, recovered_items) = decompose(summary);
+    let (recovered_order, recovered_items) = decompose(&summary);
     assert_eq!(recovered_order.customer, 7);
     assert_eq!(recovered_order.amount_cents, 4200);
     println!(

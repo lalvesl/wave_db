@@ -103,14 +103,16 @@ impl ReplicationWatermark {
 
     /// Record that `seq` has been dispatched to `peer`.
     pub fn record_send(&self, peer: NodeId, seq: u64) {
-        if let Some(state) = self.peers.read().get(&peer).cloned() {
+        let state = self.peers.read().get(&peer).cloned();
+        if let Some(state) = state {
             state.record_send(seq);
         }
     }
 
     /// Record that `peer` has acknowledged writes up to `seq`.
     pub fn record_ack(&self, peer: NodeId, seq: u64) {
-        if let Some(state) = self.peers.read().get(&peer).cloned() {
+        let state = self.peers.read().get(&peer).cloned();
+        if let Some(state) = state {
             state.record_ack(seq);
         }
     }
