@@ -1,0 +1,41 @@
+[advisories]
+version = 2
+# Deny crates with known CVEs.
+ignore = []
+
+[licenses]
+version = 2
+# Licenses explicitly allowed. Anything else triggers a warning or error.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "CC0-1.0",
+]
+# Crates whose license cannot be determined default to deny.
+unlicensed = "deny"
+# GPL-family are not used; warn rather than deny so dev tools don't block.
+copyleft = "warn"
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+# Warn on duplicate versions of the same crate; exact duplicates are fine.
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+# Only allow dependencies from crates.io.
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

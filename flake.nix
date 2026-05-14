@@ -1,5 +1,5 @@
 {
-  description = "Rust development environment with cargo-mutants and sqlx";
+  description = "WaveDB — user-partitioned, tenant-centric embedded database";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -25,26 +25,27 @@
           inherit system overlays;
         };
 
-        rustToolchain = pkgs.rust-bin.stable."1.95.0".default.override {
-          extensions = [
-            "rust-src"
-            "rust-analyzer"
-            "clippy"
-            "rustfmt"
-          ];
-          targets = [ "wasm32-unknown-unknown" ];
-        };
+        # Reads channel, components, and targets from rust-toolchain.toml.
+        rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
       in
       {
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             pkg-config
             rustToolchain
+
+            # Code quality
             cargo-mutants
-            sqlx-cli
-            nixpkgs-fmt
+            cargo-deny
             taplo
+            nixpkgs-fmt
             prettier
+
+            # Testing
+            cargo-nextest
+
+            # WASM
+            wasm-pack
           ];
 
           buildInputs =
@@ -62,6 +63,7 @@
             export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig"
           '';
         };
+
         apps.fmt = {
           type = "app";
           program = "${pkgs.writeShellApplication {

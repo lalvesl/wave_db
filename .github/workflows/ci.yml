@@ -1,0 +1,194 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel any in-progress run for the same branch/PR when a new commit is pushed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ── Format + Clippy + Docs ──────────────────────────────────────────────────
+  check:
+    name: check (fmt · clippy · doc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-check-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-check-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+            cargo-check-${{ runner.os }}-
+
+      - name: fmt
+        run: nix develop --command cargo fmt --all --check
+
+      - name: clippy
+        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: doc
+        run: nix develop --command cargo doc --workspace --no-deps
+
+  # ── Unit + integration tests ────────────────────────────────────────────────
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+            cargo-test-${{ runner.os }}-
+
+      - name: unit tests
+        run: nix develop --command cargo test --workspace
+
+      - name: doc tests
+        run: nix develop --command cargo test --workspace --doc
+
+  # ── End-to-end tests (nextest) ──────────────────────────────────────────────
+  e2e:
+    name: e2e (nextest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-e2e-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-e2e-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+            cargo-e2e-${{ runner.os }}-
+
+      - name: nextest
+        run: nix develop --command cargo nextest run --workspace --tests --release
+
+  # ── WASM tests ──────────────────────────────────────────────────────────────
+  wasm:
+    name: wasm (wasm-pack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+            cargo-wasm-${{ runner.os }}-
+
+      - name: wasm-pack test
+        # Uses the system Chrome bundled in ubuntu-latest; wasm-pack from Nix.
+        run: nix develop --command wasm-pack test --headless --chrome crates/wavedb-wasm
+
+  # ── Benchmarks (advisory, PR only) ─────────────────────────────────────────
+  bench:
+    name: bench (criterion)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-bench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
+          restore-keys: |
+            cargo-bench-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+            cargo-bench-${{ runner.os }}-
+
+      - name: run benchmarks
+        run: nix develop --command cargo bench --workspace -- --save-baseline pr
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.sha }}
+          path: target/criterion
+          if-no-files-found: warn
+
+  # ── Dependency audit ────────────────────────────────────────────────────────
+  audit:
+    name: audit (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cachix/install-nix-action@v27
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      - name: cargo deny check
+        run: nix develop --command cargo deny check
