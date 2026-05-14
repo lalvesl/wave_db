@@ -27,7 +27,7 @@ struct PeerState {
 }
 
 impl PeerState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             acked: AtomicU64::new(0),
             sent: AtomicU64::new(0),

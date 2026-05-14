@@ -16,7 +16,7 @@ use wavedb_net::mock::ScriptedReply;
 // ── Schema ───────────────────────────────────────────────────────────────────
 
 #[wave_db(struct_id = 20, NonUnique)]
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Invoice1 {
     pub id: Id,
     pub metadata: Metadata,
@@ -26,7 +26,7 @@ pub struct Invoice1 {
 pub type Invoice = Invoice1;
 
 #[wave_db(struct_id = 21, NestedNonUnique)]
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InvoiceLine1 {
     pub id: Id,
     pub metadata: Metadata,

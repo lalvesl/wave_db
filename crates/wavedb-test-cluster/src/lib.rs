@@ -318,7 +318,7 @@ impl TestCluster {
     // ── Accessors ─────────────────────────────────────────────────────────
 
     /// The tenant that all Quick-Nodes in this cluster own.
-    pub fn owned_tenant(&self) -> u64 {
+    pub const fn owned_tenant(&self) -> u64 {
         self.owned_tenant
     }
 

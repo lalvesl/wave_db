@@ -251,7 +251,7 @@ impl QuickNode {
         }
     }
 
-    fn handle_disconnect(&self, seq: u64, _user: u64, _tenant: u64) -> TransportResponse {
+    const fn handle_disconnect(&self, seq: u64, _user: u64, _tenant: u64) -> TransportResponse {
         TransportResponse {
             seq,
             payload: Vec::new(),

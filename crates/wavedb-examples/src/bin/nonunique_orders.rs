@@ -15,7 +15,7 @@ use wavedb_net::mock::ScriptedReply;
 // ── Schema ───────────────────────────────────────────────────────────────────
 
 #[wave_db(struct_id = 10, NonUnique, btree_threshold = 50)]
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Order1 {
     pub id: Id,
     pub metadata: Metadata,

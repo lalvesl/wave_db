@@ -16,7 +16,7 @@ use wavedb_net::mock::ScriptedReply;
 // ── Schema ───────────────────────────────────────────────────────────────────
 
 #[wave_db(struct_id = 1)]
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UserProfile1 {
     pub id: Id,
     pub metadata: Metadata,
@@ -75,16 +75,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Db::open_with_transport(mock, /* user= */ 1, /* tenant= */ 42).await?;
 
     // Client role: search → absent → create
-    let profile = match UserProfile::search(&db).await? {
-        Some(existing) => {
-            println!("Found existing profile: {existing:?}");
-            existing
-        }
-        None => {
-            println!("No profile yet — creating Aurora");
-            new_profile.clone().update(&db).await?;
-            new_profile
-        }
+    let profile = if let Some(existing) = UserProfile::search(&db).await? {
+        println!("Found existing profile: {existing:?}");
+        existing
+    } else {
+        println!("No profile yet — creating Aurora");
+        new_profile.clone().update(&db).await?;
+        new_profile
     };
     assert_eq!(profile.display_name, "Aurora");
 

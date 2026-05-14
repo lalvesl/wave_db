@@ -120,7 +120,7 @@ fn main() {
             quantity: 1,
         },
     ];
-    let summary = compose(order.clone(), &items);
+    let summary = compose(order, &items);
     assert_eq!(summary.customer, 7);
     assert_eq!(summary.amount_cents, 4200);
     assert_eq!(summary.item_count, 2);

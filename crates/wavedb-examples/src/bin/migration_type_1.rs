@@ -16,7 +16,7 @@ use wavedb_core::migration::{MigrationRegistry, VersionRef};
 // ── Schema — v41 ─────────────────────────────────────────────────────────────
 
 #[wave_db(struct_id = 41)]
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message41 {
     pub id: Id,
     pub metadata: Metadata,
@@ -27,7 +27,7 @@ pub struct Message41 {
 // ── Schema — v42 ─────────────────────────────────────────────────────────────
 
 #[wave_db(struct_id = 41)]
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message42 {
     pub id: Id,
     pub metadata: Metadata,
@@ -94,12 +94,12 @@ fn main() {
     assert_eq!(new_msg.body, old_msg.body);
     assert_eq!(new_msg.author, old_msg.author);
     assert!(!new_msg.edited, "new field defaults to false");
-    println!("Migrated: {:?}", new_msg);
+    println!("Migrated: {new_msg:?}");
 
     // Execute rollback
     let rolled_back = rollback_42_41(new_msg);
     assert_eq!(rolled_back.body, old_msg.body);
-    println!("Rolled back: {:?}", rolled_back);
+    println!("Rolled back: {rolled_back:?}");
 
     // Multi-hop: register v42 → v43 and resolve v41 → v43
     let v43 = VersionRef::new(SID, 43);

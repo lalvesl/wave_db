@@ -51,7 +51,7 @@ impl std::str::FromStr for OwnershipSpec {
             }
         }
 
-        Ok(OwnershipSpec {
+        Ok(Self {
             tenant: tenant.ok_or("missing tenant= in --owns spec")?,
             shard_start: shard_start.ok_or("missing shards= in --owns spec")?,
             shard_end: shard_end.ok_or("missing shards= in --owns spec")?,
