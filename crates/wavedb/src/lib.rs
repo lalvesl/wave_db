@@ -38,4 +38,5 @@ pub mod prelude {
 // Pass-through re-exports so advanced users don't have to add sub-crates.
 pub use wavedb_core;
 pub use wavedb_macros;
+#[cfg(feature = "native")]
 pub use wavedb_storage;

@@ -32,6 +32,7 @@
             "clippy"
             "rustfmt"
           ];
+          targets = [ "wasm32-unknown-unknown" ];
         };
       in
       {

@@ -13,16 +13,24 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod frame;
-pub mod http;
 pub mod mock;
-pub mod notify;
 pub mod request;
+
+// Native-only modules (tokio / tungstenite / axum / reqwest).
+#[cfg(feature = "native")]
+pub mod http;
+#[cfg(feature = "native")]
+pub mod notify;
+#[cfg(feature = "native")]
 pub mod ws;
 
+#[cfg(feature = "native")]
 pub use http::HttpClient;
 pub use mock::MockTransport;
+#[cfg(feature = "native")]
 pub use notify::EventBus;
 pub use request::{TransportRequest, TransportResponse};
+#[cfg(feature = "native")]
 pub use ws::WsClient;
 
 use std::future::Future;
