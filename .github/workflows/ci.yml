@@ -50,14 +50,10 @@ jobs:
       - name: doc
         run: nix develop --command cargo doc --workspace --no-deps
 
-  # ── Unit + integration tests ────────────────────────────────────────────────
-  test:
-    name: test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  # ── Unit + integration tests — Linux (Nix) ────────────────────────────────
+  test-linux:
+    name: test (ubuntu · nix)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -74,16 +70,63 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
+          key: cargo-test-Linux-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
           restore-keys: |
-            cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-            cargo-test-${{ runner.os }}-
+            cargo-test-Linux-${{ hashFiles('**/Cargo.lock') }}
+            cargo-test-Linux-
 
       - name: unit tests
         run: nix develop --command cargo test --workspace
 
       - name: doc tests
         run: nix develop --command cargo test --workspace --doc
+
+  # ── Unit + integration tests — macOS (native) ─────────────────────────────
+  test-macos:
+    name: test (macos · native)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Native toolchain: reads channel/components/targets from rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos
+
+      - name: unit tests
+        run: cargo test --workspace
+
+      - name: doc tests
+        run: cargo test --workspace --doc
+
+  # ── Unit + integration tests — Windows (native) ───────────────────────────
+  test-windows:
+    name: test (windows · native)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
+
+      - name: unit tests
+        run: cargo test --workspace
+
+      - name: doc tests
+        run: cargo test --workspace --doc
 
   # ── End-to-end tests (nextest) ──────────────────────────────────────────────
   e2e:
