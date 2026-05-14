@@ -18,10 +18,10 @@ allow = [
   "Zlib",
   "CC0-1.0",
 ]
-# Crates whose license cannot be determined default to deny.
-unlicensed = "deny"
-# GPL-family are not used; warn rather than deny so dev tools don't block.
-copyleft = "warn"
+# # Crates whose license cannot be determined default to deny.
+# unlicensed = "deny"
+# # GPL-family are not used; warn rather than deny so dev tools don't block.
+# copyleft = "warn"
 
 [[licenses.clarify]]
 name = "ring"

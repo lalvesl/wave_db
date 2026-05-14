@@ -11,11 +11,12 @@
   };
 
   outputs =
-    { self
-    , nixpkgs
-    , flake-utils
-    , rust-overlay
-    , ...
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+      rust-overlay,
+      ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
@@ -66,21 +67,23 @@
 
         apps.fmt = {
           type = "app";
-          program = "${pkgs.writeShellApplication {
-            name = "fmt";
-            runtimeInputs = with pkgs; [
-              rustToolchain
-              nixpkgs-fmt
-              taplo
-              prettier
-            ];
-            text = ''
-              cargo fmt --all
-              nixpkgs-fmt .
-              taplo fmt
-              prettier --write "**/*.md"
-            '';
-          }}/bin/fmt";
+          program = "${
+            pkgs.writeShellApplication {
+              name = "fmt";
+              runtimeInputs = with pkgs; [
+                rustToolchain
+                nixpkgs-fmt
+                taplo
+                prettier
+              ];
+              text = ''
+                cargo fmt --all
+                nixpkgs-fmt .
+                taplo fmt
+                prettier --write "**/*.md"
+              '';
+            }
+          }/bin/fmt";
         };
       }
     );
