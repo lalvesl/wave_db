@@ -20,3 +20,17 @@ crc32fast.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+criterion.workspace = true
+wavedb-core = { path = "../wavedb-core" }
+
+[[bench]]
+name = "storage"
+harness = false
+
+[[bench]]
+name = "index"
+harness = false
+
+[[bench]]
+name = "compression"
+harness = false

@@ -37,3 +37,9 @@ futures-util = { workspace = true, optional = true }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 proptest.workspace = true
+criterion.workspace = true
+serde.workspace = true
+
+[[bench]]
+name = "network"
+harness = false
