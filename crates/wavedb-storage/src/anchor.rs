@@ -28,9 +28,15 @@ impl From<wavedb_core::Id> for AnchorKey {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AnchorMode {
     /// Full live record bytes in the anchor slot.
-    Inline { bytes: Vec<u8> },
+    Inline {
+        /// The serialised object bytes.
+        bytes: Vec<u8>,
+    },
     /// Pointer to the versioned record.
-    Pointer { versioned_id: u128 },
+    Pointer {
+        /// ID of the versioned record that holds the full data.
+        versioned_id: u128,
+    },
 }
 
 /// The kind of data stored in an anchor slot.
@@ -38,14 +44,25 @@ pub enum AnchorMode {
 pub enum AnchorKind {
     /// Primary anchor for a record.
     Primary {
+        /// Timestamp of the most recent write (`created_at` of the live version).
         current_version_at: u64,
+        /// Whether the live data is inline or referenced by a versioned record.
         mode: AnchorMode,
+        /// Keys of all secondary anchors that point back to this primary.
         secondaries: Vec<AnchorKey>,
     },
     /// Secondary anchor — redirect to a primary.
-    Secondary { primary: AnchorKey, marker: u64 },
+    Secondary {
+        /// The primary anchor this secondary resolves to.
+        primary: AnchorKey,
+        /// Opaque version marker set at creation time.
+        marker: u64,
+    },
     /// Tombstone for a deleted primary.
-    PrimaryTombstone { final_version_at: u64 },
+    PrimaryTombstone {
+        /// Timestamp of the deletion.
+        final_version_at: u64,
+    },
     /// Tombstone for a deleted secondary.
     SecondaryTombstone,
 }
@@ -61,6 +78,15 @@ pub struct AnchorSlot {
 
 impl AnchorSlot {
     /// Create a new inline primary anchor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavedb_storage::AnchorSlot;
+    /// let slot = AnchorSlot::inline(b"hello", 1_000_000);
+    /// assert!(slot.is_live_primary());
+    /// assert_eq!(slot.inline_bytes().unwrap(), b"hello");
+    /// ```
     pub fn inline(bytes: &[u8], current_version_at: u64) -> Self {
         Self {
             kind: AnchorKind::Primary {
@@ -135,6 +161,16 @@ impl AnchorSlot {
     }
 
     /// Serialize to bytes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavedb_storage::AnchorSlot;
+    /// let slot = AnchorSlot::inline(b"data", 0);
+    /// let bytes = slot.to_bytes().unwrap();
+    /// let decoded = AnchorSlot::from_bytes(&bytes).unwrap();
+    /// assert_eq!(decoded.inline_bytes().unwrap(), b"data");
+    /// ```
     pub fn to_bytes(&self) -> crate::StorageResult<Vec<u8>> {
         Ok(postcard::to_allocvec(self)?)
     }

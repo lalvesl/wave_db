@@ -62,7 +62,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   5. update (update bio) → ok
     //   6. search → Some(updated_profile)
     let mock = MockTransport::new();
-    mock.push(ScriptedReply::connect("ws://owner:7700", "ws://backup:7700"));
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
     mock.push(ScriptedReply::ok(Vec::new()));
     mock.push(ScriptedReply::ok(Vec::new()));
     mock.push(ScriptedReply::ok(serialized));

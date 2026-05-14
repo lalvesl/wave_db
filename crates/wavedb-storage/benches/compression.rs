@@ -31,13 +31,9 @@ fn bench_heap_decompress(c: &mut Criterion) {
         let compressed = heap_zstd::compress(&payload).unwrap();
         group.throughput(Throughput::Bytes(size as u64));
 
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &compressed,
-            |b, data| {
-                b.iter(|| criterion::black_box(heap_zstd::decompress(data).unwrap()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &compressed, |b, data| {
+            b.iter(|| criterion::black_box(heap_zstd::decompress(data).unwrap()));
+        });
     }
 
     group.finish();
@@ -50,22 +46,14 @@ fn bench_page_codec(c: &mut Criterion) {
         let payload = make_payload(size);
         group.throughput(Throughput::Bytes(size as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("encode", size),
-            &payload,
-            |b, data| {
-                b.iter(|| criterion::black_box(page_codec::encode_stack(data, 0).unwrap()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("encode", size), &payload, |b, data| {
+            b.iter(|| criterion::black_box(page_codec::encode_stack(data, 0).unwrap()));
+        });
 
         let encoded = page_codec::encode_stack(&payload, 0).unwrap();
-        group.bench_with_input(
-            BenchmarkId::new("decode", size),
-            &encoded,
-            |b, data| {
-                b.iter(|| criterion::black_box(page_codec::decode_stack(data, 0).unwrap()));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("decode", size), &encoded, |b, data| {
+            b.iter(|| criterion::black_box(page_codec::decode_stack(data, 0).unwrap()));
+        });
     }
 
     group.finish();

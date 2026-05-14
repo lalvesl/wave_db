@@ -28,6 +28,16 @@ pub const LENGTH_PREFIX_BYTES: usize = 4;
 ///
 /// The resulting buffer begins with a 4-byte LE length followed by the
 /// postcard-serialised payload.
+///
+/// # Examples
+///
+/// ```
+/// use wavedb_net::frame;
+/// use bytes::BytesMut;
+///
+/// let framed = frame::encode(&42u32).unwrap();
+/// assert!(framed.len() >= 4); // 4-byte length prefix + payload
+/// ```
 pub fn encode<T: Serialize>(value: &T) -> Result<Bytes> {
     let payload = postcard::to_allocvec(value)?;
     let mut buf = BytesMut::with_capacity(LENGTH_PREFIX_BYTES + payload.len());
@@ -45,6 +55,19 @@ pub fn encode<T: Serialize>(value: &T) -> Result<Bytes> {
 /// `Ok(None)` when more bytes are needed, and `Err` on corruption.
 ///
 /// On success the consumed bytes are advanced in `buf`.
+///
+/// # Examples
+///
+/// ```
+/// use wavedb_net::frame;
+/// use bytes::BytesMut;
+///
+/// let framed = frame::encode(&100u32).unwrap();
+/// let mut buf = BytesMut::from(framed.as_ref());
+/// let decoded: u32 = frame::decode(&mut buf).unwrap().unwrap();
+/// assert_eq!(decoded, 100u32);
+/// assert!(buf.is_empty());
+/// ```
 pub fn decode<T: for<'de> Deserialize<'de>>(buf: &mut BytesMut) -> Result<Option<T>> {
     if buf.len() < LENGTH_PREFIX_BYTES {
         return Ok(None);

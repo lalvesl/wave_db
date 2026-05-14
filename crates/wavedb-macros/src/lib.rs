@@ -7,6 +7,8 @@
 //! 4. Accepts flags: `NonUnique`, `NestedNonUnique`.
 //! 5. Accepts (optional) `primary_anchor` and `secondary_anchor` attributes.
 
+#![warn(missing_docs)]
+
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::meta::ParseNestedMeta;

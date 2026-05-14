@@ -75,13 +75,23 @@ fn main() {
 
     // Register compose migration: Order + OrderItem → OrderSummary (with rollback)
     let mut registry = MigrationRegistry::new();
-    registry.register_compose(&[order_v1, item_v1], summary_v1, /* has_rollback= */ true);
+    registry.register_compose(
+        &[order_v1, item_v1],
+        summary_v1,
+        /* has_rollback= */ true,
+    );
 
     // Both sources can independently reach the target
     assert!(registry.resolve(order_v1, summary_v1).is_ok());
     assert!(registry.resolve(item_v1, summary_v1).is_ok());
-    println!("Order → OrderSummary: {} step(s)", registry.resolve(order_v1, summary_v1).unwrap().len());
-    println!("OrderItem → OrderSummary: {} step(s)", registry.resolve(item_v1, summary_v1).unwrap().len());
+    println!(
+        "Order → OrderSummary: {} step(s)",
+        registry.resolve(order_v1, summary_v1).unwrap().len()
+    );
+    println!(
+        "OrderItem → OrderSummary: {} step(s)",
+        registry.resolve(item_v1, summary_v1).unwrap().len()
+    );
 
     // Rollback path: OrderSummary → each source
     assert!(registry.can_rollback(summary_v1, order_v1));

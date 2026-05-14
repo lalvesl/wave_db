@@ -88,7 +88,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lines = vec![line_a.clone(), line_b.clone()];
 
     let mock = MockTransport::new();
-    mock.push(ScriptedReply::connect("ws://owner:7700", "ws://backup:7700"));
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
     // write invoice → ok
     mock.push(ScriptedReply::ok(Vec::new()));
     // write line_a → ok
@@ -119,8 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Query lines through the parent invoice anchor.
     // Production storage routes this to the parent's subtree, not the global
     // InvoiceLine index (which doesn't exist — InvoiceLine is NestedNonUnique).
-    let found_lines =
-        do_query_non_unique::<InvoiceLine>(&db, Expr::eq("product", 101u64)).await?;
+    let found_lines = do_query_non_unique::<InvoiceLine>(&db, Expr::eq("product", 101u64)).await?;
     assert_eq!(found_lines.len(), 2);
     println!(
         "Invoice lines for customer {}: {}",

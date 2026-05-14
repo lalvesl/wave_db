@@ -13,25 +13,45 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum JournalEntry {
     /// Write or update an anchor slot.
-    WriteAnchor { key: AnchorKey, slot: AnchorSlot },
+    WriteAnchor {
+        /// The anchor address.
+        key: AnchorKey,
+        /// The new slot content.
+        slot: AnchorSlot,
+    },
     /// Write a versioned record.
-    WriteVersioned { record: VersionedRecord },
+    WriteVersioned {
+        /// The versioned record to persist.
+        record: VersionedRecord,
+    },
     /// Delete an anchor (tombstone).
-    DeleteAnchor { key: AnchorKey },
+    DeleteAnchor {
+        /// The anchor address to tombstone.
+        key: AnchorKey,
+    },
     /// Free-space delta: record that a range was freed in a file.
     FreeSpace {
+        /// Which file the freed range belongs to.
         file_kind: FileKind,
+        /// Byte offset of the freed range.
         offset: u64,
+        /// Number of bytes freed.
         size: u64,
     },
     /// Dictionary update for a STRUCT_ID.
     DictUpdate {
+        /// The struct family the dictionary covers.
         struct_id: u32,
+        /// The new dictionary version.
         version: u32,
+        /// Raw zstd dictionary bytes.
         data: Vec<u8>,
     },
     /// Checkpoint marker: everything before this has been drained.
-    Checkpoint { sequence: u64 },
+    Checkpoint {
+        /// Monotonic sequence number of this checkpoint.
+        sequence: u64,
+    },
 }
 
 /// Which file a free-space entry refers to.

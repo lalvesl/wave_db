@@ -110,6 +110,22 @@ impl Db {
     /// transports.  The transport is expected to answer the first request —
     /// a `Connect` request — with `owner_url` and `backup_url` fields set
     /// in the response.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use wavedb::Db;
+    /// use wavedb_net::{MockTransport, mock::ScriptedReply};
+    ///
+    /// async fn example() -> wavedb_core::Result<()> {
+    ///     let mock = MockTransport::new();
+    ///     mock.push(ScriptedReply::connect("ws://owner:7700", "ws://backup:7700"));
+    ///     let db = Db::open_with_transport(mock, 1, 100).await?;
+    ///     assert_eq!(db.user(), 1);
+    ///     assert_eq!(db.tenant(), 100);
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn open_with_transport<T>(transport: T, user: u64, tenant: u64) -> Result<Self>
     where
         T: wavedb_net::Transport + Clone,
@@ -238,6 +254,15 @@ impl Db {
     ///
     /// Useful for unit tests that only exercise the query DSL or object
     /// serialisation without needing a network connection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavedb::Db;
+    /// let db = Db::noop(1, 100);
+    /// assert_eq!(db.user(), 1);
+    /// assert_eq!(db.tenant(), 100);
+    /// ```
     pub fn noop(user: u64, tenant: u64) -> Self {
         let send_fn: SendFn = Arc::new(|_req| {
             Box::pin(async {

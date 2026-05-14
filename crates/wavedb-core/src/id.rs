@@ -57,6 +57,17 @@ impl Id {
     ///
     /// Each value is masked to its field width; overflow bits are silently
     /// truncated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavedb_core::Id;
+    /// let id = Id::new(42, 0, 7, 1_000_000);
+    /// assert_eq!(id.tenant_id(), 42);
+    /// assert_eq!(id.shard_id(), 0);
+    /// assert_eq!(id.struct_id(), 7);
+    /// assert_eq!(id.created_at(), 1_000_000);
+    /// ```
     #[must_use]
     pub const fn new(tenant: u64, shard: u16, struct_id: u32, created_at: u64) -> Self {
         let v = ((tenant as u128 & TENANT_MASK) << TENANT_SHIFT)

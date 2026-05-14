@@ -76,15 +76,11 @@ fn bench_hash_functions(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
 
     group.bench_function("page_hash", |b| {
-        b.iter(|| {
-            criterion::black_box(hash::page_hash(7, 42, 3, 256))
-        });
+        b.iter(|| criterion::black_box(hash::page_hash(7, 42, 3, 256)));
     });
 
     group.bench_function("double_hash_step", |b| {
-        b.iter(|| {
-            criterion::black_box(hash::double_hash_step(7, 42, 3, 256))
-        });
+        b.iter(|| criterion::black_box(hash::double_hash_step(7, 42, 3, 256)));
     });
 
     // Combined: primary hash + double-hash step (collision resolution cost).

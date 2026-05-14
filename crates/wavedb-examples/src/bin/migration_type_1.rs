@@ -77,7 +77,10 @@ fn main() {
     println!("Forward plan: {} step(s)", plan.len());
 
     // Rollback plan: v42 → v41
-    assert!(registry.can_rollback(v42, v41), "rollback must be registered");
+    assert!(
+        registry.can_rollback(v42, v41),
+        "rollback must be registered"
+    );
     println!("Rollback v42 → v41: available");
 
     // Execute forward migration on a v41 record

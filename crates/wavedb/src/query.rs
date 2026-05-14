@@ -153,11 +153,29 @@ pub enum Expr {
 
 impl Expr {
     /// Match all records.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavedb::query::Expr;
+    /// let e = Expr::all();
+    /// assert!(e.to_bytes().is_ok());
+    /// ```
     pub const fn all() -> Self {
         Self::All
     }
 
     /// `field == value`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavedb::query::Expr;
+    /// let e = Expr::eq("status", "active");
+    /// let bytes = e.to_bytes().unwrap();
+    /// let decoded = Expr::from_bytes(&bytes).unwrap();
+    /// assert_eq!(e, decoded);
+    /// ```
     pub fn eq(field: impl Into<FieldName>, value: impl Into<Value>) -> Self {
         Self::Eq {
             field: field.into(),
@@ -206,6 +224,14 @@ impl Expr {
     }
 
     /// `left AND right`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavedb::query::Expr;
+    /// let e = Expr::and(Expr::gt("amount", 100u64), Expr::eq("status", "open"));
+    /// assert!(e.to_bytes().is_ok());
+    /// ```
     pub fn and(left: Self, right: Self) -> Self {
         Self::And {
             left: Box::new(left),

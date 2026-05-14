@@ -30,6 +30,20 @@ impl PermissionRef {
     ///
     /// For `Inline`, the user must appear in the list.
     /// For `Group`, the caller must resolve the group externally.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wavedb_core::PermissionRef;
+    /// let perm = PermissionRef::Inline(vec![10, 20, 30]);
+    /// assert!(perm.allows_user(20));
+    /// assert!(!perm.allows_user(99));
+    ///
+    /// // Group refs always return false — caller resolves them externally.
+    /// use wavedb_core::PermissionGroupId;
+    /// let group = PermissionRef::Group(PermissionGroupId(1));
+    /// assert!(!group.allows_user(20));
+    /// ```
     pub fn allows_user(&self, user: u64) -> bool {
         match self {
             Self::Inline(users) => users.contains(&user),

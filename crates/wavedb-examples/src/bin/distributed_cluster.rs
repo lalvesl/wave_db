@@ -22,7 +22,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("── Topology ─────────────────────────────────────────────────────");
     for (i, node) in cluster.quick_nodes.iter().enumerate() {
-        println!("  node[{i}]  ws={}  alive={}", node.ws_url(), node.is_alive());
+        println!(
+            "  node[{i}]  ws={}  alive={}",
+            node.ws_url(),
+            node.is_alive()
+        );
     }
     println!("  owned_tenant={}", cluster.owned_tenant());
 
@@ -61,7 +65,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Restart node 0 ───────────────────────────────────────────────────────
     cluster.restart_quick_node(0).await;
-    assert!(cluster.quick_nodes[0].is_alive(), "node[0] must be alive after restart");
+    assert!(
+        cluster.quick_nodes[0].is_alive(),
+        "node[0] must be alive after restart"
+    );
     println!("Restarted node[0]");
 
     // ── Verify both nodes alive ───────────────────────────────────────────────

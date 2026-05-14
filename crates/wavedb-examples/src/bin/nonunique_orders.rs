@@ -43,17 +43,41 @@ impl NonUniqueObject for Order {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orders_all = vec![
-        Order { id: Id::default(), metadata: Metadata::default(), amount: 50, customer: 1 },
-        Order { id: Id::default(), metadata: Metadata::default(), amount: 150, customer: 2 },
-        Order { id: Id::default(), metadata: Metadata::default(), amount: 200, customer: 3 },
+        Order {
+            id: Id::default(),
+            metadata: Metadata::default(),
+            amount: 50,
+            customer: 1,
+        },
+        Order {
+            id: Id::default(),
+            metadata: Metadata::default(),
+            amount: 150,
+            customer: 2,
+        },
+        Order {
+            id: Id::default(),
+            metadata: Metadata::default(),
+            amount: 200,
+            customer: 3,
+        },
     ];
-    let orders_filtered: Vec<Order> =
-        orders_all.iter().filter(|o| o.amount > 100).cloned().collect();
-    let orders_after_delete: Vec<Order> =
-        orders_all.iter().filter(|o| o.amount != 150).cloned().collect();
+    let orders_filtered: Vec<Order> = orders_all
+        .iter()
+        .filter(|o| o.amount > 100)
+        .cloned()
+        .collect();
+    let orders_after_delete: Vec<Order> = orders_all
+        .iter()
+        .filter(|o| o.amount != 150)
+        .cloned()
+        .collect();
 
     let mock = MockTransport::new();
-    mock.push(ScriptedReply::connect("ws://owner:7700", "ws://backup:7700"));
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
     // Three writes
     mock.push(ScriptedReply::ok(Vec::new()));
     mock.push(ScriptedReply::ok(Vec::new()));
@@ -65,7 +89,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // delete → ok
     mock.push(ScriptedReply::ok(Vec::new()));
     // query all after delete → 2 orders
-    mock.push(ScriptedReply::ok(postcard::to_allocvec(&orders_after_delete)?));
+    mock.push(ScriptedReply::ok(postcard::to_allocvec(
+        &orders_after_delete,
+    )?));
 
     let db = Db::open_with_transport(mock, /* user= */ 1, /* tenant= */ 42).await?;
 
