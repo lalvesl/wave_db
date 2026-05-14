@@ -2624,6 +2624,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wavedb-examples"
+version = "0.1.0"
+dependencies = [
+ "postcard",
+ "serde",
+ "tokio",
+ "wavedb",
+ "wavedb-core",
+ "wavedb-net",
+ "wavedb-test-cluster",
+]
+
+[[package]]
 name = "wavedb-macros"
 version = "0.1.0"
 dependencies = [

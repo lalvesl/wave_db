@@ -1,0 +1,41 @@
+[package]
+name = "wavedb-examples"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "unique_user_profile"
+path = "src/bin/unique_user_profile.rs"
+
+[[bin]]
+name = "nonunique_orders"
+path = "src/bin/nonunique_orders.rs"
+
+[[bin]]
+name = "nested_invoice_lines"
+path = "src/bin/nested_invoice_lines.rs"
+
+[[bin]]
+name = "migration_type_1"
+path = "src/bin/migration_type_1.rs"
+
+[[bin]]
+name = "migration_type_2"
+path = "src/bin/migration_type_2.rs"
+
+[[bin]]
+name = "distributed_cluster"
+path = "src/bin/distributed_cluster.rs"
+
+[dependencies]
+wavedb = { path = "../wavedb" }
+wavedb-net = { path = "../wavedb-net" }
+wavedb-core = { path = "../wavedb-core" }
+wavedb-test-cluster = { path = "../wavedb-test-cluster" }
+tokio.workspace = true
+postcard.workspace = true
+serde.workspace = true
