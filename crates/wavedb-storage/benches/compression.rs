@@ -10,6 +10,7 @@ const SIZES_BYTES: &[usize] = &[256, 1_024, 16_384, 65_536];
 
 fn bench_heap_compress(c: &mut Criterion) {
     let mut group = c.benchmark_group("compression/heap_zstd/compress");
+    group.sample_size(20);
 
     for &size in SIZES_BYTES {
         let payload = make_payload(size);
@@ -25,6 +26,7 @@ fn bench_heap_compress(c: &mut Criterion) {
 
 fn bench_heap_decompress(c: &mut Criterion) {
     let mut group = c.benchmark_group("compression/heap_zstd/decompress");
+    group.sample_size(20);
 
     for &size in SIZES_BYTES {
         let payload = make_payload(size);
@@ -41,6 +43,7 @@ fn bench_heap_decompress(c: &mut Criterion) {
 
 fn bench_page_codec(c: &mut Criterion) {
     let mut group = c.benchmark_group("compression/page_codec");
+    group.sample_size(2);
 
     for &size in SIZES_BYTES {
         let payload = make_payload(size);

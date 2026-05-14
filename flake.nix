@@ -11,12 +11,11 @@
   };
 
   outputs =
-    {
-      self,
-      nixpkgs,
-      flake-utils,
-      rust-overlay,
-      ...
+    { self
+    , nixpkgs
+    , flake-utils
+    , rust-overlay
+    , ...
     }:
     flake-utils.lib.eachDefaultSystem (
       system:
