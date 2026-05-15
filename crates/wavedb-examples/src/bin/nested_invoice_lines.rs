@@ -75,6 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lines = vec![line_a.clone(), line_b.clone()];
 
     // Query path expects a postcard `Vec<(version, body)>`.
+    #[allow(clippy::items_after_statements)]
     fn encode_query<T>(records: &[T]) -> Vec<u8>
     where
         T: serde::Serialize + wavedb_core::WaveDbStruct,

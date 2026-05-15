@@ -268,6 +268,8 @@ impl Expr {
 
 #[cfg(test)]
 mod tests {
+    use core::f64;
+
     use super::*;
 
     #[test]
@@ -306,7 +308,7 @@ mod tests {
     fn value_conversions() {
         assert_eq!(Value::from(42u64), Value::U64(42));
         assert_eq!(Value::from(42i64), Value::I64(42));
-        assert_eq!(Value::from(3.14f64), Value::F64(3.14));
+        assert_eq!(Value::from(f64::consts::PI), Value::F64(f64::consts::PI));
         assert_eq!(Value::from("hello"), Value::Str("hello".into()));
         assert_eq!(Value::from(true), Value::Bool(true));
     }

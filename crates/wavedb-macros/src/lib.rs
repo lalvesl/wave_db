@@ -41,7 +41,6 @@
 mod args;
 mod crud;
 mod migration;
-mod type_id;
 mod utils;
 
 use proc_macro::TokenStream;
@@ -51,7 +50,6 @@ use syn::{ItemStruct, parse_macro_input};
 use args::WaveDbArgs;
 use crud::build_crud_impl;
 use migration::build_migration_impl;
-use type_id::build_type_id_impl;
 use utils::{collect_derived_traits, parse_trailing_version};
 
 /// The `#[wave_db(struct_id = N, ...)]` attribute macro.
@@ -194,9 +192,6 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     // ── Migration code generation ─────────────────────────────────────────────
     let migration_impl = build_migration_impl(name, sid, version, &args);
 
-    // ── TypeId: zero-sized search-handle marker ──────────────────────────────
-    let (type_id_name, type_id_impl) = build_type_id_impl(name, &args);
-
     // ── Final expansion ──────────────────────────────────────────────────────
 
     let expanded = quote! {
@@ -213,15 +208,8 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             #threshold_const
             #primary_accessor
             #secondary_anchors_const
-
-            /// A typed, zero-cost search handle for this struct.
-            ///
-            /// Use `Self::TYPE_ID.get(&db).await?` to search the database
-            /// without needing to import the concrete `*TypeId` type.
-            pub const TYPE_ID: #type_id_name = #type_id_name;
         }
 
-        #type_id_impl
         #crud_impl
         #migration_impl
     };
