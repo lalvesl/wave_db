@@ -31,6 +31,10 @@ path = "src/bin/migration_type_2.rs"
 name = "distributed_cluster"
 path = "src/bin/distributed_cluster.rs"
 
+[[bin]]
+name = "refs_and_nested"
+path = "src/bin/refs_and_nested.rs"
+
 [dependencies]
 wavedb = { path = "../wavedb" }
 wavedb-net = { path = "../wavedb-net" }
