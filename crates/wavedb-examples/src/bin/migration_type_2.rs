@@ -1,3 +1,4 @@
+#![allow(clippy::future_not_send)]
 //! Type 2 (compose) pattern — now expressed through `first_try` and
 //! `migrate_from_with`.
 //!

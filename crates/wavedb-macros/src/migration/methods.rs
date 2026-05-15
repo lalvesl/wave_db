@@ -18,7 +18,10 @@ pub fn build_migrate_from_with(
                     pub async fn __wave_db_migrate_from<__WaveDbDb>(
                         db: &__WaveDbDb,
                         source: #old_type,
-                    ) -> ::wavedb_core::Result<Self> {
+                    ) -> ::wavedb_core::Result<Self>
+                    where
+                        __WaveDbDb: ::core::marker::Send + ::core::marker::Sync,
+                    {
                         #fn_path(db, source).await
                     }
                 }
@@ -39,7 +42,10 @@ pub fn build_rollback_with(name: &Ident, args: &WaveDbArgs) -> Option<proc_macro
                     pub async fn __wave_db_migrate_rollback<__WaveDbDb>(
                         db: &__WaveDbDb,
                         future: #new_type,
-                    ) -> ::wavedb_core::Result<Self> {
+                    ) -> ::wavedb_core::Result<Self>
+                    where
+                        __WaveDbDb: ::core::marker::Send + ::core::marker::Sync,
+                    {
                         #fn_path(db, future).await
                     }
                 }
@@ -66,7 +72,10 @@ pub fn build_first_try(name: &Ident, args: &WaveDbArgs) -> Option<proc_macro2::T
                     #[doc(hidden)]
                     pub async fn __wave_db_first_try<__WaveDbDb>(
                         db: &__WaveDbDb,
-                    ) -> ::wavedb_core::Result<::core::option::Option<#old_type>> {
+                    ) -> ::wavedb_core::Result<::core::option::Option<#old_type>>
+                    where
+                        __WaveDbDb: ::core::marker::Send + ::core::marker::Sync,
+                    {
                         #fn_path(db).await
                     }
                 }
@@ -86,7 +95,10 @@ pub fn build_fallback(name: &Ident, args: &WaveDbArgs) -> Option<proc_macro2::To
                 #[doc(hidden)]
                 pub async fn __wave_db_fallback_not_found<__WaveDbDb>(
                     db: &__WaveDbDb,
-                ) -> ::wavedb_core::Result<::core::option::Option<Self>> {
+                ) -> ::wavedb_core::Result<::core::option::Option<Self>>
+                where
+                    __WaveDbDb: ::core::marker::Send + ::core::marker::Sync,
+                {
                     #fn_path(db).await
                 }
             }

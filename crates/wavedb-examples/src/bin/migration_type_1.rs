@@ -1,3 +1,4 @@
+#![allow(clippy::future_not_send)]
 //! Type 1 migration: field-level transform between two Message versions.
 //!
 //! `Message41` → `Message42` adds an `edited: bool` field.
@@ -57,6 +58,7 @@ async fn rollback_v42_to_v41<Db>(_db: &Db, future: Message42) -> wavedb_core::Re
 
 // first_try on the NEWER struct: synthesise a Message41 from other sources if
 // needed (type-2 replacement).  Return None for the normal DB path.
+#[allow(clippy::unused_async)]
 async fn v42_first_try<Db>(_db: &Db) -> wavedb_core::Result<Option<Message41>> {
     Ok(None)
 }

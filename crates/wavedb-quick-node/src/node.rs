@@ -131,6 +131,7 @@ impl QuickNode {
     /// This is the single dispatch point used by both the HTTP and WebSocket
     /// server handlers.  Phase 14 will wire in the real storage engine;
     /// for now the data-layer operations are stubbed.
+    #[allow(clippy::unused_async)]
     pub async fn handle(&self, req: TransportRequest) -> TransportResponse {
         match req.kind {
             RequestKind::Connect { user, tenant } => self.handle_connect(req.seq, user, tenant),
@@ -251,6 +252,7 @@ impl QuickNode {
         }
     }
 
+    #[allow(clippy::unused_self)]
     const fn handle_disconnect(&self, seq: u64, _user: u64, _tenant: u64) -> TransportResponse {
         TransportResponse {
             seq,
