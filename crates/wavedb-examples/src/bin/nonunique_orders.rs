@@ -7,15 +7,17 @@
 //! Run with:
 //!   cargo run --bin nonunique_orders
 
-use wavedb::object::{do_delete, do_query_non_unique, do_write};
 use wavedb::prelude::*;
 use wavedb_net::MockTransport;
 use wavedb_net::mock::ScriptedReply;
 
 // ── Schema ───────────────────────────────────────────────────────────────────
+//
+// `#[wave_db]` auto-derives `Debug, Clone, Serialize, Deserialize` and
+// auto-impls `NonUniqueObject` (query, update, delete) for NonUnique structs.
 
 #[wave_db(struct_id = 10, NonUnique, btree_threshold = 50)]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Eq)]
 pub struct Order1 {
     pub id: Id,
     pub metadata: Metadata,
@@ -23,20 +25,6 @@ pub struct Order1 {
     pub customer: u64,
 }
 pub type Order = Order1;
-
-impl NonUniqueObject for Order {
-    async fn query(db: &Db, expr: Expr) -> wavedb_core::Result<Vec<Self>> {
-        do_query_non_unique::<Self>(db, expr).await
-    }
-
-    async fn update(self, db: &Db) -> wavedb_core::Result<()> {
-        do_write(db, &self).await
-    }
-
-    async fn delete(self, db: &Db) -> wavedb_core::Result<()> {
-        do_delete(db, self.id.raw()).await
-    }
-}
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 

@@ -66,7 +66,6 @@ async fn v1_fallback<Db>(_db: &Db) -> wavedb_core::Result<Option<Message1>> {
     migrate_rollback_with = rollback_v2_to_v1,
     fallback_not_found    = v1_fallback,
 )]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Message1 {
     pub id: Id,
     pub metadata: Metadata,
@@ -84,7 +83,6 @@ pub struct Message1 {
     migrate_rollback_with = rollback_v3_to_v2,
     first_try             = v2_first_try,
 )]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Message2 {
     pub id: Id,
     pub metadata: Metadata,
@@ -100,7 +98,6 @@ pub struct Message2 {
     migrate_from      = Message2,
     migrate_from_with = migrate_v2_v3,
 )]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Message3 {
     pub id: Id,
     pub metadata: Metadata,

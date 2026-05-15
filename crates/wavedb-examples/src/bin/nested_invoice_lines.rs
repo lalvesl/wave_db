@@ -8,15 +8,17 @@
 //! Run with:
 //!   cargo run --bin nested_invoice_lines
 
-use wavedb::object::{do_query_non_unique, do_write};
 use wavedb::prelude::*;
 use wavedb_net::MockTransport;
 use wavedb_net::mock::ScriptedReply;
 
 // ── Schema ───────────────────────────────────────────────────────────────────
+//
+// `#[wave_db]` auto-derives `Debug, Clone, Serialize, Deserialize` and
+// auto-impls `NonUniqueObject` for both shapes (Invoice and InvoiceLine).
 
 #[wave_db(struct_id = 20, NonUnique)]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Eq)]
 pub struct Invoice1 {
     pub id: Id,
     pub metadata: Metadata,
@@ -26,7 +28,7 @@ pub struct Invoice1 {
 pub type Invoice = Invoice1;
 
 #[wave_db(struct_id = 21, NestedNonUnique)]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Eq)]
 pub struct InvoiceLine1 {
     pub id: Id,
     pub metadata: Metadata,
@@ -35,21 +37,6 @@ pub struct InvoiceLine1 {
     pub unit_cents: u64,
 }
 pub type InvoiceLine = InvoiceLine1;
-
-impl NonUniqueObject for Invoice {
-    async fn query(db: &Db, expr: Expr) -> wavedb_core::Result<Vec<Self>> {
-        do_query_non_unique::<Self>(db, expr).await
-    }
-
-    async fn update(self, db: &Db) -> wavedb_core::Result<()> {
-        do_write(db, &self).await
-    }
-
-    async fn delete(self, db: &Db) -> wavedb_core::Result<()> {
-        use wavedb::object::do_delete;
-        do_delete(db, self.id.raw()).await
-    }
-}
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
@@ -122,9 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Write parent invoice
     invoice.update(&db).await?;
 
-    // Write nested lines via do_write (bypasses top-level query index)
-    do_write(&db, &line_a).await?;
-    do_write(&db, &line_b).await?;
+    // Write nested lines — InvoiceLine is also auto-impl'd with NonUniqueObject.
+    line_a.update(&db).await?;
+    line_b.update(&db).await?;
 
     // Query invoices at the top level — works because Invoice is NonUnique
     let found_invoices = Invoice::query(&db, Expr::all()).await?;
@@ -134,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Query lines through the parent invoice anchor.
     // Production storage routes this to the parent's subtree, not the global
     // InvoiceLine index (which doesn't exist — InvoiceLine is NestedNonUnique).
-    let found_lines = do_query_non_unique::<InvoiceLine>(&db, Expr::eq("product", 101u64)).await?;
+    let found_lines = InvoiceLine::query(&db, Expr::eq("product", 101u64)).await?;
     assert_eq!(found_lines.len(), 2);
     println!(
         "Invoice lines for customer {}: {}",

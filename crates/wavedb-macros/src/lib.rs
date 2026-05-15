@@ -51,6 +51,9 @@ struct WaveDbArgs {
     primary_anchor: Option<syn::Ident>,
     secondary_anchors: Vec<String>,
     btree_threshold: Option<u32>,
+    /// If set, skip the auto-generated `UniqueObject` / `NonUniqueObject` impl
+    /// so the user can provide a custom one.
+    no_auto_crud: bool,
     // ── Migration ────────────────────────────────────────────────────────────
     /// TYPE path of the older predecessor (e.g. `Message1`).
     migrate_from: Option<syn::Path>,
@@ -75,6 +78,7 @@ impl WaveDbArgs {
             primary_anchor: None,
             secondary_anchors: Vec::new(),
             btree_threshold: None,
+            no_auto_crud: false,
             migrate_from: None,
             migrate_from_with: None,
             migrate_rollback: None,
@@ -110,6 +114,8 @@ impl WaveDbArgs {
             let value = meta.value()?;
             let lit: LitInt = value.parse()?;
             self.btree_threshold = Some(lit.base10_parse()?);
+        } else if meta.path.is_ident("no_auto_crud") {
+            self.no_auto_crud = true;
         // ── Migration attributes ──────────────────────────────────────────
         } else if meta.path.is_ident("migrate_from") {
             let value = meta.value()?;
@@ -134,6 +140,30 @@ impl WaveDbArgs {
         }
         Ok(())
     }
+}
+
+/// Collect the unqualified names of every trait the user has already derived.
+///
+/// Used to dedupe the auto-derives the macro adds (`Debug`, `Clone`,
+/// `Serialize`, `Deserialize`) so a struct annotated with both `#[wave_db(…)]`
+/// and a hand-rolled `#[derive(Debug)]` doesn't error on a duplicate impl.
+fn collect_derived_traits(attrs: &[syn::Attribute]) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        if let Ok(list) = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+        ) {
+            for path in list {
+                if let Some(seg) = path.segments.last() {
+                    out.insert(seg.ident.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Parse the trailing integer from a struct name (e.g. `"Message42"` → `42`).
@@ -271,6 +301,87 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    // ── Auto-derives: Debug, Clone, Serialize, Deserialize ──────────────────
+    // Compute which standard derives are missing and emit just those, so a
+    // struct that already says `#[derive(Debug, Clone)]` doesn't trigger a
+    // duplicate-impl error.
+    let existing_derives = collect_derived_traits(&input.attrs);
+    let mut needed = Vec::new();
+    if !existing_derives.contains("Debug") {
+        needed.push(quote! { ::core::fmt::Debug });
+    }
+    if !existing_derives.contains("Clone") {
+        needed.push(quote! { ::core::clone::Clone });
+    }
+    if !existing_derives.contains("Serialize") {
+        needed.push(quote! { ::serde::Serialize });
+    }
+    if !existing_derives.contains("Deserialize") {
+        needed.push(quote! { ::serde::Deserialize });
+    }
+    let auto_derives = if needed.is_empty() {
+        quote! {}
+    } else {
+        quote! { #[derive( #(#needed),* )] }
+    };
+
+    // ── Auto-impl UniqueObject / NonUniqueObject ────────────────────────────
+    // Generated unless `no_auto_crud` is set.  The struct must have an
+    // `id: ::wavedb_core::Id` field for the NonUnique `delete` to work.
+    let crud_impl = if args.no_auto_crud {
+        quote! {}
+    } else if args.nested_non_unique || args.non_unique {
+        quote! {
+            impl ::wavedb::object::NonUniqueObject for #name {
+                fn query(
+                    db: &::wavedb::Db,
+                    expr: ::wavedb::query::Expr,
+                ) -> impl ::core::future::Future<
+                    Output = ::wavedb_core::Result<::std::vec::Vec<Self>>,
+                > + ::core::marker::Send {
+                    ::wavedb::object::do_query_non_unique::<Self>(db, expr)
+                }
+
+                fn update(
+                    self,
+                    db: &::wavedb::Db,
+                ) -> impl ::core::future::Future<Output = ::wavedb_core::Result<()>>
+                       + ::core::marker::Send {
+                    async move { ::wavedb::object::do_write(db, &self).await }
+                }
+
+                fn delete(
+                    self,
+                    db: &::wavedb::Db,
+                ) -> impl ::core::future::Future<Output = ::wavedb_core::Result<()>>
+                       + ::core::marker::Send {
+                    async move { ::wavedb::object::do_delete(db, self.id.raw()).await }
+                }
+            }
+        }
+    } else {
+        // Unique shape (default).
+        quote! {
+            impl ::wavedb::object::UniqueObject for #name {
+                fn search(
+                    db: &::wavedb::Db,
+                ) -> impl ::core::future::Future<
+                    Output = ::wavedb_core::Result<::core::option::Option<Self>>,
+                > + ::core::marker::Send {
+                    ::wavedb::object::do_search_unique::<Self>(db)
+                }
+
+                fn update(
+                    self,
+                    db: &::wavedb::Db,
+                ) -> impl ::core::future::Future<Output = ::wavedb_core::Result<()>>
+                       + ::core::marker::Send {
+                    async move { ::wavedb::object::do_write(db, &self).await }
+                }
+            }
+        }
+    };
+
     // ── Migration code generation ─────────────────────────────────────────────
 
     let migration_impl = build_migration_impl(name, sid, version, &args);
@@ -278,6 +389,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     // ── Final expansion ──────────────────────────────────────────────────────
 
     let expanded = quote! {
+        #auto_derives
         #input
 
         impl ::wavedb_core::WaveDbStruct for #name {
@@ -292,6 +404,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             #secondary_anchors_const
         }
 
+        #crud_impl
         #migration_impl
     };
 

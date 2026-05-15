@@ -27,7 +27,6 @@
 //! Run with:
 //!   cargo run --bin migration_type_1
 
-use wavedb::object::{do_search_unique, do_write};
 use wavedb::prelude::*;
 use wavedb_core::migration::{MigrationRegistry, VersionRef};
 use wavedb_net::MockTransport;
@@ -74,7 +73,7 @@ async fn v42_first_try<Db>(_db: &Db) -> wavedb_core::Result<Option<Message41>> {
     migrate_rollback      = Message42,
     migrate_rollback_with = rollback_v42_to_v41,
 )]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Eq)]
 pub struct Message41 {
     pub id: Id,
     pub metadata: Metadata,
@@ -90,7 +89,7 @@ pub struct Message41 {
     migrate_from_with = migrate_v41_v42,
     first_try         = v42_first_try,
 )]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Eq)]
 pub struct Message42 {
     pub id: Id,
     pub metadata: Metadata,
@@ -101,27 +100,9 @@ pub struct Message42 {
 
 pub type Message = Message42;
 
-// ── Both versions are Unique-shaped: wire up search/update via the standard
-// helpers.  Cross-version reads happen automatically through the macro-generated
-// `MigrationChain` impl — no `register_migration` call is needed for these.
-
-impl UniqueObject for Message41 {
-    async fn search(db: &Db) -> wavedb_core::Result<Option<Self>> {
-        do_search_unique::<Self>(db).await
-    }
-    async fn update(self, db: &Db) -> wavedb_core::Result<()> {
-        do_write(db, &self).await
-    }
-}
-
-impl UniqueObject for Message42 {
-    async fn search(db: &Db) -> wavedb_core::Result<Option<Self>> {
-        do_search_unique::<Self>(db).await
-    }
-    async fn update(self, db: &Db) -> wavedb_core::Result<()> {
-        do_write(db, &self).await
-    }
-}
+// `UniqueObject` is auto-impl'd by the macro for both versions — cross-version
+// reads work through the macro-generated `MigrationChain` impl with no manual
+// `register_migration` call required.
 
 /// Build the wire-format payload `[STRUCT_VERSION, ...postcard_body...]` that
 /// the engine emits when a record is read back.

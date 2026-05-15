@@ -8,15 +8,18 @@
 //! Run with:
 //!   cargo run --bin unique_user_profile
 
-use wavedb::object::{do_search_unique, do_write};
 use wavedb::prelude::*;
 use wavedb_net::MockTransport;
 use wavedb_net::mock::ScriptedReply;
 
 // ── Schema ───────────────────────────────────────────────────────────────────
+//
+// The `#[wave_db]` macro auto-derives `Debug, Clone, Serialize, Deserialize`
+// and auto-impls `UniqueObject` (search + update) for Unique-shaped structs.
+// `PartialEq, Eq` stay manual because not every struct needs them.
 
 #[wave_db(struct_id = 1)]
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(PartialEq, Eq)]
 pub struct UserProfile1 {
     pub id: Id,
     pub metadata: Metadata,
@@ -24,16 +27,6 @@ pub struct UserProfile1 {
     pub bio: String,
 }
 pub type UserProfile = UserProfile1;
-
-impl UniqueObject for UserProfile {
-    async fn search(db: &Db) -> wavedb_core::Result<Option<Self>> {
-        do_search_unique::<Self>(db).await
-    }
-
-    async fn update(self, db: &Db) -> wavedb_core::Result<()> {
-        do_write(db, &self).await
-    }
-}
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 

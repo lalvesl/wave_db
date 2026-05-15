@@ -2881,6 +2881,7 @@ dependencies = [
  "serde",
  "syn",
  "trybuild",
+ "wavedb",
  "wavedb-core",
 ]
 
