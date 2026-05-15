@@ -31,7 +31,7 @@ fn bench_frame_encode(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(size as u64));
 
         group.bench_with_input(BenchmarkId::from_parameter(size), &msg, |b, msg| {
-            b.iter(|| criterion::black_box(frame::encode(msg).unwrap()));
+            b.iter(|| std::hint::black_box(frame::encode(msg).unwrap()));
         });
     }
 
@@ -49,7 +49,7 @@ fn bench_frame_decode(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(size), &encoded, |b, data| {
             b.iter(|| {
                 let mut buf = BytesMut::from(data.as_ref());
-                criterion::black_box(frame::decode::<BenchPayload>(&mut buf).unwrap())
+                std::hint::black_box(frame::decode::<BenchPayload>(&mut buf).unwrap())
             });
         });
     }
@@ -84,11 +84,11 @@ fn bench_bloom_check(c: &mut Criterion) {
     }
 
     group.bench_function("probably_seen_hit", |b| {
-        b.iter(|| criterion::black_box(filter.probably_seen(5_000)));
+        b.iter(|| std::hint::black_box(filter.probably_seen(5_000)));
     });
 
     group.bench_function("probably_seen_miss", |b| {
-        b.iter(|| criterion::black_box(filter.probably_seen(u128::MAX)));
+        b.iter(|| std::hint::black_box(filter.probably_seen(u128::MAX)));
     });
 
     group.finish();
@@ -103,7 +103,7 @@ fn bench_bloom_serialize(c: &mut Criterion) {
     }
 
     group.bench_function("to_bytes", |b| {
-        b.iter(|| criterion::black_box(filter.to_bytes()));
+        b.iter(|| std::hint::black_box(filter.to_bytes()));
     });
 
     group.finish();

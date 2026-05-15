@@ -119,7 +119,7 @@ mod tests {
     fn range_query() {
         let mut idx = ArrayIndex::new();
         for i in 0..10 {
-            idx.insert(IndexKey(i * 10), AnchorKey::from_raw(i as u128))
+            idx.insert(IndexKey(i * 10), AnchorKey::from_raw(u128::from(i)))
                 .unwrap();
         }
         let result = idx.range(IndexKey(25)..IndexKey(65));

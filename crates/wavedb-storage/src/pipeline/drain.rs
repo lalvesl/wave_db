@@ -80,10 +80,7 @@ mod tests {
         let slot = AnchorSlot::inline(b"drain test", 1000);
 
         journal
-            .append(JournalEntry::WriteAnchor {
-                key,
-                slot: slot.clone(),
-            })
+            .append(JournalEntry::WriteAnchor { key, slot })
             .unwrap();
 
         let result = drain_journal(&mut journal, &data_file, &cache).unwrap();

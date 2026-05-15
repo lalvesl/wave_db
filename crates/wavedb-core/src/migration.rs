@@ -434,11 +434,13 @@ mod tests {
     #[test]
     fn migrate_chain_with_entry() {
         // Uses erased fn pointers registered via register_with_entry.
+        #[allow(clippy::unnecessary_wraps)]
         fn fwd(b: &[u8]) -> crate::Result<Vec<u8>> {
             let mut out = b.to_vec();
             out.push(0xFF); // marker
             Ok(out)
         }
+        #[allow(clippy::unnecessary_wraps)]
         fn bwd(b: &[u8]) -> crate::Result<Vec<u8>> {
             let mut out = b.to_vec();
             out.pop(); // strip marker
@@ -463,21 +465,25 @@ mod tests {
 
     #[test]
     fn migrate_chain_multi_hop() {
+        #[allow(clippy::unnecessary_wraps)]
         fn add_a(b: &[u8]) -> crate::Result<Vec<u8>> {
             let mut v = b.to_vec();
             v.push(b'a');
             Ok(v)
         }
+        #[allow(clippy::unnecessary_wraps)]
         fn add_b(b: &[u8]) -> crate::Result<Vec<u8>> {
             let mut v = b.to_vec();
             v.push(b'b');
             Ok(v)
         }
+        #[allow(clippy::unnecessary_wraps)]
         fn rm_b(b: &[u8]) -> crate::Result<Vec<u8>> {
             let mut v = b.to_vec();
             v.pop();
             Ok(v)
         }
+        #[allow(clippy::unnecessary_wraps)]
         fn rm_a(b: &[u8]) -> crate::Result<Vec<u8>> {
             let mut v = b.to_vec();
             v.pop();

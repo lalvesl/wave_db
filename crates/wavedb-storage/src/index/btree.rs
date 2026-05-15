@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn bulk_load_and_lookup() {
         let entries: Vec<_> = (0..200)
-            .map(|i| (IndexKey(i * 10), AnchorKey::from_raw(i as u128)))
+            .map(|i| (IndexKey(i * 10), AnchorKey::from_raw(u128::from(i))))
             .collect();
         let tree = BTreeIndex::from_sorted(&entries);
         assert_eq!(tree.len(), 200);
@@ -233,7 +233,7 @@ mod tests {
         // Every entry should be found
         for i in 0..200 {
             let result = tree.lookup(&IndexKey(i * 10));
-            assert_eq!(result.unwrap().raw(), i as u128);
+            assert_eq!(result.unwrap().raw(), u128::from(i));
         }
 
         // Non-existent key
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn range_query() {
         let entries: Vec<_> = (0..100)
-            .map(|i| (IndexKey(i), AnchorKey::from_raw(i as u128)))
+            .map(|i| (IndexKey(i), AnchorKey::from_raw(u128::from(i))))
             .collect();
         let tree = BTreeIndex::from_sorted(&entries);
         let result = tree.range(IndexKey(25)..IndexKey(75));
@@ -256,7 +256,7 @@ mod tests {
     fn incremental_insert() {
         let mut tree = BTreeIndex::new();
         for i in (0..50).rev() {
-            tree.insert(IndexKey(i), AnchorKey::from_raw(i as u128))
+            tree.insert(IndexKey(i), AnchorKey::from_raw(u128::from(i)))
                 .unwrap();
         }
         assert_eq!(tree.len(), 50);
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn remove_from_tree() {
         let entries: Vec<_> = (0..10)
-            .map(|i| (IndexKey(i), AnchorKey::from_raw(i as u128)))
+            .map(|i| (IndexKey(i), AnchorKey::from_raw(u128::from(i))))
             .collect();
         let mut tree = BTreeIndex::from_sorted(&entries);
         assert!(tree.remove(&IndexKey(5)));
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn sorted_iteration() {
         let entries: Vec<_> = (0..100)
-            .map(|i| (IndexKey(i * 3), AnchorKey::from_raw(i as u128)))
+            .map(|i| (IndexKey(i * 3), AnchorKey::from_raw(u128::from(i))))
             .collect();
         let tree = BTreeIndex::from_sorted(&entries);
         let all = tree.all_sorted();

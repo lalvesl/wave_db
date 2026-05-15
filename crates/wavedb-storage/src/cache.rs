@@ -79,7 +79,7 @@ mod tests {
         let slot = AnchorSlot::inline(b"data", 1000);
 
         assert!(cache.get_anchor(key).is_none());
-        cache.put_anchor(key, slot.clone());
+        cache.put_anchor(key, slot);
         assert!(cache.get_anchor(key).is_some());
         assert_eq!(cache.anchor_count(), 1);
 

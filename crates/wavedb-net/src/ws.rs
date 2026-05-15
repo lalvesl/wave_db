@@ -129,7 +129,7 @@ where
         // Dispatch piggyback notifications.
         for n in &resp.notifications {
             let event = notification_to_event(n);
-            inner.bus.publish(event);
+            let _ = inner.bus.publish(event);
         }
 
         // If this response has a matching pending request, complete it.
@@ -371,8 +371,7 @@ mod tests {
         }
 
         // The server must have received them in order.
-        let received = server.state.received.lock();
-        let seqs: Vec<u64> = received.iter().map(|r| r.seq).collect();
+        let seqs: Vec<u64> = server.state.received.lock().iter().map(|r| r.seq).collect();
         assert_eq!(seqs, [1, 2, 3, 4, 5]);
     }
 

@@ -174,7 +174,10 @@ mod tests {
         let page = Page::new(4096);
         assert_eq!(page.data.len(), 4096);
         assert_eq!(page.header.entry_count, 0);
-        assert_eq!(page.header.stack_offset, PageHeader::SIZE as u32);
+        assert_eq!(
+            page.header.stack_offset,
+            u32::try_from(PageHeader::SIZE).unwrap()
+        );
         assert_eq!(page.header.heap_offset, 4096);
     }
 

@@ -66,11 +66,14 @@ async fn flushed_record_is_retrievable_by_id() {
 async fn multiple_flushes_accumulate_records() {
     let cluster = TestCluster::spawn(ClusterSpec::default()).await;
 
-    for i in 0u128..3 {
+    for i in 0u64..3 {
         let batch = FlushBatch {
-            write_seq: i as u64 + 1,
+            write_seq: i + 1,
             tenant: 42,
-            records: vec![VersionedRecord::new(i, format!("data_{i}").into_bytes())],
+            records: vec![VersionedRecord::new(
+                u128::from(i),
+                format!("data_{i}").into_bytes(),
+            )],
         };
         cluster.flush_batch(batch).await;
     }

@@ -56,7 +56,7 @@ fn bench_anchor_read(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             let target = AnchorKey::from(Id::new(target_tenant, 0, 0, target_i));
             b.iter(|| {
-                criterion::black_box(file.read_anchor(target).unwrap());
+                std::hint::black_box(file.read_anchor(target).unwrap());
             });
         });
     }
@@ -96,11 +96,11 @@ fn bench_hash_functions(c: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
 
     group.bench_function("page_hash", |b| {
-        b.iter(|| criterion::black_box(hash::page_hash(7, 42, 3, 256)));
+        b.iter(|| std::hint::black_box(hash::page_hash(7, 42, 3, 256)));
     });
 
     group.bench_function("double_hash_step", |b| {
-        b.iter(|| criterion::black_box(hash::double_hash_step(7, 42, 3, 256)));
+        b.iter(|| std::hint::black_box(hash::double_hash_step(7, 42, 3, 256)));
     });
 
     // Combined: primary hash + double-hash step (collision resolution cost).
@@ -109,7 +109,7 @@ fn bench_hash_functions(c: &mut Criterion) {
             let page_count = 256u64;
             let primary = hash::page_hash(7, 42, 3, page_count);
             let step = hash::double_hash_step(7, 42, 3, page_count);
-            criterion::black_box((primary + step) % page_count)
+            std::hint::black_box((primary + step) % page_count)
         });
     });
 

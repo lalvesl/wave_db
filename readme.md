@@ -57,8 +57,8 @@ Every piece of data belongs to a **TENANT**. A user is someone who can act on th
 
 WaveDB recognises **three** data shapes, each with different ownership and indexing rules:
 
-| Shape                          | Cardinality per tenant                                         | Examples                                    | Allowed operations                       |
-| ------------------------------ | -------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------- |
+| Shape                          | Cardinality per tenant                                         | Examples                                    | Allowed operations                     |
+| ------------------------------ | -------------------------------------------------------------- | ------------------------------------------- | -------------------------------------- |
 | **Unique**                     | Exactly one live record per `(STRUCT_ID, TENANT_ID)`           | User profile, company settings              | `read`, `"save"`, `create`             |
 | **NonUnique**                  | Many live records per tenant                                   | Orders, messages, files                     | `read`, `"save"`, `create`, `"delete"` |
 | **NonUnique-within-NonUnique** | Many records tightly bound to a single parent NonUnique record | Lines on an invoice, tasks inside a project | `read`, `"save"`, `create`, `"delete"` |
@@ -640,8 +640,8 @@ WaveDB stores access control **inline in `Metadata`**, scoped per record. The `p
 
 ### Granted Operations by Data Shape
 
-| Data shape                 | Operations                               |
-| -------------------------- | ---------------------------------------- |
+| Data shape                 | Operations                             |
+| -------------------------- | -------------------------------------- |
 | Unique                     | `read`, `"save"`, `create`             |
 | NonUnique                  | `read`, `"save"`, `create`, `"delete"` |
 | NonUnique-within-NonUnique | `read`, `"save"`, `create`, `"delete"` |

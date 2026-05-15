@@ -133,7 +133,7 @@ mod tests {
     fn converts_at_threshold_plus_one() {
         let mut idx = AdaptiveIndex::with_threshold(5);
         for i in 0..5 {
-            idx.insert(IndexKey(i), AnchorKey::from_raw(i as u128))
+            idx.insert(IndexKey(i), AnchorKey::from_raw(u128::from(i)))
                 .unwrap();
         }
         assert!(!idx.is_tree(), "should still be array at threshold");
@@ -151,14 +151,17 @@ mod tests {
         let mut idx = AdaptiveIndex::with_threshold(threshold);
 
         for i in 0..(threshold + 5) {
-            idx.insert(IndexKey(i as u64 * 7), AnchorKey::from_raw(i as u128))
-                .unwrap();
+            idx.insert(
+                IndexKey(u64::from(i) * 7),
+                AnchorKey::from_raw(u128::from(i)),
+            )
+            .unwrap();
         }
 
         assert!(idx.is_tree());
         for i in 0..(threshold + 5) {
             assert!(
-                idx.lookup(&IndexKey(i as u64 * 7)).is_some(),
+                idx.lookup(&IndexKey(u64::from(i) * 7)).is_some(),
                 "entry {i} lost during conversion"
             );
         }
@@ -168,7 +171,7 @@ mod tests {
     fn conversion_is_one_way() {
         let mut idx = AdaptiveIndex::with_threshold(3);
         for i in 0..5 {
-            idx.insert(IndexKey(i), AnchorKey::from_raw(i as u128))
+            idx.insert(IndexKey(i), AnchorKey::from_raw(u128::from(i)))
                 .unwrap();
         }
         assert!(idx.is_tree());
@@ -187,11 +190,11 @@ mod tests {
             let mut idx = AdaptiveIndex::with_threshold(threshold);
             let n = 20u64;
             for i in (0..n).rev() {
-                idx.insert(IndexKey(i), AnchorKey::from_raw(i as u128))
+                idx.insert(IndexKey(i), AnchorKey::from_raw(u128::from(i)))
                     .unwrap();
             }
             let all = idx.all_sorted();
-            assert_eq!(all.len(), n as usize);
+            assert_eq!(all.len(), usize::try_from(n).unwrap());
             for w in all.windows(2) {
                 assert!(w[0].0 < w[1].0, "must be sorted");
             }
@@ -203,7 +206,7 @@ mod tests {
         for &threshold in &[5u32, 100] {
             let mut idx = AdaptiveIndex::with_threshold(threshold);
             for i in 0..20 {
-                idx.insert(IndexKey(i * 10), AnchorKey::from_raw(i as u128))
+                idx.insert(IndexKey(i * 10), AnchorKey::from_raw(u128::from(i)))
                     .unwrap();
             }
             let result = idx.range(IndexKey(50)..IndexKey(120));

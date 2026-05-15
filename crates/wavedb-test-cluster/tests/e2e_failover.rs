@@ -166,12 +166,15 @@ async fn disconnect_completes_cleanly() {
 
     {
         let db = cluster.open_user(1, 42).await;
-        let _ = db.send(RequestKind::Write {
-            struct_id: 1,
-            user: 1,
-            tenant: 42,
-            payload: vec![1, 2, 3],
-        });
+        let _ = db
+            .send(RequestKind::Write {
+                struct_id: 1,
+                user: 1,
+                tenant: 42,
+                payload: vec![1, 2, 3],
+            })
+            .await
+            .unwrap();
         // Db::drop fires disconnect; the server accepts it gracefully.
     }
 

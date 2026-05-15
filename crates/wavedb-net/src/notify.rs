@@ -158,7 +158,7 @@ mod tests {
         let mut rx = bus.subscribe();
 
         let event = AnchorEvent::updated(42, Some(vec![1, 2, 3]));
-        let sent = bus.publish(event.clone());
+        let sent = bus.publish(event);
         assert_eq!(sent, 1);
 
         let received = rx.try_recv().unwrap();

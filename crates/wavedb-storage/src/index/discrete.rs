@@ -160,7 +160,7 @@ mod tests {
     fn bucket_promotes_to_tree() {
         let mut idx = DiscreteIndex::with_threshold(3);
         for i in 0..5 {
-            idx.insert(1, IndexKey(i), AnchorKey::from_raw(i as u128))
+            idx.insert(1, IndexKey(i), AnchorKey::from_raw(u128::from(i)))
                 .unwrap();
         }
         // All entries should survive the promotion

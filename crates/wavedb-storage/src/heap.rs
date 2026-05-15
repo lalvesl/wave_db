@@ -204,7 +204,7 @@ mod tests {
             HeapStorageResult::HeapStored(a) => {
                 assert_eq!(a.offset % HEAP_ALIGNMENT, 0, "first entry must be aligned");
             }
-            _ => panic!("expected heap"),
+            HeapStorageResult::Inline(_) => panic!("expected heap"),
         }
 
         let data2 = vec![2u8; 200];
@@ -217,7 +217,7 @@ mod tests {
                     "second entry must also be aligned"
                 );
             }
-            _ => panic!("expected heap"),
+            HeapStorageResult::Inline(_) => panic!("expected heap"),
         }
     }
 

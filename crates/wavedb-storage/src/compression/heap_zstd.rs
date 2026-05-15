@@ -33,7 +33,9 @@ mod tests {
     #[test]
     fn roundtrip_large() {
         // 10KB of repetitive data — should compress well
-        let data: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
+        let data: Vec<u8> = (0u32..10_000)
+            .map(|i| u8::try_from(i % 256).unwrap())
+            .collect();
         let compressed = compress(&data).unwrap();
         assert!(
             compressed.len() < data.len(),
@@ -54,7 +56,9 @@ mod tests {
 
     #[test]
     fn higher_level_better_ratio() {
-        let data: Vec<u8> = (0..50_000).map(|i| (i % 100) as u8).collect();
+        let data: Vec<u8> = (0u32..50_000)
+            .map(|i| u8::try_from(i % 100).unwrap())
+            .collect();
         let c1 = compress_level(&data, 1).unwrap();
         let c9 = compress_level(&data, 9).unwrap();
         // Higher level should produce equal or smaller output

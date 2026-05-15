@@ -6,10 +6,10 @@ use wavedb_core::Id;
 proptest! {
     #[test]
     fn id_roundtrip(
-        t in 0u64..((1u64 << 48)),
-        s in 0u16..((1u16 << 12)),
-        sid in 0u32..((1u32 << 20)),
-        c in 0u64..((1u64 << 48))
+        t in 0u64..(1u64 << 48),
+        s in 0u16..(1u16 << 12),
+        sid in 0u32..(1u32 << 20),
+        c in 0u64..(1u64 << 48)
     ) {
         let id = Id::new(t, s, sid, c);
         prop_assert_eq!(id.tenant_id(), t);
@@ -34,10 +34,10 @@ proptest! {
 
     #[test]
     fn id_postcard_roundtrip(
-        t in 0u64..((1u64 << 48)),
-        s in 0u16..((1u16 << 12)),
-        sid in 0u32..((1u32 << 20)),
-        c in 0u64..((1u64 << 48))
+        t in 0u64..(1u64 << 48),
+        s in 0u16..(1u16 << 12),
+        sid in 0u32..(1u32 << 20),
+        c in 0u64..(1u64 << 48)
     ) {
         let id = Id::new(t, s, sid, c);
         let bytes = postcard::to_allocvec(&id).unwrap();
@@ -47,10 +47,10 @@ proptest! {
 
     #[test]
     fn anchor_key_preserves_fields_except_created_at(
-        t in 0u64..((1u64 << 48)),
-        s in 0u16..((1u16 << 12)),
-        sid in 0u32..((1u32 << 20)),
-        c in 0u64..((1u64 << 48))
+        t in 0u64..(1u64 << 48),
+        s in 0u16..(1u16 << 12),
+        sid in 0u32..(1u32 << 20),
+        c in 0u64..(1u64 << 48)
     ) {
         let id = Id::new(t, s, sid, c);
         let anchor = id.anchor_key();
