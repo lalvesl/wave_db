@@ -103,3 +103,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("unique_user_profile example OK");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_main() {
+        super::main().unwrap();
+    }
+}

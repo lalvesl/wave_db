@@ -126,3 +126,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("nested_invoice_lines example OK");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_main() {
+        super::main().unwrap();
+    }
+}

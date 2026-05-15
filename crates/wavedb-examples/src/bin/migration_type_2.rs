@@ -165,3 +165,11 @@ async fn main() {
 
     println!("migration_type_2 example OK");
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_main() {
+        super::main();
+    }
+}

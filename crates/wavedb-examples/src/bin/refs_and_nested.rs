@@ -201,3 +201,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("refs_and_nested example OK");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_main() {
+        super::main().unwrap();
+    }
+}
