@@ -39,18 +39,22 @@
 #![warn(missing_docs)]
 
 mod args;
+mod codegen;
 mod crud;
 mod migration;
 mod utils;
+mod validation;
 
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{ItemStruct, parse_macro_input};
 
 use args::WaveDbArgs;
+use codegen::{build_anchors_impl, build_auto_derives, build_shape};
 use crud::build_crud_impl;
 use migration::build_migration_impl;
-use utils::{collect_derived_traits, parse_trailing_version};
+use utils::parse_trailing_version;
+use validation::{validate_migration_attributes, validate_struct_id};
 
 /// The `#[wave_db(struct_id = N, ...)]` attribute macro.
 ///
@@ -62,30 +66,13 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut args = WaveDbArgs::new();
     let attr_parser = syn::meta::parser(|meta| args.parse(meta));
     parse_macro_input!(attr with attr_parser);
-    let () = ();
 
     // ── Validate struct_id ───────────────────────────────────────────────────
-
-    if args.struct_id == u32::MAX {
-        return syn::Error::new_spanned(&input.ident, "missing `struct_id = N` in #[wave_db]")
-            .to_compile_error()
-            .into();
-    }
-    if args.struct_id >= (1 << 20) {
-        return syn::Error::new_spanned(
-            &input.ident,
-            format!(
-                "struct_id {} does not fit in u20 (max {})",
-                args.struct_id,
-                (1u32 << 20) - 1
-            ),
-        )
-        .to_compile_error()
-        .into();
+    if let Err(e) = validate_struct_id(&input.ident, args.struct_id) {
+        return e.to_compile_error().into();
     }
 
     // ── Parse version from name ──────────────────────────────────────────────
-
     let name = &input.ident;
     let name_str = name.to_string();
     let version = match parse_trailing_version(&name_str, name.span()) {
@@ -94,97 +81,14 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // ── Validate migration attribute combinations ────────────────────────────
-
-    let from_required = [
-        ("migrate_from_with", args.migrate_from_with.is_some()),
-        ("first_try", args.first_try.is_some()),
-    ];
-    for (attr_name, present) in from_required {
-        if present && args.migrate_from.is_none() {
-            return syn::Error::new_spanned(
-                &input.ident,
-                format!("`{attr_name}` requires `migrate_from = OldType` to also be set"),
-            )
-            .to_compile_error()
-            .into();
-        }
-    }
-    if args.migrate_rollback_with.is_some() && args.migrate_rollback.is_none() {
-        return syn::Error::new_spanned(
-            &input.ident,
-            "`migrate_rollback_with` requires `migrate_rollback = NewType` to also be set",
-        )
-        .to_compile_error()
-        .into();
+    if let Err(e) = validate_migration_attributes(&input.ident, &args) {
+        return e.to_compile_error().into();
     }
 
     let sid = args.struct_id;
-
-    // ── Shape ────────────────────────────────────────────────────────────────
-
-    let shape = if args.nested_non_unique {
-        quote! { ::wavedb_core::Shape::NestedNonUnique }
-    } else if args.non_unique {
-        quote! { ::wavedb_core::Shape::NonUnique }
-    } else {
-        quote! { ::wavedb_core::Shape::Unique }
-    };
-
-    // ── Anchor attributes ────────────────────────────────────────────────────
-
-    let threshold_const = args.btree_threshold.map(|t| {
-        quote! {
-            /// The array→B+tree conversion threshold for this struct's indexes.
-            pub const BTREE_THRESHOLD: u32 = #t;
-        }
-    });
-
-    let primary_accessor = args.primary_anchor.as_ref().map(|field| {
-        let find_fn_name = syn::Ident::new(&format!("find_by_{field}"), field.span());
-        quote! {
-            /// Look up a record by its primary anchor field.
-            pub fn primary_anchor_field() -> &'static str {
-                stringify!(#field)
-            }
-            #[doc(hidden)]
-            pub fn __primary_anchor_field_name() -> &'static str {
-                stringify!(#find_fn_name)
-            }
-        }
-    });
-
-    let secondary_field_lists: Vec<&String> = args.secondary_anchors.iter().collect();
-    let secondary_anchors_const = if secondary_field_lists.is_empty() {
-        quote! {}
-    } else {
-        quote! {
-            /// The secondary anchor field lists for this struct.
-            pub const SECONDARY_ANCHOR_FIELDS: &'static [&'static str] = &[
-                #(#secondary_field_lists),*
-            ];
-        }
-    };
-
-    // ── Auto-derives: Debug, Clone, Serialize, Deserialize ──────────────────
-    let existing_derives = collect_derived_traits(&input.attrs);
-    let mut needed = Vec::new();
-    if !existing_derives.contains("Debug") {
-        needed.push(quote! { ::core::fmt::Debug });
-    }
-    if !existing_derives.contains("Clone") {
-        needed.push(quote! { ::core::clone::Clone });
-    }
-    if !existing_derives.contains("Serialize") {
-        needed.push(quote! { ::serde::Serialize });
-    }
-    if !existing_derives.contains("Deserialize") {
-        needed.push(quote! { ::serde::Deserialize });
-    }
-    let auto_derives = if needed.is_empty() {
-        quote! {}
-    } else {
-        quote! { #[derive( #(#needed),* )] }
-    };
+    let shape = build_shape(&args);
+    let anchors_impl = build_anchors_impl(&args);
+    let auto_derives = build_auto_derives(&input.attrs);
 
     // ── Auto-impl UniqueObject / NonUniqueObject ────────────────────────────
     let crud_impl = build_crud_impl(name, &args);
@@ -193,7 +97,6 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     let migration_impl = build_migration_impl(name, sid, version, &args);
 
     // ── Final expansion ──────────────────────────────────────────────────────
-
     let expanded = quote! {
         #auto_derives
         #input
@@ -205,9 +108,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl #name {
-            #threshold_const
-            #primary_accessor
-            #secondary_anchors_const
+            #anchors_impl
         }
 
         #crud_impl
