@@ -27,8 +27,61 @@
 
         # Reads channel, components, and targets from rust-toolchain.toml.
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+
+        # Custom rust platform using the project toolchain (includes wasm32 target).
+        rustPlatform = pkgs.makeRustPlatform {
+          cargo = rustToolchain;
+          rustc = rustToolchain;
+        };
+
+        # wasm-bindgen-cli built at the exact version used by the crate in Cargo.lock.
+        wasmBindgenCli = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "wasm-bindgen-cli";
+          version = "0.2.121";
+
+          src = pkgs.fetchCrate {
+            inherit pname version;
+            hash = "sha256-ZOMgFNOcGkO66Jz/Z83eoIu+DIzo3Z/vq6Z5g6BDY/w=";
+          };
+
+          cargoHash = "sha256-DPdCDPTAPBrbqLUqnCwQu1dePs9lGg85JCJOCIr9qjU=";
+
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.openssl ]
+            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.darwin.apple_sdk.frameworks.Security
+          ];
+        };
       in
       {
+        packages.wasm = rustPlatform.buildRustPackage {
+          pname = "wavedb-wasm";
+          version = "0.1.0";
+          src = ./.;
+
+          cargoLock.lockFile = ./Cargo.lock;
+
+          nativeBuildInputs = [ wasmBindgenCli ];
+
+          buildPhase = ''
+            runHook preBuild
+            cargo build --target wasm32-unknown-unknown --release -p wavedb-wasm
+            runHook postBuild
+          '';
+
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out
+            wasm-bindgen \
+              --out-dir $out \
+              --target bundler \
+              target/wasm32-unknown-unknown/release/wavedb_wasm.wasm
+            runHook postInstall
+          '';
+
+          doCheck = false;
+        };
+
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = with pkgs; [
             pkg-config
@@ -46,6 +99,7 @@
 
             # WASM
             wasm-pack
+            wasm-bindgen-cli
           ];
 
           buildInputs =

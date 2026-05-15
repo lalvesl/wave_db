@@ -160,9 +160,9 @@ jobs:
       - name: nextest
         run: nix develop --command cargo nextest run --workspace --tests --release
 
-  # ── WASM tests ──────────────────────────────────────────────────────────────
+  # ── WASM build ──────────────────────────────────────────────────────────────
   wasm:
-    name: wasm (wasm-pack)
+    name: wasm (wasm-bindgen)
     needs: [check, audit]
     runs-on: ubuntu-latest
     steps:
@@ -174,21 +174,14 @@ jobs:
 
       - uses: DeterminateSystems/magic-nix-cache-action@v8
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: cargo-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml') }}
-          restore-keys: |
-            cargo-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-            cargo-wasm-${{ runner.os }}-
+      - name: build wasm
+        run: nix build .#wasm
 
-      - name: wasm-pack test
-        # Uses the system Chrome bundled in ubuntu-latest; wasm-pack from Nix.
-        run: nix develop --command wasm-pack test --headless --chrome crates/wavedb-wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wavedb-wasm-${{ github.sha }}
+          path: result/
+          if-no-files-found: error
 
   # ── Benchmarks (advisory, PR only) ─────────────────────────────────────────
   bench:
