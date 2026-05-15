@@ -21,8 +21,6 @@ use wavedb_net::mock::ScriptedReply;
 #[wave_db(struct_id = 1)]
 #[derive(PartialEq, Eq)]
 pub struct UserProfile1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub display_name: String,
     pub bio: String,
 }

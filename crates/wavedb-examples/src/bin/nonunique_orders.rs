@@ -19,8 +19,6 @@ use wavedb_net::mock::ScriptedReply;
 #[wave_db(struct_id = 10, NonUnique, btree_threshold = 50)]
 #[derive(PartialEq, Eq)]
 pub struct Order1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub amount: u64,
     pub customer: u64,
 }

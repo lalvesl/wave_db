@@ -1235,8 +1235,6 @@ NonUnique shape with anchor + adaptive index:
 ```rust
 #[wave_db(struct_id = 10, NonUnique, btree_threshold = 50)]
 pub struct Order1 {
-    pub id:       Id,
-    pub metadata: Metadata,
     pub amount:   u64,
     pub customer: u64,
 }
@@ -1252,8 +1250,6 @@ NonUnique-within-NonUnique:
 ```rust
 #[wave_db(struct_id = 20, NonUnique)]
 pub struct Invoice1 {
-    pub id:       Id,
-    pub metadata: Metadata,
     pub customer: u64,
     pub lines:    Iter<InvoiceLine1>,        // tightly bound child collection
 }
@@ -1261,8 +1257,6 @@ pub type Invoice = Invoice1;
 
 #[wave_db(struct_id = 21, NestedNonUnique)]
 pub struct InvoiceLine1 {
-    pub id:       Id,
-    pub metadata: Metadata,
     pub product:  u64,
     pub quantity: u32,
 }
@@ -1279,7 +1273,6 @@ Same struct, version up. Two files: `message_v41.rs` and `message_v42.rs`. The `
 // migration registration
 async fn migrate_41_42(_: &Db, old: Message41) -> Result<Message42> {
     Ok(Message42 {
-        id: old.id, metadata: old.metadata,
         body:    old.body,
         author:  old.author,
         edited:  false,           // new field defaulted

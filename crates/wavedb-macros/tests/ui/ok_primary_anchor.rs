@@ -3,8 +3,6 @@ use wavedb_macros::wave_db;
 
 #[wave_db(struct_id = 25, NonUnique, primary_anchor = username)]
 pub struct User1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub username: String,
     pub email: String,
 }

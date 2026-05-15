@@ -4,8 +4,6 @@ use wavedb_macros::wave_db;
 /// This test should fail because struct_id is missing.
 #[wave_db(NonUnique)]
 pub struct Foo1 {
-    pub id: Id,
-    pub metadata: Metadata,
 }
 
 fn main() {}

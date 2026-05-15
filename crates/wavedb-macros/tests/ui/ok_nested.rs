@@ -3,8 +3,6 @@ use wavedb_macros::wave_db;
 
 #[wave_db(struct_id = 21, NestedNonUnique)]
 pub struct InvoiceLine1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub product: u64,
     pub quantity: u32,
 }

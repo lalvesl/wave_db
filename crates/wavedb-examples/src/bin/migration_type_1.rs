@@ -70,8 +70,6 @@ async fn v42_first_try<Db>(_db: &Db) -> wavedb_core::Result<Option<Message41>> {
 )]
 #[derive(PartialEq, Eq)]
 pub struct Message41 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub body: String,
     pub author: u64,
 }
@@ -86,8 +84,6 @@ pub struct Message41 {
 )]
 #[derive(PartialEq, Eq)]
 pub struct Message42 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub body: String,
     pub author: u64,
     pub edited: bool,

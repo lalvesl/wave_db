@@ -29,8 +29,6 @@ use wavedb::prelude::*;
 #[wave_db(struct_id = 10, NonUnique)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Order1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub customer: u64,
     pub amount_cents: u64,
 }
@@ -38,8 +36,6 @@ pub struct Order1 {
 #[wave_db(struct_id = 11, NonUnique)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OrderItem1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub product: u64,
     pub quantity: u32,
 }
@@ -99,8 +95,6 @@ async fn summary_fallback<Db>(_db: &Db) -> wavedb_core::Result<Option<OrderSumma
 )]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OrderSummary1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub customer: u64,
     pub amount_cents: u64,
     pub item_count: u32,

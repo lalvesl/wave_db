@@ -98,8 +98,6 @@ Every WaveDB object is defined with a Rust proc-macro:
 ```rust
 #[wave_db(struct_id = 1)]
 pub struct UserProfile1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub display_name: String,
     pub bio: String,
 }
@@ -155,8 +153,6 @@ WaveDB's object types are declared through a single `#[wave_db]` proc-macro that
 ```rust
 #[wave_db(struct_id = 7, NonUnique)]
 pub struct Message42 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub body: String,
     pub author: u48,
 }
@@ -210,7 +206,7 @@ Rolling forward or back is then **a one-line edit** — change `Message42` to `M
        migrate_rollback_with = rollback_v42_to_v41,
    )]
    #[derive(serde::Serialize, serde::Deserialize)]
-   pub struct Message41 { pub id: Id, pub metadata: Metadata, pub body: String, pub author: u64 }
+   pub struct Message41 { pub body: String, pub author: u64 }
 
    // ── v42 — current head: declares its predecessor; no migrate_rollback ──────
    #[wave_db(
@@ -221,7 +217,7 @@ Rolling forward or back is then **a one-line edit** — change `Message42` to `M
        first_try         = v42_first_try,
    )]
    #[derive(serde::Serialize, serde::Deserialize)]
-   pub struct Message42 { pub id: Id, pub metadata: Metadata, pub body: String, pub author: u64, pub edited: bool }
+   pub struct Message42 { pub body: String, pub author: u64, pub edited: bool }
    pub type Message = Message42;
    ```
 

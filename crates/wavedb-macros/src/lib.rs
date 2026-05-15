@@ -61,11 +61,39 @@ use validation::{validate_migration_attributes, validate_struct_id};
 /// See the crate-level documentation for the full attribute reference.
 #[proc_macro_attribute]
 pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemStruct);
+    let mut input = parse_macro_input!(item as ItemStruct);
 
     let mut args = WaveDbArgs::new();
     let attr_parser = syn::meta::parser(|meta| args.parse(meta));
     parse_macro_input!(attr with attr_parser);
+
+    if let syn::Fields::Named(ref mut fields) = input.fields {
+        for f in &fields.named {
+            if let Some(ident) = &f.ident {
+                if ident == "id" || ident == "metadata" {
+                    return syn::Error::new_spanned(
+                        f,
+                        format!("field `{}` is automatically added by #[wave_db] and cannot be added manually", ident),
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+            }
+        }
+
+        let id_field: syn::Field = syn::parse_quote! { pub id: Id };
+        let metadata_field: syn::Field = syn::parse_quote! { pub metadata: Metadata };
+
+        fields.named.insert(0, id_field);
+        fields.named.insert(1, metadata_field);
+    } else {
+        return syn::Error::new_spanned(
+            &input.ident,
+            "#[wave_db] requires a struct with named fields",
+        )
+        .to_compile_error()
+        .into();
+    }
 
     // ── Validate struct_id ───────────────────────────────────────────────────
     if let Err(e) = validate_struct_id(&input.ident, args.struct_id) {

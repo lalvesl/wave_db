@@ -3,8 +3,6 @@ use wavedb_macros::wave_db;
 
 #[wave_db(struct_id = 7, NonUnique)]
 pub struct Message42 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub body: String,
 }
 

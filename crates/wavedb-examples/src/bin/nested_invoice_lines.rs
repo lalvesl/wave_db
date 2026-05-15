@@ -20,8 +20,6 @@ use wavedb_net::mock::ScriptedReply;
 #[wave_db(struct_id = 20, NonUnique)]
 #[derive(PartialEq, Eq)]
 pub struct Invoice1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub customer: u64,
     pub total_cents: u64,
 }
@@ -30,8 +28,6 @@ pub type Invoice = Invoice1;
 #[wave_db(struct_id = 21, NestedNonUnique)]
 #[derive(PartialEq, Eq)]
 pub struct InvoiceLine1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub product: u64,
     pub quantity: u32,
     pub unit_cents: u64,

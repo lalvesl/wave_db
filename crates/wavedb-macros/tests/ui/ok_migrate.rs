@@ -67,8 +67,6 @@ async fn v1_fallback<Db>(_db: &Db) -> wavedb_core::Result<Option<Message1>> {
     fallback_not_found    = v1_fallback,
 )]
 pub struct Message1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub body: String,
 }
 
@@ -84,8 +82,6 @@ pub struct Message1 {
     first_try             = v2_first_try,
 )]
 pub struct Message2 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub body: String,
     pub edited: bool,
 }
@@ -99,8 +95,6 @@ pub struct Message2 {
     migrate_from_with = migrate_v2_v3,
 )]
 pub struct Message3 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub body: String,
     pub edited: bool,
     pub author: u64,

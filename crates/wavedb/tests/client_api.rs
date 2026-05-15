@@ -21,8 +21,6 @@ use wavedb_net::mock::ScriptedReply;
 #[wave_db(struct_id = 100)]
 #[derive(PartialEq)]
 pub struct UserProfile1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub display_name: String,
 }
 pub type UserProfile = UserProfile1;
@@ -30,8 +28,6 @@ pub type UserProfile = UserProfile1;
 #[wave_db(struct_id = 101, NonUnique)]
 #[derive(PartialEq)]
 pub struct Order1 {
-    pub id: Id,
-    pub metadata: Metadata,
     pub amount: u64,
     pub status: String,
 }
