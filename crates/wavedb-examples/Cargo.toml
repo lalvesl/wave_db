@@ -35,6 +35,10 @@ path = "src/bin/distributed_cluster.rs"
 name = "refs_and_nested"
 path = "src/bin/refs_and_nested.rs"
 
+[[bin]]
+name = "anchors"
+path = "src/bin/anchors.rs"
+
 [dependencies]
 wavedb = { path = "../wavedb" }
 wavedb-net = { path = "../wavedb-net" }

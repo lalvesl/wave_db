@@ -133,7 +133,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     mock.push(ScriptedReply::ok(Vec::new()));
     mock.push(ScriptedReply::ok(Vec::new()));
     // query authors → [author_with_featured]
-    mock.push(ScriptedReply::ok(encode_query(&[author_with_featured.clone()])));
+    mock.push(ScriptedReply::ok(encode_query(&[
+        author_with_featured.clone()
+    ])));
     // query books → [book]   (mock returns regardless of filter)
     mock.push(ScriptedReply::ok(encode_query(&[book.clone()])));
     // query chapters under the book → [chapter_a, chapter_b]
