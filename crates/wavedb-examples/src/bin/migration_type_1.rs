@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Db::open_with_transport(mock, 1, 100).await?;
 
     // Write the old version.
-    stored_v41.clone().update(&db).await?;
+    stored_v41.clone().save(&db).await?;
     println!("\nWrote a Message41 record.");
 
     // Read it back as the NEW version — engine runs forward migration.
@@ -194,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  → Message41::search returned: {as_v41:?}");
 
     // Write the new version.
-    stored_v42.clone().update(&db).await?;
+    stored_v42.clone().save(&db).await?;
     println!("\nWrote a Message42 record.");
 
     // Read it back as the OLD version — engine runs rollback.

@@ -101,11 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Db::open_with_transport(mock, /* user= */ 1, /* tenant= */ 42).await?;
 
     // Write parent invoice
-    invoice.update(&db).await?;
+    invoice.save(&db).await?;
 
     // Write nested lines — InvoiceLine is also auto-impl'd with NonUniqueObject.
-    line_a.update(&db).await?;
-    line_b.update(&db).await?;
+    line_a.save(&db).await?;
+    line_b.save(&db).await?;
 
     // Query invoices at the top level — works because Invoice is NonUnique
     let found_invoices = Invoice::query(&db, Expr::all()).await?;

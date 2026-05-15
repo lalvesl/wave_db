@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         existing
     } else {
         println!("No profile yet — creating Aurora");
-        new_profile.clone().update(&db).await?;
+        new_profile.clone().save(&db).await?;
         new_profile
     };
     assert_eq!(profile.display_name, "Aurora");
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Client role: update bio
     let mut to_update = found;
     to_update.bio = "Updated bio.".into();
-    to_update.update(&db).await?;
+    to_update.save(&db).await?;
 
     // Read back the update
     let after_update = UserProfile::search(&db).await?.expect("still exists");

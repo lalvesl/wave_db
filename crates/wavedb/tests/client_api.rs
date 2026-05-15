@@ -201,7 +201,7 @@ async fn update_unique_sends_write_request() {
     mock.push(ScriptedReply::ok(Vec::new())); // write ack
 
     let db = Db::open_with_transport(mock.clone(), 1, 100).await.unwrap();
-    profile.clone().update(&db).await.unwrap();
+    profile.clone().save(&db).await.unwrap();
 
     let log = mock.log();
     // log[0] = Connect; log[1] = Write

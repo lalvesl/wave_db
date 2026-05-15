@@ -147,11 +147,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = Db::open_with_transport(mock, /* user= */ 1, tenant).await?;
 
     // ── Writes ───────────────────────────────────────────────────────────────
-    author_initial.update(&db).await?;
-    book.clone().update(&db).await?;
-    author_with_featured.update(&db).await?;
-    chapter_a.clone().update(&db).await?;
-    chapter_b.clone().update(&db).await?;
+    author_initial.save(&db).await?;
+    book.clone().save(&db).await?;
+    author_with_featured.save(&db).await?;
+    chapter_a.clone().save(&db).await?;
+    chapter_b.clone().save(&db).await?;
     println!("Wrote 1 author, 1 book, 2 chapters");
 
     // ── Read author, follow the featured-book reference ─────────────────────

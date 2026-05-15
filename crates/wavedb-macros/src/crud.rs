@@ -17,7 +17,7 @@ pub fn build_crud_impl(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStr
                     ::wavedb::object::do_query_non_unique::<Self>(db, expr)
                 }
 
-                fn update(
+                fn save(
                     self,
                     db: &::wavedb::Db,
                 ) -> impl ::core::future::Future<Output = ::wavedb_core::Result<()>>
@@ -46,7 +46,7 @@ pub fn build_crud_impl(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStr
                     ::wavedb::object::do_search_unique::<Self>(db)
                 }
 
-                fn update(
+                fn save(
                     self,
                     db: &::wavedb::Db,
                 ) -> impl ::core::future::Future<Output = ::wavedb_core::Result<()>>

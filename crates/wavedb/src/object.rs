@@ -29,7 +29,7 @@ pub trait UniqueObject: WaveDbStruct + Sized {
     /// Writes a versioned record and rotates the anchor to point at it.
     /// If `id` and `metadata` are at their defaults, the engine assigns
     /// fresh values at write time.
-    fn update(self, db: &Db) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn save(self, db: &Db) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
 /// Behaviour for **NonUnique** records — many live records per tenant.
@@ -44,7 +44,7 @@ pub trait NonUniqueObject: WaveDbStruct + Sized {
     fn query(db: &Db, expr: Expr) -> impl std::future::Future<Output = Result<Vec<Self>>> + Send;
 
     /// Persist this record as a new versioned entry, rotating the anchor.
-    fn update(self, db: &Db) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn save(self, db: &Db) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Delete this record: write a tombstone to the anchor.
     fn delete(self, db: &Db) -> impl std::future::Future<Output = Result<()>> + Send;

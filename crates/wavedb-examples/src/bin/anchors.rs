@@ -169,8 +169,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db = Db::open_with_transport(mock, /* user= */ 1, /* tenant= */ 42).await?;
 
-    alice.clone().update(&db).await?;
-    bob.clone().update(&db).await?;
+    alice.clone().save(&db).await?;
+    bob.clone().save(&db).await?;
     println!();
     println!("Wrote 2 employees");
 

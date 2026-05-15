@@ -50,7 +50,7 @@
 //! |-----------|-----------------|---------------------|
 //! | **search** | `search(&db)` → `Option<Self>` | — |
 //! | **query** | — | `query(&db, expr)` → `Vec<Self>` |
-//! | **update** | `update(self, &db)` | `update(self, &db)` |
+//! | **save** | `save(self, &db)` | `save(self, &db)` |
 //! | **delete** | — | `delete(self, &db)` |
 //!
 //! Queries use the composable [`Expr`] DSL.  Expressions are serialised
@@ -86,7 +86,7 @@
 //!     {
 //!         wavedb::object::do_search_unique::<Self>(db)
 //!     }
-//!     fn update(self, db: &Db)
+//!     fn save(self, db: &Db)
 //!         -> impl std::future::Future<Output = wavedb_core::Result<()>> + Send
 //!     {
 //!         wavedb::object::do_write(db, &self)
@@ -104,7 +104,7 @@
 //!     {
 //!         wavedb::object::do_query_non_unique::<Self>(db, expr)
 //!     }
-//!     fn update(self, db: &Db)
+//!     fn save(self, db: &Db)
 //!         -> impl std::future::Future<Output = wavedb_core::Result<()>> + Send
 //!     {
 //!         wavedb::object::do_write(db, &self)

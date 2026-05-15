@@ -59,11 +59,11 @@ WaveDB recognises **three** data shapes, each with different ownership and index
 
 | Shape                          | Cardinality per tenant                                         | Examples                                    | Allowed operations                       |
 | ------------------------------ | -------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------- |
-| **Unique**                     | Exactly one live record per `(STRUCT_ID, TENANT_ID)`           | User profile, company settings              | `read`, `"update"`, `create`             |
-| **NonUnique**                  | Many live records per tenant                                   | Orders, messages, files                     | `read`, `"update"`, `create`, `"delete"` |
-| **NonUnique-within-NonUnique** | Many records tightly bound to a single parent NonUnique record | Lines on an invoice, tasks inside a project | `read`, `"update"`, `create`, `"delete"` |
+| **Unique**                     | Exactly one live record per `(STRUCT_ID, TENANT_ID)`           | User profile, company settings              | `read`, `"save"`, `create`             |
+| **NonUnique**                  | Many live records per tenant                                   | Orders, messages, files                     | `read`, `"save"`, `create`, `"delete"` |
+| **NonUnique-within-NonUnique** | Many records tightly bound to a single parent NonUnique record | Lines on an invoice, tasks inside a project | `read`, `"save"`, `create`, `"delete"` |
 
-> `"update"` and `"delete"` are quoted because WaveDB is versioned: an update writes a new versioned record and rotates the anchor; a delete writes a tombstone. The bytes never disappear, and Unique records have no `delete` because there is nothing single-record-deletable about an exclusive record per tenant.
+> `"save"` and `"delete"` are quoted because WaveDB is versioned: an update writes a new versioned record and rotates the anchor; a delete writes a tombstone. The bytes never disappear, and Unique records have no `delete` because there is nothing single-record-deletable about an exclusive record per tenant.
 
 The third shape — **NonUnique-within-NonUnique** — is _not_ modelled as a generic many-to-many. Lines on an invoice have no independent identity; they exist only in the context of their parent invoice. Treating them as M2M cross-references would force needless anchor maintenance for relationships that never escape their parent. Instead, WaveDB stores them as a tightly-coupled child collection under the parent's address space.
 
@@ -642,9 +642,9 @@ WaveDB stores access control **inline in `Metadata`**, scoped per record. The `p
 
 | Data shape                 | Operations                               |
 | -------------------------- | ---------------------------------------- |
-| Unique                     | `read`, `"update"`, `create`             |
-| NonUnique                  | `read`, `"update"`, `create`, `"delete"` |
-| NonUnique-within-NonUnique | `read`, `"update"`, `create`, `"delete"` |
+| Unique                     | `read`, `"save"`, `create`             |
+| NonUnique                  | `read`, `"save"`, `create`, `"delete"` |
+| NonUnique-within-NonUnique | `read`, `"save"`, `create`, `"delete"` |
 
 Unique records have no `delete` because deleting the _only_ record of its kind for a tenant is semantically a tenant-level action, not a record-level one.
 
@@ -856,7 +856,7 @@ let other = db.another_tenant(other_tenant_id).await?;
 
 ### Object lifecycle
 
-Objects can never be **created in isolation**. Every `create` is preceded by a "does this exist?" check — if it does, you `update`; if it doesn't, the engine assigns a fresh `Id` and `Metadata` and saves. Local code uses `Default::default()` for both `Id` and `Metadata`, and the engine fills in the real values at `save` / `send` time.
+Objects can never be **created in isolation**. Every `create` is preceded by a "does this exist?" check — if it does, you `save`; if it doesn't, the engine assigns a fresh `Id` and `Metadata` and saves. Local code uses `Default::default()` for both `Id` and `Metadata`, and the engine fills in the real values at `save` / `send` time.
 
 ```rust
 // Lookup a Unique record — returns Option because the record may not exist yet.
@@ -866,7 +866,7 @@ let profile: Option<UserProfile> = UserProfile::search(&db).await?;
 let recent: Vec<Order> = Order::query(&db, expr.gt(Order::amount, 100)).await?;
 
 // Update (versioned in place) and delete (NonUnique only).
-order.update(&db).await?;
+order.save(&db).await?;
 order.delete(&db).await?;
 ```
 

@@ -809,7 +809,7 @@ impl MigrationRegistry {
 
 ## Phase 10 — Client API (`wavedb`)
 
-**Goal:** The umbrella crate exposes the four `Db::open` constructors, `another_tenant`, `search`, `query`, `update`, `delete`, and a working `Drop` impl that disconnects from the Quick-Node.
+**Goal:** The umbrella crate exposes the four `Db::open` constructors, `another_tenant`, `search`, `query`, `save`, `delete`, and a working `Drop` impl that disconnects from the Quick-Node.
 
 ### `crates/wavedb/Cargo.toml`
 
@@ -872,12 +872,12 @@ impl Drop for Db {
 
 pub trait UniqueObject: WaveDbStruct + Sized {
     async fn search(db: &Db) -> Result<Option<Self>>;
-    async fn update(self, db: &Db) -> Result<()>;
+    async fn save(self, db: &Db) -> Result<()>;
 }
 
 pub trait NonUniqueObject: WaveDbStruct + Sized {
     async fn query(db: &Db, expr: Expr) -> Result<Vec<Self>>;
-    async fn update(self, db: &Db) -> Result<()>;
+    async fn save(self, db: &Db) -> Result<()>;
     async fn delete(self, db: &Db) -> Result<()>;
 }
 ```
@@ -1111,7 +1111,7 @@ async fn user_failover_to_backup() -> anyhow::Result<()> {
     let db = cluster.open_user(/*user*/ 1, /*tenant*/ 42).await;
 
     let order = Order { id: Default::default(), metadata: Default::default(), amount: 100 };
-    order.update(&db).await?;
+    order.save(&db).await?;
 
     cluster.kill_quick_node(0).await;     // kill the owner
     let again = Order::query(&db, Expr::all()).await?;
@@ -1208,7 +1208,7 @@ async fn main() -> anyhow::Result<()> {
     let profile = match UserProfile::search(&db).await? {
         Some(mut existing) => {
             existing.bio = "Updated.".into();
-            existing.update(&db).await?;
+            existing.save(&db).await?;
             existing
         }
         None => {
@@ -1218,7 +1218,7 @@ async fn main() -> anyhow::Result<()> {
                 display_name: "Aurora".into(),
                 bio:          "First write.".into(),
             };
-            new.update(&db).await?;
+            new.save(&db).await?;
             new
         }
     };

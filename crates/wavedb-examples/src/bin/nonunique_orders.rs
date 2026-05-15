@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Write three orders
     for order in &orders_all {
-        order.clone().update(&db).await?;
+        order.clone().save(&db).await?;
     }
     println!("Wrote {} orders", orders_all.len());
 
