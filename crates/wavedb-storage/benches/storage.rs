@@ -4,8 +4,6 @@ use wavedb_core::Id;
 use wavedb_storage::{AnchorKey, AnchorSlot, DataFile, VersionedRecord, hash};
 
 fn bench_anchor_write(c: &mut Criterion) {
-    let dir = tempdir().unwrap();
-    let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
     let slot = AnchorSlot::inline(b"bench payload 32 bytes of data!!", 0);
 
     let mut group = c.benchmark_group("anchor_write");
@@ -13,34 +11,50 @@ fn bench_anchor_write(c: &mut Criterion) {
 
     let mut counter = 0u64;
     group.bench_function("inline_primary", |b| {
-        b.iter(|| {
-            let id = Id::new(1, 0, 0, counter);
-            counter = counter.wrapping_add(1);
-            let key = AnchorKey::from(id);
-            file.write_anchor(key, &slot).unwrap();
-        });
+        b.iter_batched(
+            || {
+                // Fresh DataFile per batch so pages never fill up.
+                let dir = tempdir().unwrap();
+                let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
+                (dir, file)
+            },
+            |(_dir, file)| {
+                // Vary tenant_id so writes distribute across pages
+                // (page_hash only uses struct_id, tenant_id, shard_id).
+                counter = counter.wrapping_add(1);
+                let tenant = counter % 256;
+                let id = Id::new(tenant, 0, 0, counter);
+                let key = AnchorKey::from(id);
+                file.write_anchor(key, &slot).unwrap();
+            },
+            criterion::BatchSize::SmallInput,
+        );
     });
 
     group.finish();
 }
 
 fn bench_anchor_read(c: &mut Criterion) {
-    let dir = tempdir().unwrap();
-    let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
-
     let mut group = c.benchmark_group("anchor_read");
     group.throughput(Throughput::Elements(1));
 
     // Pre-populate N anchors, then benchmark reads (warm cache).
-    for &n in &[1_000u64, 10_000, 100_000] {
+    // Vary tenant_id so writes distribute across pages.
+    for &n in &[100u64, 500, 2_000] {
+        let dir = tempdir().unwrap();
+        let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
         let slot = AnchorSlot::inline(b"bench read payload", 0);
         for i in 0..n {
-            let key = AnchorKey::from(Id::new(2, 0, 0, i));
+            let tenant = i % 256;
+            let key = AnchorKey::from(Id::new(tenant, 0, 0, i));
             file.write_anchor(key, &slot).unwrap();
         }
 
-        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
-            let target = AnchorKey::from(Id::new(2, 0, 0, n / 2));
+        // Read a key that was definitely written.
+        let target_i = n / 2;
+        let target_tenant = target_i % 256;
+        group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            let target = AnchorKey::from(Id::new(target_tenant, 0, 0, target_i));
             b.iter(|| {
                 criterion::black_box(file.read_anchor(target).unwrap());
             });
@@ -51,8 +65,6 @@ fn bench_anchor_read(c: &mut Criterion) {
 }
 
 fn bench_versioned_write(c: &mut Criterion) {
-    let dir = tempdir().unwrap();
-    let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
     let data = vec![0u8; 128];
 
     let mut group = c.benchmark_group("versioned_write");
@@ -60,12 +72,20 @@ fn bench_versioned_write(c: &mut Criterion) {
 
     let mut counter = 0u64;
     group.bench_function("single_128b", |b| {
-        b.iter(|| {
-            let id = Id::new(3, 0, 0, counter);
-            counter = counter.wrapping_add(1);
-            let rec = VersionedRecord::new(id.raw(), data.clone());
-            file.write_versioned(&rec).unwrap();
-        });
+        b.iter_batched(
+            || {
+                let dir = tempdir().unwrap();
+                let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
+                (dir, file)
+            },
+            |(_dir, file)| {
+                counter = counter.wrapping_add(1);
+                let id = Id::new(3, 0, 0, counter);
+                let rec = VersionedRecord::new(id.raw(), data.clone());
+                file.write_versioned(&rec).unwrap();
+            },
+            criterion::BatchSize::SmallInput,
+        );
     });
 
     group.finish();

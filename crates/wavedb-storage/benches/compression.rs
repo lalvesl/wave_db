@@ -43,7 +43,7 @@ fn bench_heap_decompress(c: &mut Criterion) {
 
 fn bench_page_codec(c: &mut Criterion) {
     let mut group = c.benchmark_group("compression/page_codec");
-    group.sample_size(2);
+    group.sample_size(10);
 
     for &size in SIZES_BYTES {
         let payload = make_payload(size);
