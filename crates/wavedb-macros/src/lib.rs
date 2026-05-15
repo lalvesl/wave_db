@@ -73,7 +73,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
                 if ident == "id" || ident == "metadata" {
                     return syn::Error::new_spanned(
                         f,
-                        format!("field `{}` is automatically added by #[wave_db] and cannot be added manually", ident),
+                        format!("field `{ident}` is automatically added by #[wave_db] and cannot be added manually"),
                     )
                     .to_compile_error()
                     .into();

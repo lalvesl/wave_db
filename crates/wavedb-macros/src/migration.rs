@@ -172,37 +172,43 @@ pub fn build_migration_impl(
     // walks the chain (via `MigratesFrom`/`RollbackFrom`) to deserialize stored
     // bytes at any version into `Self`.  No manual `register_migration` needed —
     // the chain is the type system.
-    let less_branch = match (&args.migrate_from, &args.migrate_from_with) {
-        (Some(old_type), Some(_)) => quote! {
+    let less_branch = if let (Some(old_type), Some(_)) =
+        (&args.migrate_from, &args.migrate_from_with)
+    {
+        quote! {
             let source: #old_type = <#old_type as ::wavedb_core::MigrationChain<__WaveDbDb>>::read_as_self(
                 db, bytes, stored_version,
             ).await?;
             <Self>::__wave_db_migrate_from(db, source).await
-        },
-        _ => quote! {
+        }
+    } else {
+        quote! {
             ::core::result::Result::Err(::wavedb_core::Error::Other(::std::format!(
                 "no upgrade path: {} v{} cannot read stored v{}",
                 ::core::stringify!(#name),
                 <Self as ::wavedb_core::WaveDbStruct>::STRUCT_VERSION,
                 stored_version,
             )))
-        },
+        }
     };
-    let greater_branch = match (&args.migrate_rollback, &args.migrate_rollback_with) {
-        (Some(new_type), Some(_)) => quote! {
+    let greater_branch = if let (Some(new_type), Some(_)) =
+        (&args.migrate_rollback, &args.migrate_rollback_with)
+    {
+        quote! {
             let future: #new_type = <#new_type as ::wavedb_core::MigrationChain<__WaveDbDb>>::read_as_self(
                 db, bytes, stored_version,
             ).await?;
             <Self>::__wave_db_migrate_rollback(db, future).await
-        },
-        _ => quote! {
+        }
+    } else {
+        quote! {
             ::core::result::Result::Err(::wavedb_core::Error::Other(::std::format!(
                 "no rollback path: {} v{} cannot read stored v{}",
                 ::core::stringify!(#name),
                 <Self as ::wavedb_core::WaveDbStruct>::STRUCT_VERSION,
                 stored_version,
             )))
-        },
+        }
     };
     let migration_chain_impl = quote! {
         impl<__WaveDbDb> ::wavedb_core::MigrationChain<__WaveDbDb> for #name
