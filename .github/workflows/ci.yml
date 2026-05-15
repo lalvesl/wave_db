@@ -53,6 +53,7 @@ jobs:
   # ── Unit + integration tests — Linux (Nix) ────────────────────────────────
   test-linux:
     name: test (ubuntu · nix)
+    needs: [check, audit]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,6 +85,7 @@ jobs:
   # ── Unit + integration tests — macOS (native) ─────────────────────────────
   test-macos:
     name: test (macos · native)
+    needs: [check, audit]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,6 +110,7 @@ jobs:
   # ── Unit + integration tests — Windows (native) ───────────────────────────
   test-windows:
     name: test (windows · native)
+    needs: [check, audit]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -131,6 +134,7 @@ jobs:
   # ── End-to-end tests (nextest) ──────────────────────────────────────────────
   e2e:
     name: e2e (nextest)
+    needs: [check, audit]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -159,6 +163,7 @@ jobs:
   # ── WASM tests ──────────────────────────────────────────────────────────────
   wasm:
     name: wasm (wasm-pack)
+    needs: [check, audit]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -188,6 +193,7 @@ jobs:
   # ── Benchmarks (advisory, PR only) ─────────────────────────────────────────
   bench:
     name: bench (criterion)
+    needs: [check, audit]
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:

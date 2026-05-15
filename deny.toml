@@ -1,7 +1,9 @@
 [advisories]
 version = 2
 # Deny crates with known CVEs.
-ignore = []
+ignore = [
+  "RUSTSEC-2023-0089", # atomic-polyfill unmaintained
+]
 
 [licenses]
 version = 2
@@ -14,14 +16,10 @@ allow = [
   "BSD-3-Clause",
   "ISC",
   "Unicode-3.0",
-  "Unicode-DFS-2016",
   "Zlib",
   "CC0-1.0",
+  "CDLA-Permissive-2.0",
 ]
-# # Crates whose license cannot be determined default to deny.
-# unlicensed = "deny"
-# # GPL-family are not used; warn rather than deny so dev tools don't block.
-# copyleft = "warn"
 
 [[licenses.clarify]]
 name = "ring"

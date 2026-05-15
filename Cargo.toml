@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
-license = "TBD"
+license = "MIT OR Apache-2.0"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
