@@ -156,7 +156,10 @@ impl MigrationRegistry {
     /// call.  The forward edge is registered separately by the newer struct
     /// via `register_forward`.
     pub fn register_rollback(&mut self, future: VersionRef, target: VersionRef) {
-        self.backward.entry(future).or_default().push((target, true));
+        self.backward
+            .entry(future)
+            .or_default()
+            .push((target, true));
     }
 
     /// Register a compose migration (Type 2: merge multiple sources into one target).

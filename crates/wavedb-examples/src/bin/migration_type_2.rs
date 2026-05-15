@@ -62,10 +62,7 @@ async fn summary_first_try<Db>(_db: &Db) -> wavedb_core::Result<Option<Order1>> 
 // The Db handle gives the migration full access to the rest of the database so
 // it can pull whatever side data the composition needs.  Here we hard-code a
 // fake item count; production code would `OrderItem::query(db, …).await?`.
-async fn compose_summary<Db>(
-    _db: &Db,
-    order: Order1,
-) -> wavedb_core::Result<OrderSummary1> {
+async fn compose_summary<Db>(_db: &Db, order: Order1) -> wavedb_core::Result<OrderSummary1> {
     let item_count = 2; // would be: OrderItem::query(db, parent=order.id).await?.len()
     Ok(OrderSummary1 {
         id: order.id,

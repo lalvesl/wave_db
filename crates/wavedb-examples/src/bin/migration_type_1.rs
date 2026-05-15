@@ -34,10 +34,7 @@ use wavedb_net::mock::ScriptedReply;
 
 // ── Migration fns (async, generic over Db) ────────────────────────────────────
 
-async fn migrate_v41_v42<Db>(
-    _db: &Db,
-    old: Message41,
-) -> wavedb_core::Result<Message42> {
+async fn migrate_v41_v42<Db>(_db: &Db, old: Message41) -> wavedb_core::Result<Message42> {
     Ok(Message42 {
         id: old.id,
         metadata: old.metadata,
@@ -48,10 +45,7 @@ async fn migrate_v41_v42<Db>(
 }
 
 // Rollback declared on the OLDER struct (Message41): takes Future, returns Self.
-async fn rollback_v42_to_v41<Db>(
-    _db: &Db,
-    future: Message42,
-) -> wavedb_core::Result<Message41> {
+async fn rollback_v42_to_v41<Db>(_db: &Db, future: Message42) -> wavedb_core::Result<Message41> {
     Ok(Message41 {
         id: future.id,
         metadata: future.metadata,

@@ -87,9 +87,7 @@ where
         bytes: &'a [u8],
         stored_version: u8,
     ) -> ::core::pin::Pin<
-        ::std::boxed::Box<
-            dyn ::core::future::Future<Output = crate::Result<Self>> + Send + 'a,
-        >,
+        ::std::boxed::Box<dyn ::core::future::Future<Output = crate::Result<Self>> + Send + 'a>,
     >
     where
         Db: 'a;
