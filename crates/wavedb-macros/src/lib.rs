@@ -1,11 +1,40 @@
 //! `WaveDB` proc-macros — the `#[wave_db]` attribute macro.
 //!
-//! The macro does five jobs at compile time:
-//! 1. Implements `WaveDbStruct` with `STRUCT_ID`, `STRUCT_VERSION`, and `SHAPE`.
-//! 2. Validates `struct_id` fits in u20.
-//! 3. Parses the trailing integer of the struct name as `struct_version` (u8).
-//! 4. Accepts flags: `NonUnique`, `NestedNonUnique`.
-//! 5. Accepts (optional) `primary_anchor` and `secondary_anchor` attributes.
+//! # What the macro does at compile time
+//!
+//! 1. Implements `WaveDbStruct` — pins `STRUCT_ID`, `STRUCT_VERSION`, `SHAPE`.
+//! 2. Validates `struct_id` fits in u20, struct name ends with a version digit.
+//! 3. Accepts shape flags: `NonUnique`, `NestedNonUnique`.
+//! 4. Accepts anchor attributes: `primary_anchor`, `secondary_anchor`, `btree_threshold`.
+//! 5. Accepts migration attributes (see below).
+//!
+//! # Migration attributes
+//!
+//! Each versioned struct declares its **immediate neighbours** in the chain:
+//!
+//! | Attribute | Direction | Kind | Description |
+//! |-----------|-----------|------|-------------|
+//! | `migrate_from = OldType` | backward | **type** | The older predecessor struct. |
+//! | `migrate_from_with = fn` | backward | async fn | `async fn<Db>(&Db, OldType) -> Result<Self>` |
+//! | `migrate_rollback = NewType` | forward | **type** | The newer successor struct (this struct receives its rollback). |
+//! | `migrate_rollback_with = fn` | forward | async fn | `async fn<Db>(&Db, NewType) -> Result<Self>` |
+//! | `first_try = fn` | — | async fn | `async fn<Db>(&Db) -> Result<Option<OldType>>` — called **before** the DB search; if `Some`, skip DB and run forward migration instead. |
+//! | `fallback_not_found = fn` | — | async fn | `async fn<Db>(&Db) -> Result<Option<Self>>` — called when not found in the DB. |
+//!
+//! # Chain bounds
+//!
+//! - **First (oldest) version**: has no `migrate_from`. May have `migrate_rollback` once a vN+1 exists.
+//! - **Middle versions**: have both `migrate_from` (older) and `migrate_rollback` (newer).
+//! - **Last (current) version**: has `migrate_from` but no `migrate_rollback` yet.
+//!
+//! The full chain is traversable at compile time via `MigratesFrom::Source` (backward) and
+//! `RollbackFrom::Future` (forward) — the registry can be reconstructed entirely from types.
+//!
+//! # Attribute dependencies
+//!
+//! - `migrate_from_with`, `first_try`     → require `migrate_from`
+//! - `migrate_rollback_with`              → requires `migrate_rollback`
+//! - `fallback_not_found`                 → standalone
 
 #![warn(missing_docs)]
 
@@ -22,6 +51,19 @@ struct WaveDbArgs {
     primary_anchor: Option<syn::Ident>,
     secondary_anchors: Vec<String>,
     btree_threshold: Option<u32>,
+    // ── Migration ────────────────────────────────────────────────────────────
+    /// TYPE path of the older predecessor (e.g. `Message1`).
+    migrate_from: Option<syn::Path>,
+    /// Async fn: `async fn<Db>(&Db, OldType) -> Result<Self>`
+    migrate_from_with: Option<syn::Path>,
+    /// TYPE path of the newer successor (e.g. `Message3`).
+    migrate_rollback: Option<syn::Path>,
+    /// Async fn: `async fn<Db>(&Db, NewType) -> Result<Self>`
+    migrate_rollback_with: Option<syn::Path>,
+    /// Async fn: `async fn<Db>(&Db) -> Result<Option<OldType>>` (before DB search)
+    first_try: Option<syn::Path>,
+    /// Async fn: `async fn<Db>(&Db) -> Result<Option<Self>>` (after DB returns None)
+    fallback_not_found: Option<syn::Path>,
 }
 
 impl WaveDbArgs {
@@ -33,6 +75,12 @@ impl WaveDbArgs {
             primary_anchor: None,
             secondary_anchors: Vec::new(),
             btree_threshold: None,
+            migrate_from: None,
+            migrate_from_with: None,
+            migrate_rollback: None,
+            migrate_rollback_with: None,
+            first_try: None,
+            fallback_not_found: None,
         }
     }
 
@@ -42,20 +90,15 @@ impl WaveDbArgs {
             let value = meta.value()?;
             let lit: LitInt = value.parse()?;
             self.struct_id = lit.base10_parse()?;
-            Ok(())
         } else if meta.path.is_ident("NonUnique") {
             self.non_unique = true;
-            Ok(())
         } else if meta.path.is_ident("NestedNonUnique") {
             self.nested_non_unique = true;
-            Ok(())
         } else if meta.path.is_ident("primary_anchor") {
             let value = meta.value()?;
             let ident: syn::Ident = value.parse()?;
             self.primary_anchor = Some(ident);
-            Ok(())
         } else if meta.path.is_ident("secondary_anchor") {
-            // Parse secondary_anchor = "field1,field2" as a string literal
             let value = meta.value()?;
             let lit: LitStr = value.parse()?;
             let s = lit.value();
@@ -63,19 +106,37 @@ impl WaveDbArgs {
                 return Err(meta.error("secondary_anchor requires at least one field"));
             }
             self.secondary_anchors.push(s);
-            Ok(())
         } else if meta.path.is_ident("btree_threshold") {
             let value = meta.value()?;
             let lit: LitInt = value.parse()?;
             self.btree_threshold = Some(lit.base10_parse()?);
-            Ok(())
+        // ── Migration attributes ──────────────────────────────────────────
+        } else if meta.path.is_ident("migrate_from") {
+            let value = meta.value()?;
+            self.migrate_from = Some(value.parse()?);
+        } else if meta.path.is_ident("migrate_from_with") {
+            let value = meta.value()?;
+            self.migrate_from_with = Some(value.parse()?);
+        } else if meta.path.is_ident("migrate_rollback") {
+            let value = meta.value()?;
+            self.migrate_rollback = Some(value.parse()?);
+        } else if meta.path.is_ident("migrate_rollback_with") {
+            let value = meta.value()?;
+            self.migrate_rollback_with = Some(value.parse()?);
+        } else if meta.path.is_ident("first_try") {
+            let value = meta.value()?;
+            self.first_try = Some(value.parse()?);
+        } else if meta.path.is_ident("fallback_not_found") {
+            let value = meta.value()?;
+            self.fallback_not_found = Some(value.parse()?);
         } else {
-            Err(meta.error("unrecognized wave_db attribute"))
+            return Err(meta.error("unrecognized wave_db attribute"));
         }
+        Ok(())
     }
 }
 
-/// Parse the trailing integer from a struct name (e.g. "Message42" → 42).
+/// Parse the trailing integer from a struct name (e.g. `"Message42"` → `42`).
 fn parse_trailing_version(name: &str, span: proc_macro2::Span) -> syn::Result<u8> {
     let digit_start = name
         .rfind(|c: char| !c.is_ascii_digit())
@@ -99,17 +160,7 @@ fn parse_trailing_version(name: &str, span: proc_macro2::Span) -> syn::Result<u8
 
 /// The `#[wave_db(struct_id = N, ...)]` attribute macro.
 ///
-/// Implements `WaveDbStruct` for the annotated struct and optionally generates
-/// anchor accessor methods.
-///
-/// # Attributes
-///
-/// - `struct_id = N` — **required**. The permanent struct family ID (u20).
-/// - `NonUnique` — marks the struct as having many records per tenant.
-/// - `NestedNonUnique` — marks the struct as a child of a `NonUnique` parent.
-/// - `primary_anchor = field` — hashes the given field into `SHARD_ID`.
-/// - `secondary_anchor = "field1,field2"` — repeatable, registers alias anchors.
-/// - `btree_threshold = K` — overrides the array→B+tree conversion threshold.
+/// See the crate-level documentation for the full attribute reference.
 #[proc_macro_attribute]
 pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemStruct);
@@ -119,14 +170,13 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     parse_macro_input!(attr with attr_parser);
     let () = ();
 
-    // Validate struct_id was provided
+    // ── Validate struct_id ───────────────────────────────────────────────────
+
     if args.struct_id == u32::MAX {
         return syn::Error::new_spanned(&input.ident, "missing `struct_id = N` in #[wave_db]")
             .to_compile_error()
             .into();
     }
-
-    // Validate struct_id fits in u20
     if args.struct_id >= (1 << 20) {
         return syn::Error::new_spanned(
             &input.ident,
@@ -140,7 +190,8 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         .into();
     }
 
-    // Parse trailing version from struct name
+    // ── Parse version from name ──────────────────────────────────────────────
+
     let name = &input.ident;
     let name_str = name.to_string();
     let version = match parse_trailing_version(&name_str, name.span()) {
@@ -148,9 +199,35 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
+    // ── Validate migration attribute combinations ────────────────────────────
+
+    let from_required = [
+        ("migrate_from_with", args.migrate_from_with.is_some()),
+        ("first_try", args.first_try.is_some()),
+    ];
+    for (attr_name, present) in from_required {
+        if present && args.migrate_from.is_none() {
+            return syn::Error::new_spanned(
+                &input.ident,
+                format!("`{attr_name}` requires `migrate_from = OldType` to also be set"),
+            )
+            .to_compile_error()
+            .into();
+        }
+    }
+    if args.migrate_rollback_with.is_some() && args.migrate_rollback.is_none() {
+        return syn::Error::new_spanned(
+            &input.ident,
+            "`migrate_rollback_with` requires `migrate_rollback = NewType` to also be set",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     let sid = args.struct_id;
 
-    // Determine shape
+    // ── Shape ────────────────────────────────────────────────────────────────
+
     let shape = if args.nested_non_unique {
         quote! { ::wavedb_core::Shape::NestedNonUnique }
     } else if args.non_unique {
@@ -159,7 +236,8 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! { ::wavedb_core::Shape::Unique }
     };
 
-    // Generate btree_threshold constant if specified
+    // ── Anchor attributes ────────────────────────────────────────────────────
+
     let threshold_const = args.btree_threshold.map(|t| {
         quote! {
             /// The array→B+tree conversion threshold for this struct's indexes.
@@ -167,7 +245,6 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     });
 
-    // Generate primary_anchor accessor if specified
     let primary_accessor = args.primary_anchor.as_ref().map(|field| {
         let find_fn_name = syn::Ident::new(&format!("find_by_{field}"), field.span());
         quote! {
@@ -175,7 +252,6 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             pub fn primary_anchor_field() -> &'static str {
                 stringify!(#field)
             }
-
             #[doc(hidden)]
             pub fn __primary_anchor_field_name() -> &'static str {
                 stringify!(#find_fn_name)
@@ -183,9 +259,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     });
 
-    // Build secondary anchor field list for runtime use
     let secondary_field_lists: Vec<&String> = args.secondary_anchors.iter().collect();
-
     let secondary_anchors_const = if secondary_field_lists.is_empty() {
         quote! {}
     } else {
@@ -196,6 +270,12 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             ];
         }
     };
+
+    // ── Migration code generation ─────────────────────────────────────────────
+
+    let migration_impl = build_migration_impl(name, sid, version, &args);
+
+    // ── Final expansion ──────────────────────────────────────────────────────
 
     let expanded = quote! {
         #input
@@ -211,7 +291,255 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             #primary_accessor
             #secondary_anchors_const
         }
+
+        #migration_impl
     };
 
     expanded.into()
+}
+
+/// Build all migration-related `impl` blocks for a struct.
+///
+/// Generates:
+/// - `MigratesFrom` trait impl if `migrate_from = OldType` is set.
+/// - `RollbackFrom` trait impl if `migrate_rollback = NewType` is set.
+/// - `register_migration(&mut MigrationRegistry)` — adds forward and/or
+///   backward edges depending on which neighbours are declared.
+/// - Typed async wrappers: `__wave_db_migrate_from`, `__wave_db_migrate_rollback`,
+///   `__wave_db_first_try`, `__wave_db_fallback_not_found`.
+fn build_migration_impl(
+    name: &syn::Ident,
+    sid: u32,
+    version: u8,
+    args: &WaveDbArgs,
+) -> proc_macro2::TokenStream {
+    // ── Trait impls ──────────────────────────────────────────────────────────
+    let migrates_from_impl = args.migrate_from.as_ref().map(|old_type| {
+        quote! {
+            impl ::wavedb_core::MigratesFrom for #name {
+                type Source = #old_type;
+            }
+        }
+    });
+
+    let rollback_from_impl = args.migrate_rollback.as_ref().map(|new_type| {
+        quote! {
+            impl ::wavedb_core::RollbackFrom for #name {
+                type Future = #new_type;
+            }
+        }
+    });
+
+    // ── register_migration ───────────────────────────────────────────────────
+    // Generated only when at least one neighbour is declared.
+    let register_migration = if args.migrate_from.is_some() || args.migrate_rollback.is_some() {
+        let forward_edge = args.migrate_from.as_ref().map(|old_type| {
+            quote! {
+                let from = ::wavedb_core::VersionRef::new(
+                    <#old_type as ::wavedb_core::WaveDbStruct>::STRUCT_ID,
+                    <#old_type as ::wavedb_core::WaveDbStruct>::STRUCT_VERSION,
+                );
+                registry.register_forward(from, self_ref);
+            }
+        });
+        let rollback_edge = args.migrate_rollback.as_ref().map(|new_type| {
+            quote! {
+                let future = ::wavedb_core::VersionRef::new(
+                    <#new_type as ::wavedb_core::WaveDbStruct>::STRUCT_ID,
+                    <#new_type as ::wavedb_core::WaveDbStruct>::STRUCT_VERSION,
+                );
+                registry.register_rollback(future, self_ref);
+            }
+        });
+        Some(quote! {
+            impl #name {
+                /// Register this struct's migration edges in the registry.
+                ///
+                /// - If `migrate_from = OldType` is declared, adds the **forward** edge
+                ///   `OldType → Self` so the engine can upgrade old records to this version.
+                /// - If `migrate_rollback = NewType` is declared, adds the **backward** edge
+                ///   `NewType → Self` so the engine can roll back newer records to this version.
+                ///
+                /// Source / target `STRUCT_ID` / `STRUCT_VERSION` are pulled from the
+                /// neighbour types' `WaveDbStruct` impls at compile time — no naming
+                /// convention required.
+                pub fn register_migration(registry: &mut ::wavedb_core::MigrationRegistry) {
+                    let self_ref = ::wavedb_core::VersionRef::new(#sid, #version);
+                    #forward_edge
+                    #rollback_edge
+                }
+            }
+        })
+    } else {
+        None
+    };
+
+    // ── migrate_from_with ────────────────────────────────────────────────────
+    let migrate_from_with_impl = args
+        .migrate_from_with
+        .as_ref()
+        .zip(args.migrate_from.as_ref())
+        .map(|(fn_path, old_type)| {
+            quote! {
+                impl #name {
+                    /// Upgrade an `OldType` record to `Self`.  Generic over `Db`
+                    /// so it interops with any handle (`wavedb::Db`, mocks, etc.).
+                    #[doc(hidden)]
+                    pub async fn __wave_db_migrate_from<__WaveDbDb>(
+                        db: &__WaveDbDb,
+                        source: #old_type,
+                    ) -> ::wavedb_core::Result<Self> {
+                        #fn_path(db, source).await
+                    }
+                }
+            }
+        });
+
+    // ── migrate_rollback_with ────────────────────────────────────────────────
+    let rollback_with_impl = args
+        .migrate_rollback_with
+        .as_ref()
+        .zip(args.migrate_rollback.as_ref())
+        .map(|(fn_path, new_type)| {
+            quote! {
+                impl #name {
+                    /// Receive a rollback from a future version and produce `Self`.
+                    /// Generic over `Db` for transport flexibility.
+                    #[doc(hidden)]
+                    pub async fn __wave_db_migrate_rollback<__WaveDbDb>(
+                        db: &__WaveDbDb,
+                        future: #new_type,
+                    ) -> ::wavedb_core::Result<Self> {
+                        #fn_path(db, future).await
+                    }
+                }
+            }
+        });
+
+    // ── first_try ────────────────────────────────────────────────────────────
+    // Called BEFORE the DB search.  If Some(source), skip DB and run migration.
+    let first_try_impl = args
+        .first_try
+        .as_ref()
+        .zip(args.migrate_from.as_ref())
+        .map(|(fn_path, old_type)| {
+            quote! {
+                impl #name {
+                    /// Try to produce a source record before hitting the DB.
+                    ///
+                    /// If this returns `Some(source)`, the engine skips the normal DB
+                    /// search and calls `__wave_db_migrate_from(db, source)` instead.
+                    /// Return `None` to fall through to the normal DB path.
+                    ///
+                    /// Replaces the legacy Type-2 (compose) migration pattern: your
+                    /// implementation looks up constituent source structs in the DB
+                    /// and synthesises the `Source` value from them.
+                    #[doc(hidden)]
+                    pub async fn __wave_db_first_try<__WaveDbDb>(
+                        db: &__WaveDbDb,
+                    ) -> ::wavedb_core::Result<::core::option::Option<#old_type>> {
+                        #fn_path(db).await
+                    }
+                }
+            }
+        });
+
+    // ── fallback_not_found ───────────────────────────────────────────────────
+    let fallback_impl = args.fallback_not_found.as_ref().map(|fn_path| {
+        quote! {
+            impl #name {
+                /// Last-resort fallback when no record is found in the DB.
+                ///
+                /// Called after both the `first_try` hook (if any) and the normal
+                /// DB search have returned `None`.  Return `Some(self_value)` to
+                /// synthesise a default, or `None` to propagate the "not found".
+                #[doc(hidden)]
+                pub async fn __wave_db_fallback_not_found<__WaveDbDb>(
+                    db: &__WaveDbDb,
+                ) -> ::wavedb_core::Result<::core::option::Option<Self>> {
+                    #fn_path(db).await
+                }
+            }
+        }
+    });
+
+    // ── MigrationChain<Db> impl ──────────────────────────────────────────────
+    // Generated on EVERY wave_db struct, regardless of migration attrs.  This
+    // walks the chain (via `MigratesFrom`/`RollbackFrom`) to deserialize stored
+    // bytes at any version into `Self`.  No manual `register_migration` needed —
+    // the chain is the type system.
+    let less_branch = match (&args.migrate_from, &args.migrate_from_with) {
+        (Some(old_type), Some(_)) => quote! {
+            let source: #old_type = <#old_type as ::wavedb_core::MigrationChain<__WaveDbDb>>::read_as_self(
+                db, bytes, stored_version,
+            ).await?;
+            <Self>::__wave_db_migrate_from(db, source).await
+        },
+        _ => quote! {
+            ::core::result::Result::Err(::wavedb_core::Error::Other(::std::format!(
+                "no upgrade path: {} v{} cannot read stored v{}",
+                ::core::stringify!(#name),
+                <Self as ::wavedb_core::WaveDbStruct>::STRUCT_VERSION,
+                stored_version,
+            )))
+        },
+    };
+    let greater_branch = match (&args.migrate_rollback, &args.migrate_rollback_with) {
+        (Some(new_type), Some(_)) => quote! {
+            let future: #new_type = <#new_type as ::wavedb_core::MigrationChain<__WaveDbDb>>::read_as_self(
+                db, bytes, stored_version,
+            ).await?;
+            <Self>::__wave_db_migrate_rollback(db, future).await
+        },
+        _ => quote! {
+            ::core::result::Result::Err(::wavedb_core::Error::Other(::std::format!(
+                "no rollback path: {} v{} cannot read stored v{}",
+                ::core::stringify!(#name),
+                <Self as ::wavedb_core::WaveDbStruct>::STRUCT_VERSION,
+                stored_version,
+            )))
+        },
+    };
+    let migration_chain_impl = quote! {
+        impl<__WaveDbDb> ::wavedb_core::MigrationChain<__WaveDbDb> for #name
+        where
+            __WaveDbDb: ::core::marker::Send + ::core::marker::Sync,
+        {
+            fn read_as_self<'a>(
+                db: &'a __WaveDbDb,
+                bytes: &'a [u8],
+                stored_version: u8,
+            ) -> ::core::pin::Pin<
+                ::std::boxed::Box<
+                    dyn ::core::future::Future<Output = ::wavedb_core::Result<Self>>
+                        + ::core::marker::Send
+                        + 'a,
+                >,
+            >
+            where
+                __WaveDbDb: 'a,
+            {
+                ::std::boxed::Box::pin(async move {
+                    match stored_version.cmp(&<Self as ::wavedb_core::WaveDbStruct>::STRUCT_VERSION) {
+                        ::core::cmp::Ordering::Equal => {
+                            ::wavedb_core::migration::deserialize_for_migration::<Self>(bytes)
+                        }
+                        ::core::cmp::Ordering::Less => { #less_branch }
+                        ::core::cmp::Ordering::Greater => { #greater_branch }
+                    }
+                })
+            }
+        }
+    };
+
+    quote! {
+        #migrates_from_impl
+        #rollback_from_impl
+        #register_migration
+        #migrate_from_with_impl
+        #rollback_with_impl
+        #first_try_impl
+        #fallback_impl
+        #migration_chain_impl
+    }
 }

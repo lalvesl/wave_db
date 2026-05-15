@@ -18,3 +18,5 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 [dev-dependencies]
 trybuild.workspace = true
 wavedb-core = { path = "../wavedb-core" }
+serde.workspace = true
+postcard.workspace = true

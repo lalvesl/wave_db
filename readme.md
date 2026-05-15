@@ -145,7 +145,7 @@ pub struct Metadata {
 
 ## Procedure Macros
 
-WaveDB's object types are declared through a single `#[wave_db]` proc-macro that does five jobs at compile time:
+WaveDB's object types are declared through a single `#[wave_db]` proc-macro that does six jobs at compile time:
 
 1. **Implements `Id` and `Metadata` accessors.** Every annotated struct gets `.tenant_id()`, `.shard_id()`, `.struct_id()`, `.created_at()` plus full `Metadata` getters / setters by trait impl — no boilerplate at the call site.
 2. **Pins a permanent `STRUCT_ID` declared by the developer** via `#[wave_db(struct_id = N, …)]`. The convention is incremental — the next struct family takes the next free integer — and the value is **shared across every version of the same struct family**: `Message1`, `Message2`, …, `Message42` all declare the same `struct_id = N`. The macro validates uniqueness across the whole codebase at compile time; once assigned, the ID never changes.
@@ -171,6 +171,89 @@ Rolling forward or back is then **a one-line edit** — change `Message42` to `M
    - `secondary_anchor = (field)` (one or more times, including compound keys like `secondary_anchor = (department, employee_number)`) registers additional anchor addresses that point back to the primary, with one generated accessor per declared key.
 
    Both attributes round out as ordinary `async fn`s on the struct, so the application code never builds an anchor address by hand — the macro is the only thing that knows the precise hash layout. See _Anchor Slots → Anchor Addressing_ for the full semantics.
+
+6. **Declares migrations inline — symmetric chain.** Each versioned struct declares its **immediate neighbours** via TYPE paths.  The macro reconstructs the full version chain at compile time, no naming convention required:
+
+   | Attribute | Direction | Kind | Signature / value |
+   | --------- | --------- | ---- | ----------------- |
+   | `migrate_from = OldType` | backward | **type** | The predecessor struct. |
+   | `migrate_from_with = fn` | backward | async fn | `async fn<Db>(&Db, OldType) -> Result<Self>` |
+   | `migrate_rollback = NewType` | forward | **type** | The successor struct (this struct receives its rollback). |
+   | `migrate_rollback_with = fn` | forward | async fn | `async fn<Db>(&Db, NewType) -> Result<Self>` |
+   | `first_try = fn` | — | async fn | `async fn<Db>(&Db) -> Result<Option<OldType>>` — called **before** the DB search; if `Some`, skip the DB and run the forward migration instead.  Replaces the legacy Type-2 (compose) pattern. |
+   | `fallback_not_found = fn` | — | async fn | `async fn<Db>(&Db) -> Result<Option<Self>>` — called when neither `first_try` nor the DB search returned a record. |
+
+   **Chain bounds:**
+
+   - **First (oldest) version:** has no `migrate_from`.  Declares `migrate_rollback` once a `vN+1` exists.
+   - **Middle versions:** have both `migrate_from` (predecessor) and `migrate_rollback` (successor).
+   - **Last (current) version:** has `migrate_from` but no `migrate_rollback` (no successor yet).
+
+   Rollback is declared on the **older** struct ("I know how to receive a rollback from `NewType` and produce me"), so the inverse operation co-locates with the type it produces.  Each struct contributes its **own** edge to the registry — `Message41::register_migration` adds the backward `v42→v41` edge, `Message42::register_migration` adds the forward `v41→v42` edge.
+
+   Both adjacent structs must implement `serde::Serialize` and `serde::Deserialize`; all migration fns must be generic over `Db` so the macro's `__WaveDbDb` parameter resolves at the call site.
+
+   ```rust
+   // ── Migration fns (async, generic over Db) ─────────────────────────────────
+   async fn migrate_v41_v42<Db>(_db: &Db, old: Message41) -> Result<Message42> {
+       Ok(Message42 { edited: false, ..old })
+   }
+   async fn rollback_v42_to_v41<Db>(_db: &Db, future: Message42) -> Result<Message41> {
+       Ok(Message41 { id: future.id, metadata: future.metadata, body: future.body, author: future.author })
+   }
+   async fn v42_first_try<Db>(_db: &Db) -> Result<Option<Message41>> { Ok(None) }
+
+   // ── v41 — first version: no migrate_from; declares its future ──────────────
+   #[wave_db(
+       struct_id = 7,
+       NonUnique,
+       migrate_rollback      = Message42,
+       migrate_rollback_with = rollback_v42_to_v41,
+   )]
+   #[derive(serde::Serialize, serde::Deserialize)]
+   pub struct Message41 { pub id: Id, pub metadata: Metadata, pub body: String, pub author: u64 }
+
+   // ── v42 — current head: declares its predecessor; no migrate_rollback ──────
+   #[wave_db(
+       struct_id = 7,
+       NonUnique,
+       migrate_from      = Message41,
+       migrate_from_with = migrate_v41_v42,
+       first_try         = v42_first_try,
+   )]
+   #[derive(serde::Serialize, serde::Deserialize)]
+   pub struct Message42 { pub id: Id, pub metadata: Metadata, pub body: String, pub author: u64, pub edited: bool }
+   pub type Message = Message42;
+   ```
+
+   **Generated trait impls (compile-time chain):**
+
+   | Trait | Direction | Generated impl |
+   | ----- | --------- | -------------- |
+   | `MigratesFrom { type Source }` | backward | `impl MigratesFrom for Message42 { type Source = Message41; }` |
+   | `RollbackFrom { type Future }` | forward  | `impl RollbackFrom for Message41 { type Future = Message42; }` |
+
+   Walk `Message42::Source::Source…` backward / `Message41::Future::Future…` forward to traverse the full chain in the type system — the registry can be **fully reconstructed from types alone**.
+
+   **Generated associated functions:**
+
+   | Method | Where | Description |
+   | ------ | ----- | ----------- |
+   | `Self::register_migration(&mut MigrationRegistry)` | each struct that declares any neighbour | **Optional.**  Wires the forward edge (if `migrate_from`) and/or backward edge (if `migrate_rollback`) into the runtime registry — useful for cluster routing.  Not required for cross-version reads (see below). |
+   | `Self::__wave_db_migrate_from<Db>(&Db, OldType) -> Result<Self>` | on the newer struct | Upgrade an old record to `Self`. |
+   | `Self::__wave_db_migrate_rollback<Db>(&Db, NewType) -> Result<Self>` | on the **older** struct | Receive a rolled-back future record. |
+   | `Self::__wave_db_first_try<Db>(&Db) -> Result<Option<OldType>>` | on the newer struct | Pre-search hook. |
+   | `Self::__wave_db_fallback_not_found<Db>(&Db) -> Result<Option<Self>>` | any struct | Post-search fallback. |
+
+   **Generated trait impl — the tasty cross-version read:** every `#[wave_db]`-annotated struct also receives an `impl<Db> MigrationChain<Db> for Self`.  Its `read_as_self(db, bytes, stored_version)` method picks the right deserialisation path based on how `stored_version` compares to `Self::STRUCT_VERSION`:
+
+   - `stored_version == Self::STRUCT_VERSION` → postcard-deserialize directly.
+   - `stored_version < Self::STRUCT_VERSION` → recursively read as `Self::Source` (via `MigratesFrom`), then run `Self::__wave_db_migrate_from`.
+   - `stored_version > Self::STRUCT_VERSION` → recursively read as `Self::Future` (via `RollbackFrom`), then run `Self::__wave_db_migrate_rollback`.
+
+   The recursion terminates at chain ends (no `MigratesFrom` on the oldest version, no `RollbackFrom` on the current head).  Because the chain is encoded in the type system, **`MigrationChain` works without any `register_migration` call** — `Message42::search(&db)` automatically forward-migrates a stored Message41 record, and `Message41::search(&db)` automatically rolls back a stored Message42 record.  The wire format prepends a one-byte `STRUCT_VERSION` to each stored payload so the engine knows which direction to walk on read.
+
+   **Lazy migration on read.** When the engine reads a record whose `struct_version` is behind the current compiled version, `MigrationChain::read_as_self` upgrades the bytes in memory (and the engine writes the result back in the background).  `first_try` runs ahead of the DB search; `fallback_not_found` runs after.  Rollback during mixed-version cluster deployments uses the symmetric backward chain.
 
 ---
 
@@ -577,49 +660,93 @@ Unique records have no `delete` because deleting the _only_ record of its kind f
 
 ## Migrations
 
-WaveDB supports **two migration kinds**, both expressed as ordinary `async` functions and both required to ship with a **rollback**.
+WaveDB uses **a single migration model**: each versioned struct declares its **immediate neighbours** in the chain via TYPE paths, and async forward / rollback functions.  The legacy "Type 2 compose" pattern is folded into the same model via the `first_try` pre-search hook.
 
-### Type 1 — Same struct, new version
+### The neighbour model
 
-The `STRUCT_ID` is unchanged; only `struct_version` advances. Used when a field is added, renamed, defaulted, or its representation changes. The migration is a function from the old version to the new one:
-
-```rust
-async fn migrate(db: &Db, old: Message41) -> Result<Message42> { /* ... */ }
-async fn rollback(db: &Db, new: Message42) -> Result<Message41> { /* ... */ }
-```
-
-When a record is read with `struct_version` behind the current compiled version, the migration runs in memory and the result is written back in the background (see _Schema Versioning & Lazy Migration_). The rollback runs in the opposite direction when a node has to step backward.
-
-### Type 2 — Composing a new object from existing ones
-
-A different `STRUCT_ID` is introduced — perhaps `OrderSummary1` is a new aggregate computed from `Order` and `OrderItem`. The migration takes one or more existing objects, may issue extra database lookups for related data, and produces the new object:
+A versioned struct can declare up to four migration attributes:
 
 ```rust
-async fn migrate(db: &Db, source: ...) -> Result<OrderSummary1> { /* ... */ }
-async fn rollback(db: &Db, new: OrderSummary1) -> Result<...>     { /* ... */ }
+#[wave_db(
+    struct_id = 7,
+    NonUnique,
+
+    // ── Backward edge: who comes before me, and how to upgrade from them ───
+    migrate_from          = Message41,
+    migrate_from_with     = migrate_v41_v42,     // async fn<Db>(&Db, Message41) -> Result<Self>
+
+    // ── Forward edge: who comes after me, and how to receive a rollback ────
+    migrate_rollback      = Message43,
+    migrate_rollback_with = rollback_v43_to_v42, // async fn<Db>(&Db, Message43) -> Result<Self>
+
+    // ── Search-time hooks ────────────────────────────────────────────────
+    first_try             = v42_first_try,       // before DB search → Option<Message41>
+    fallback_not_found    = v42_fallback,        // after DB returns None → Option<Self>
+)]
+pub struct Message42 { /* … */ }
 ```
 
-Rollback for Type 2 is harder than Type 1 because the engine has to know **whether the new object exists yet** before deciding what to do:
+**Chain bounds:**
 
-1. **Try to resolve the new object first** (its anchor / index lookup).
-2. **If found**, run the rollback path — it reverses the composition back into the source records.
-3. **If not found**, fall through to looking up the original old objects directly.
+- The **first (oldest) version** has no `migrate_from`.  It may declare `migrate_rollback` once a successor exists.
+- The **last (current) version** has no `migrate_rollback` yet — nothing has been written for it to receive a rollback from.
+- Every other struct declares both.
 
-Each Type 2 migration therefore registers a small descriptor that tells the engine _which sources_ a new object resolves to, so the rollback can locate and reconstruct them.
+The rollback function is co-located with the **older** struct ("I know how to receive my future self and become me again"), which keeps the inverse operation next to the type it produces.  Each struct's `register_migration` contributes only its own edge(s); the full chain emerges as every versioned struct's `register_migration` runs at startup.
 
-### Why rollback is mandatory
+### Compile-time chain visibility
 
-WaveDB is a distributed system. At any moment a cluster can have:
+Two traits expose the chain to the type system:
+
+| Trait | Reads as | Walks |
+| ----- | -------- | ----- |
+| `MigratesFrom { type Source }` | "I migrate from `Source`" | backward (`Message42::Source = Message41`) |
+| `RollbackFrom { type Future }` | "I receive rollbacks from `Future`" | forward (`Message41::Future = Message42`) |
+
+The full chain is traversable at compile time:
+
+```text
+Message42::Source          → Message41
+Message42::Source::Source  → does not compile (Message41 has no MigratesFrom)
+Message41::Future          → Message42
+Message41::Future::Future  → does not compile (Message42 has no RollbackFrom yet)
+```
+
+The "does not compile" outcome is the **chain-bound check**: the type system tells you you've reached an end of the chain without running anything.  This is the property that lets the registry be reconstructed entirely from types.
+
+### `first_try` and `fallback_not_found` — replacing Type 2
+
+A pre-version of WaveDB had a separate "Type 2" migration kind for the case where a new struct (`OrderSummary`) is computed from multiple older structs (`Order`, `OrderItem`).  That pattern is now expressed with `first_try`:
+
+1. The engine starts a search for `OrderSummary`.
+2. **`first_try(&db)` runs first.**  It looks up the constituent records and either returns `Some(synthesised_source)` (which then flows through `migrate_from_with` to produce the new struct), or `None` to fall through.
+3. If the normal DB search also returns `None`, **`fallback_not_found(&db)` runs** as a last resort — useful for default-record synthesis when no data has ever been written.
+
+This unifies the "compose from multiple sources" case with normal Type-1 migrations: it's the same pipeline; the application just plugs into a different stage.
+
+### Lazy migration on read
+
+When a record is read with a `struct_version` behind the current compiled version:
+
+1. The engine resolves the forward path through `MigrationRegistry::resolve(stored_v, current_v)`.
+2. It walks each step, calling the typed `__wave_db_migrate_from` wrapper on each successive version's struct.
+3. The upgraded record is written back to the anchor **in the background** — no global lock, no downtime.
+
+This is the **lazy-migration trigger**: stored bytes are upgraded on first contact, transparently to the application.
+
+### Rollback during mixed-version deployments
+
+WaveDB is a distributed system.  A cluster can simultaneously contain:
 
 - Slow-Nodes still serving an old `struct_version`,
 - Quick-Nodes already on the new one,
 - User clients running mixed builds.
 
-Forward and backward translations must both exist for **any two adjacent versions to coexist live**. Rollback is not a recovery feature — it's part of the day-to-day routing pipeline.
+When a node on an older build receives a record at a newer version, it walks the registered **backward** edges (`MigrationRegistry::can_rollback` / the typed `__wave_db_migrate_rollback` wrappers on the older structs) to bring the record down to a version it can read.  Forward and backward translations must both exist for **any two adjacent versions to coexist live**.
 
 ### Code-side rollback
 
-Rolling back the application is the same single-line move used for rolling forward — change
+Rolling back the application is a one-line edit:
 
 ```rust
 pub type Message = Message43;
@@ -631,11 +758,11 @@ back to
 pub type Message = Message42;
 ```
 
-…and the database keeps both readable as long as the rollback function for `Message43 → Message42` is still compiled in. The DB does not need a separate "downgrade" deployment; it just keeps the old `pub type` alias active.
+…and the database keeps both readable as long as the `migrate_rollback_with` function on `Message42` (which receives `Message43` and produces `Message42`) is still compiled in.  No separate "downgrade" deployment; the older `pub type` alias just becomes the active head again.
 
 ### Migration chains
 
-A node arriving at the cluster on a very old version doesn't need a direct migration to the current version. The engine **chains migrations** — `v_n → v_{n+1} → … → v_current` — picking a path through registered migrations. Each step is the same async fn, and each step's rollback is also chainable, so a node can step backward by the same mechanism.
+A node arriving at the cluster on a very old version doesn't need a direct migration to the current version.  The engine **chains migrations** — `v_n → v_{n+1} → … → v_current` — picking a path through registered edges.  Each step is the same async fn, and each step's rollback is also chainable, so a node can step backward by the same mechanism.
 
 ---
 

@@ -8,7 +8,7 @@
 
 use crate::db::Db;
 use crate::query::Expr;
-use wavedb_core::{Result, Shape, WaveDbStruct};
+use wavedb_core::{MigrationChain, Result, Shape, WaveDbStruct};
 use wavedb_net::request::RequestKind;
 
 /// Behaviour for **Unique** records — exactly one live record per
@@ -73,9 +73,16 @@ pub fn assert_shape<S: WaveDbStruct>(expected: Shape) -> Result<()> {
 // ── Concrete helpers ─────────────────────────────────────────────────────────
 
 /// Search for a Unique record via the transport.
+///
+/// Wire format: server returns `[stored_version_byte, ...postcard_body...]`,
+/// or an empty payload when no record exists.  The client decodes the version,
+/// then walks the `MigrationChain` to produce a value of `S` — so reading a
+/// stored v41 record as `Message42` automatically runs the forward migration
+/// chain, and reading a stored v42 record as `Message41` automatically runs
+/// the rollback chain.  No `register_migration` call required.
 pub async fn do_search_unique<S>(db: &Db) -> Result<Option<S>>
 where
-    S: WaveDbStruct + for<'de> serde::Deserialize<'de>,
+    S: MigrationChain<Db>,
 {
     let payload = db
         .send(RequestKind::SearchUnique {
@@ -89,14 +96,22 @@ where
         return Ok(None);
     }
 
-    let record: S = postcard::from_bytes(&payload)?;
+    let stored_version = payload[0];
+    let body = &payload[1..];
+    let record = S::read_as_self(db, body, stored_version).await?;
     Ok(Some(record))
 }
 
 /// Query NonUnique records via the transport.
+///
+/// Wire format: the server returns a postcard-encoded `Vec<(u8, Vec<u8>)>`
+/// where each entry is `(stored_version, record_body)`.  The client walks each
+/// entry's bytes through `MigrationChain::read_as_self` so cross-version
+/// queries (asking for v42 records when some are stored as v41, or vice versa)
+/// transparently translate every row.
 pub async fn do_query_non_unique<S>(db: &Db, expr: Expr) -> Result<Vec<S>>
 where
-    S: WaveDbStruct + for<'de> serde::Deserialize<'de>,
+    S: MigrationChain<Db>,
 {
     let filter = expr.to_bytes()?;
     let payload = db
@@ -112,16 +127,28 @@ where
         return Ok(Vec::new());
     }
 
-    let records: Vec<S> = postcard::from_bytes(&payload)?;
+    let raw_entries: Vec<(u8, Vec<u8>)> = postcard::from_bytes(&payload)?;
+    let mut records = Vec::with_capacity(raw_entries.len());
+    for (stored_version, body) in raw_entries {
+        records.push(S::read_as_self(db, &body, stored_version).await?);
+    }
     Ok(records)
 }
 
 /// Write (create or update) a record via the transport.
+///
+/// Wire format: the payload is `[S::STRUCT_VERSION, ...postcard_body...]`.
+/// The version byte travels with the record so future reads can pick the right
+/// chain direction (forward migrate / rollback) regardless of which version
+/// the reader requested.
 pub async fn do_write<S>(db: &Db, record: &S) -> Result<()>
 where
     S: WaveDbStruct + serde::Serialize + Sync,
 {
-    let payload: Vec<u8> = postcard::to_allocvec(record)?;
+    let body: Vec<u8> = postcard::to_allocvec(record)?;
+    let mut payload = Vec::with_capacity(1 + body.len());
+    payload.push(S::STRUCT_VERSION);
+    payload.extend_from_slice(&body);
     db.send(RequestKind::Write {
         struct_id: S::STRUCT_ID,
         user: db.user(),

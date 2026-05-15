@@ -1,21 +1,79 @@
 //! Type 1 migration: field-level transform between two Message versions.
 //!
 //! `Message41` → `Message42` adds an `edited: bool` field.
-//! The rollback strips it back out.
 //!
-//! The `MigrationRegistry` tracks which version transitions exist and
-//! resolves multi-hop chains at startup.  Migration functions themselves
-//! are plain async fns that transform the old struct into the new one.
+//! # Symmetric attribute design
+//!
+//! Each struct declares its **immediate neighbours**:
+//!
+//! - `migrate_from = OldType` — older predecessor (backward link).
+//! - `migrate_rollback = NewType` — newer successor (forward link;
+//!   "I receive a rollback from `NewType`").
+//!
+//! Bounds:
+//!
+//! - First version (oldest): no `migrate_from`; declares `migrate_rollback` if a
+//!   newer version exists.
+//! - Last version (current): no `migrate_rollback`; declares `migrate_from` to
+//!   its predecessor.
+//!
+//! Function signatures:
+//!
+//! - `migrate_from_with`:     `async fn<Db>(&Db, OldType) -> Result<Self>`
+//! - `migrate_rollback_with`: `async fn<Db>(&Db, NewType) -> Result<Self>`
+//! - `first_try`:             `async fn<Db>(&Db) -> Result<Option<OldType>>`
+//! - `fallback_not_found`:    `async fn<Db>(&Db) -> Result<Option<Self>>`
 //!
 //! Run with:
 //!   cargo run --bin migration_type_1
 
+use wavedb::object::{do_search_unique, do_write};
 use wavedb::prelude::*;
 use wavedb_core::migration::{MigrationRegistry, VersionRef};
+use wavedb_net::MockTransport;
+use wavedb_net::mock::ScriptedReply;
 
-// ── Schema — v41 ─────────────────────────────────────────────────────────────
+// ── Migration fns (async, generic over Db) ────────────────────────────────────
 
-#[wave_db(struct_id = 41)]
+async fn migrate_v41_v42<Db>(
+    _db: &Db,
+    old: Message41,
+) -> wavedb_core::Result<Message42> {
+    Ok(Message42 {
+        id: old.id,
+        metadata: old.metadata,
+        body: old.body,
+        author: old.author,
+        edited: false,
+    })
+}
+
+// Rollback declared on the OLDER struct (Message41): takes Future, returns Self.
+async fn rollback_v42_to_v41<Db>(
+    _db: &Db,
+    future: Message42,
+) -> wavedb_core::Result<Message41> {
+    Ok(Message41 {
+        id: future.id,
+        metadata: future.metadata,
+        body: future.body,
+        author: future.author,
+    })
+}
+
+// first_try on the NEWER struct: synthesise a Message41 from other sources if
+// needed (type-2 replacement).  Return None for the normal DB path.
+async fn v42_first_try<Db>(_db: &Db) -> wavedb_core::Result<Option<Message41>> {
+    Ok(None)
+}
+
+// ── Schema — v41 (first version: no migrate_from, declares its future) ───────
+
+#[wave_db(
+    struct_id = 41,
+    migrate_rollback      = Message42,
+    migrate_rollback_with = rollback_v42_to_v41,
+)]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message41 {
     pub id: Id,
@@ -24,9 +82,14 @@ pub struct Message41 {
     pub author: u64,
 }
 
-// ── Schema — v42 ─────────────────────────────────────────────────────────────
+// ── Schema — v42 (last version: declares its predecessor, no rollback yet) ───
 
-#[wave_db(struct_id = 41)]
+#[wave_db(
+    struct_id = 41,
+    migrate_from      = Message41,
+    migrate_from_with = migrate_v41_v42,
+    first_try         = v42_first_try,
+)]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Message42 {
     pub id: Id,
@@ -35,78 +98,141 @@ pub struct Message42 {
     pub author: u64,
     pub edited: bool,
 }
+
 pub type Message = Message42;
 
-// ── Migration functions ───────────────────────────────────────────────────────
+// ── Both versions are Unique-shaped: wire up search/update via the standard
+// helpers.  Cross-version reads happen automatically through the macro-generated
+// `MigrationChain` impl — no `register_migration` call is needed for these.
 
-fn migrate_41_42(old: Message41) -> Message42 {
-    Message42 {
-        id: old.id,
-        metadata: old.metadata,
-        body: old.body,
-        author: old.author,
-        edited: false,
+impl UniqueObject for Message41 {
+    async fn search(db: &Db) -> wavedb_core::Result<Option<Self>> {
+        do_search_unique::<Self>(db).await
+    }
+    async fn update(self, db: &Db) -> wavedb_core::Result<()> {
+        do_write(db, &self).await
     }
 }
 
-fn rollback_42_41(new: Message42) -> Message41 {
-    Message41 {
-        id: new.id,
-        metadata: new.metadata,
-        body: new.body,
-        author: new.author,
+impl UniqueObject for Message42 {
+    async fn search(db: &Db) -> wavedb_core::Result<Option<Self>> {
+        do_search_unique::<Self>(db).await
     }
+    async fn update(self, db: &Db) -> wavedb_core::Result<()> {
+        do_write(db, &self).await
+    }
+}
+
+/// Build the wire-format payload `[STRUCT_VERSION, ...postcard_body...]` that
+/// the engine emits when a record is read back.
+fn encode_versioned<T>(record: &T) -> Vec<u8>
+where
+    T: serde::Serialize + wavedb_core::WaveDbStruct,
+{
+    let body = postcard::to_allocvec(record).expect("encode");
+    let mut out = Vec::with_capacity(1 + body.len());
+    out.push(T::STRUCT_VERSION);
+    out.extend_from_slice(&body);
+    out
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-fn main() {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     const SID: u32 = 41;
     let v41 = VersionRef::new(SID, 41);
     let v42 = VersionRef::new(SID, 42);
 
-    // Register the migration with rollback support
+    // ── Compile-time chain via both traits ────────────────────────────────────
+    fn assert_backward<T: wavedb_core::MigratesFrom<Source = Message41>>() {}
+    assert_backward::<Message42>();
+    println!("MigratesFrom: Message42::Source = Message41 ✓");
+
+    fn assert_forward<T: wavedb_core::RollbackFrom<Future = Message42>>() {}
+    assert_forward::<Message41>();
+    println!("RollbackFrom:  Message41::Future = Message42 ✓");
+
+    // ── Each struct contributes its own edge(s) to a registry — but this is
+    //    OPTIONAL.  Cross-version search/update works without any registry
+    //    call thanks to the macro-generated `MigrationChain` impl.
     let mut registry = MigrationRegistry::new();
-    registry.register_with_rollback(v41, v42);
+    Message41::register_migration(&mut registry); // backward v42 → v41
+    Message42::register_migration(&mut registry); // forward  v41 → v42
+    assert_eq!(registry.resolve(v41, v42)?.len(), 1);
+    assert!(registry.can_rollback(v42, v41));
+    println!("Registry edges wired (optional for graph queries).");
 
-    // Forward plan: v41 → v42 (one step)
-    let plan = registry.resolve(v41, v42).expect("path exists");
-    assert_eq!(plan.len(), 1);
-    assert_eq!(plan.steps[0].from, v41);
-    assert_eq!(plan.steps[0].to, v42);
-    println!("Forward plan: {} step(s)", plan.len());
+    // ── Tasty cross-version API: write v41, read as v42 (and vice-versa) ─────
+    //
+    // The mock returns the stored bytes verbatim — we encode them once with
+    // the wire-format version prefix, then issue search() calls for *both*
+    // versions of the same struct family.  The macro-generated MigrationChain
+    // walks the chain in either direction without any extra registration.
 
-    // Rollback plan: v42 → v41
-    assert!(
-        registry.can_rollback(v42, v41),
-        "rollback must be registered"
-    );
-    println!("Rollback v42 → v41: available");
-
-    // Execute forward migration on a v41 record
-    let old_msg = Message41 {
+    let stored_v41 = Message41 {
         id: Id::default(),
         metadata: Metadata::default(),
         body: "Hello, WaveDB!".into(),
         author: 99,
     };
-    let new_msg = migrate_41_42(old_msg.clone());
-    assert_eq!(new_msg.body, old_msg.body);
-    assert_eq!(new_msg.author, old_msg.author);
-    assert!(!new_msg.edited, "new field defaults to false");
-    println!("Migrated: {new_msg:?}");
+    let stored_v42 = Message42 {
+        id: Id::default(),
+        metadata: Metadata::default(),
+        body: "Hello, v42!".into(),
+        author: 7,
+        edited: true,
+    };
 
-    // Execute rollback
-    let rolled_back = rollback_42_41(new_msg);
-    assert_eq!(rolled_back.body, old_msg.body);
-    println!("Rolled back: {rolled_back:?}");
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    // 1. Write a v41 record.
+    mock.push(ScriptedReply::ok(Vec::new()));
+    // 2. search::<Message42>() with stored v41 bytes → engine migrates forward.
+    mock.push(ScriptedReply::ok(encode_versioned(&stored_v41)));
+    // 3. search::<Message41>() with stored v41 bytes → identity read.
+    mock.push(ScriptedReply::ok(encode_versioned(&stored_v41)));
+    // 4. Write a v42 record.
+    mock.push(ScriptedReply::ok(Vec::new()));
+    // 5. search::<Message41>() with stored v42 bytes → engine rolls back.
+    mock.push(ScriptedReply::ok(encode_versioned(&stored_v42)));
+    // 6. search::<Message42>() with stored v42 bytes → identity read.
+    mock.push(ScriptedReply::ok(encode_versioned(&stored_v42)));
 
-    // Multi-hop: register v42 → v43 and resolve v41 → v43
-    let v43 = VersionRef::new(SID, 43);
-    registry.register_forward(v42, v43);
-    let chain = registry.resolve(v41, v43).expect("chain exists");
-    assert_eq!(chain.len(), 2, "v41→v43 is a two-step chain");
-    println!("Multi-hop chain v41→v43: {} steps", chain.len());
+    let db = Db::open_with_transport(mock, 1, 100).await?;
 
-    println!("migration_type_1 example OK");
+    // Write the old version.
+    stored_v41.clone().update(&db).await?;
+    println!("\nWrote a Message41 record.");
+
+    // Read it back as the NEW version — engine runs forward migration.
+    let as_v42 = Message42::search(&db).await?.expect("record");
+    assert_eq!(as_v42.body, "Hello, WaveDB!");
+    assert!(!as_v42.edited, "migrate_from_with sets edited=false");
+    println!("  → Message42::search returned: {as_v42:?}");
+
+    // Read it back as the OLD version — identity, no migration.
+    let as_v41 = Message41::search(&db).await?.expect("record");
+    assert_eq!(as_v41.body, "Hello, WaveDB!");
+    println!("  → Message41::search returned: {as_v41:?}");
+
+    // Write the new version.
+    stored_v42.clone().update(&db).await?;
+    println!("\nWrote a Message42 record.");
+
+    // Read it back as the OLD version — engine runs rollback.
+    let as_v41 = Message41::search(&db).await?.expect("record");
+    assert_eq!(as_v41.body, "Hello, v42!");
+    println!("  → Message41::search returned: {as_v41:?}");
+
+    // Read it back as the NEW version — identity, no migration.
+    let as_v42 = Message42::search(&db).await?.expect("record");
+    assert!(as_v42.edited);
+    println!("  → Message42::search returned: {as_v42:?}");
+
+    println!("\nmigration_type_1 example OK");
+    Ok(())
 }

@@ -87,6 +87,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let invoices = vec![invoice.clone()];
     let lines = vec![line_a.clone(), line_b.clone()];
 
+    // Query path expects a postcard `Vec<(version, body)>`.
+    fn encode_query<T>(records: &[T]) -> Vec<u8>
+    where
+        T: serde::Serialize + wavedb_core::WaveDbStruct,
+    {
+        let entries: Vec<(u8, Vec<u8>)> = records
+            .iter()
+            .map(|r| (T::STRUCT_VERSION, postcard::to_allocvec(r).unwrap()))
+            .collect();
+        postcard::to_allocvec(&entries).unwrap()
+    }
+
     let mock = MockTransport::new();
     mock.push(ScriptedReply::connect(
         "ws://owner:7700",
@@ -99,11 +111,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // write line_b → ok
     mock.push(ScriptedReply::ok(Vec::new()));
     // query invoices → [invoice]
-    mock.push(ScriptedReply::ok(postcard::to_allocvec(&invoices)?));
+    mock.push(ScriptedReply::ok(encode_query(&invoices)));
     // query lines through parent → [line_a, line_b]
     // In production this request carries the parent invoice ID so the engine
     // looks up only lines attached to that invoice, not all InvoiceLines.
-    mock.push(ScriptedReply::ok(postcard::to_allocvec(&lines)?));
+    mock.push(ScriptedReply::ok(encode_query(&lines)));
 
     let db = Db::open_with_transport(mock, /* user= */ 1, /* tenant= */ 42).await?;
 

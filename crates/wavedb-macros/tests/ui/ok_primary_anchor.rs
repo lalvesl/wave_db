@@ -2,6 +2,7 @@ use wavedb_core::{Id, Metadata};
 use wavedb_macros::wave_db;
 
 #[wave_db(struct_id = 25, NonUnique, primary_anchor = username)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct User1 {
     pub id: Id,
     pub metadata: Metadata,

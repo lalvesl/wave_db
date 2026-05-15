@@ -46,13 +46,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         display_name: "Aurora".into(),
         bio: "First write.".into(),
     };
-    let serialized = postcard::to_allocvec(&new_profile)?;
 
     let updated_profile = UserProfile {
         bio: "Updated bio.".into(),
         ..new_profile.clone()
     };
-    let serialized_updated = postcard::to_allocvec(&updated_profile)?;
+
+    // Wire format prepends `STRUCT_VERSION` so the migration chain knows
+    // which version each record was written at.  See `do_search_unique`.
+    let encode_versioned = |r: &UserProfile| -> Vec<u8> {
+        let body = postcard::to_allocvec(r).expect("encode");
+        let mut out = Vec::with_capacity(1 + body.len());
+        out.push(UserProfile::STRUCT_VERSION);
+        out.extend_from_slice(&body);
+        out
+    };
+    let serialized = encode_versioned(&new_profile);
+    let serialized_updated = encode_versioned(&updated_profile);
 
     // Pre-load scripted replies in order:
     //   1. Connect handshake

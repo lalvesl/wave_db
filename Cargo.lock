@@ -2875,8 +2875,10 @@ dependencies = [
 name = "wavedb-macros"
 version = "0.1.0"
 dependencies = [
+ "postcard",
  "proc-macro2",
  "quote",
+ "serde",
  "syn",
  "trybuild",
  "wavedb-core",

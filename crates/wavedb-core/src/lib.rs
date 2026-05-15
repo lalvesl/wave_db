@@ -17,6 +17,8 @@ mod traits;
 pub use error::{Error, Result};
 pub use id::{Id, Shape};
 pub use metadata::Metadata;
-pub use migration::{MigrationPlan, MigrationRegistry, VersionRef};
+pub use migration::{
+    ErasedMigrateFn, MigrationEntry, MigrationPlan, MigrationRegistry, VersionRef,
+};
 pub use permission::{PermissionGroupId, PermissionRef};
-pub use traits::WaveDbStruct;
+pub use traits::{MigratesFrom, MigrationChain, RollbackFrom, WaveDbStruct};

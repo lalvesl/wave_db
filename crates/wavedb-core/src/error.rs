@@ -66,6 +66,14 @@ pub enum Error {
         to: u8,
     },
 
+    /// Serialization failed inside a type-erased migration fn.
+    #[error("migration serialization failed: {0}")]
+    MigrationSer(String),
+
+    /// Deserialization failed inside a type-erased migration fn.
+    #[error("migration deserialization failed: {0}")]
+    MigrationDe(String),
+
     /// A transport-level failure (connection refused, timeout, etc.).
     #[error("transport error: {0}")]
     Transport(String),

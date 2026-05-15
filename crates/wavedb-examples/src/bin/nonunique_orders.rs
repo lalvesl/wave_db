@@ -73,6 +73,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .cloned()
         .collect();
 
+    // Query path expects a postcard `Vec<(version, body)>` so the migration
+    // chain can translate each record at read time.
+    let encode_query = |records: &[Order]| -> Vec<u8> {
+        let entries: Vec<(u8, Vec<u8>)> = records
+            .iter()
+            .map(|r| (Order::STRUCT_VERSION, postcard::to_allocvec(r).unwrap()))
+            .collect();
+        postcard::to_allocvec(&entries).unwrap()
+    };
+
     let mock = MockTransport::new();
     mock.push(ScriptedReply::connect(
         "ws://owner:7700",
@@ -83,15 +93,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     mock.push(ScriptedReply::ok(Vec::new()));
     mock.push(ScriptedReply::ok(Vec::new()));
     // query all → 3 orders
-    mock.push(ScriptedReply::ok(postcard::to_allocvec(&orders_all)?));
+    mock.push(ScriptedReply::ok(encode_query(&orders_all)));
     // query amount > 100 → 2 orders
-    mock.push(ScriptedReply::ok(postcard::to_allocvec(&orders_filtered)?));
+    mock.push(ScriptedReply::ok(encode_query(&orders_filtered)));
     // delete → ok
     mock.push(ScriptedReply::ok(Vec::new()));
     // query all after delete → 2 orders
-    mock.push(ScriptedReply::ok(postcard::to_allocvec(
-        &orders_after_delete,
-    )?));
+    mock.push(ScriptedReply::ok(encode_query(&orders_after_delete)));
 
     let db = Db::open_with_transport(mock, /* user= */ 1, /* tenant= */ 42).await?;
 
