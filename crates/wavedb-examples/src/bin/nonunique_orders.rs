@@ -30,22 +30,19 @@ pub type Order = Order1;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orders_all = vec![
         Order {
-            id: Id::default(),
-            metadata: Metadata::default(),
             amount: 50,
             customer: 1,
+            ..Default::default()
         },
         Order {
-            id: Id::default(),
-            metadata: Metadata::default(),
             amount: 150,
             customer: 2,
+            ..Default::default()
         },
         Order {
-            id: Id::default(),
-            metadata: Metadata::default(),
             amount: 200,
             customer: 3,
+            ..Default::default()
         },
     ];
     let orders_filtered: Vec<Order> = orders_all

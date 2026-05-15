@@ -63,6 +63,9 @@ pub fn build_auto_derives(attrs: &[Attribute]) -> proc_macro2::TokenStream {
     if !existing_derives.contains("Clone") {
         needed.push(quote! { ::core::clone::Clone });
     }
+    if !existing_derives.contains("Default") {
+        needed.push(quote! { ::core::default::Default });
+    }
     if !existing_derives.contains("Serialize") {
         needed.push(quote! { ::serde::Serialize });
     }

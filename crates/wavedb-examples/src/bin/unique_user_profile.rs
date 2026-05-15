@@ -32,10 +32,9 @@ pub type UserProfile = UserProfile1;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Step 1: New tenant — no profile yet ──────────────────────────────────
     let new_profile = UserProfile {
-        id: Id::default(),
-        metadata: Metadata::default(),
         display_name: "Aurora".into(),
         bio: "First write.".into(),
+        ..Default::default()
     };
 
     let updated_profile = UserProfile {

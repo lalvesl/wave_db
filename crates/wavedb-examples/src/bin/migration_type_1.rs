@@ -145,17 +145,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // walks the chain in either direction without any extra registration.
 
     let stored_v41 = Message41 {
-        id: Id::default(),
-        metadata: Metadata::default(),
         body: "Hello, WaveDB!".into(),
         author: 99,
+        ..Default::default()
     };
     let stored_v42 = Message42 {
-        id: Id::default(),
-        metadata: Metadata::default(),
         body: "Hello, v42!".into(),
         author: 7,
         edited: true,
+        ..Default::default()
     };
 
     let mock = MockTransport::new();

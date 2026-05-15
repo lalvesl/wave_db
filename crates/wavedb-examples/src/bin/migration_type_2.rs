@@ -130,10 +130,9 @@ async fn main() {
     // Whether the Order1 came from first_try or an actual DB read, the engine
     // funnels it through this same function.
     let order = Order1 {
-        id: Id::default(),
-        metadata: Metadata::default(),
         customer: 7,
         amount_cents: 4200,
+        ..Default::default()
     };
     let summary = OrderSummary1::__wave_db_migrate_from(&db, order.clone())
         .await

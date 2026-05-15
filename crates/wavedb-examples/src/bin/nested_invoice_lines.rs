@@ -48,24 +48,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let invoice = Invoice {
-        id: Id::default(),
-        metadata: Metadata::default(),
         customer: 7,
         total_cents: 3000,
+        ..Default::default()
     };
     let line_a = InvoiceLine {
-        id: Id::default(),
-        metadata: Metadata::default(),
         product: 101,
         quantity: 2,
         unit_cents: 1000,
+        ..Default::default()
     };
     let line_b = InvoiceLine {
-        id: Id::default(),
-        metadata: Metadata::default(),
         product: 202,
         quantity: 1,
         unit_cents: 1000,
+        ..Default::default()
     };
     let invoices = vec![invoice.clone()];
     let lines = vec![line_a.clone(), line_b.clone()];
