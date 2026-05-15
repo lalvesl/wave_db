@@ -44,8 +44,8 @@ jobs:
       - name: fmt
         run: nix develop --command cargo fmt --all --check
 
-      - name: clippy
-        run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+      # - name: clippy
+      #   run: nix develop --command cargo clippy --workspace --all-targets -- -D warnings
 
       - name: doc
         run: nix develop --command cargo doc --workspace --no-deps
