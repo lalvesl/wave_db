@@ -38,10 +38,7 @@ pub fn router(store: HistoryStore, auth_key: Option<ClusterKey>) -> Router {
 
 // ── Flush handler ─────────────────────────────────────────────────────────────
 
-async fn handle_flush(
-    State(state): State<Arc<AppState>>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn handle_flush(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -75,10 +72,7 @@ async fn handle_flush(
 
 // ── History handler ───────────────────────────────────────────────────────────
 
-async fn handle_history(
-    State(state): State<Arc<AppState>>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn handle_history(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -88,7 +82,10 @@ async fn handle_history(
         Err(_) => return (StatusCode::BAD_REQUEST, Bytes::new()),
     };
 
-    let data = state.store.get(req.tenant, req.record_id).unwrap_or_default();
+    let data = state
+        .store
+        .get(req.tenant, req.record_id)
+        .unwrap_or_default();
     let resp = HistoryReadResponse { data };
     encode_payload(&resp).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
         (StatusCode::OK, b)

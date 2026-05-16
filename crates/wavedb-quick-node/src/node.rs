@@ -792,6 +792,12 @@ mod tests {
 
         // Still just one entry for this peer.
         let peers = node.peer_addresses();
-        assert_eq!(peers.iter().filter(|a| a.as_str() == "10.0.0.4:7700").count(), 1);
+        assert_eq!(
+            peers
+                .iter()
+                .filter(|a| a.as_str() == "10.0.0.4:7700")
+                .count(),
+            1
+        );
     }
 }

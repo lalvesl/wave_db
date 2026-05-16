@@ -24,6 +24,7 @@ async fn flush_batch_appears_in_store() {
         write_seq: 1,
         tenant: 42,
         records: vec![VersionedRecord::new(100, b"record_a".to_vec())],
+        token: None,
     };
     cluster.flush_batch(batch).await;
 
@@ -49,6 +50,7 @@ async fn flushed_record_is_retrievable_by_id() {
         write_seq: 5,
         tenant: 42,
         records: vec![VersionedRecord::new(record_id, b"payload".to_vec())],
+        token: None,
     };
     cluster.flush_batch(batch).await;
     tokio::time::sleep(std::time::Duration::from_millis(30)).await;
@@ -74,6 +76,7 @@ async fn multiple_flushes_accumulate_records() {
                 u128::from(i),
                 format!("data_{i}").into_bytes(),
             )],
+            token: None,
         };
         cluster.flush_batch(batch).await;
     }
@@ -95,6 +98,7 @@ async fn high_water_advances_monotonically() {
             write_seq: seq,
             tenant: 42,
             records: vec![VersionedRecord::new(i as u128, vec![])],
+            token: None,
         };
         cluster.flush_batch(batch).await;
     }
@@ -119,6 +123,7 @@ async fn watermarks_are_independent_per_tenant() {
             write_seq: 8,
             tenant: 42,
             records: vec![VersionedRecord::new(1, b"t42".to_vec())],
+            token: None,
         })
         .await;
     cluster
@@ -126,6 +131,7 @@ async fn watermarks_are_independent_per_tenant() {
             write_seq: 3,
             tenant: 99,
             records: vec![VersionedRecord::new(2, b"t99".to_vec())],
+            token: None,
         })
         .await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;

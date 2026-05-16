@@ -148,7 +148,7 @@ impl TestCluster {
 
         // ── Slow-Node ──────────────────────────────────────────────────────
         let slow_store = HistoryStore::in_memory();
-        let slow_app = slow_server::router(slow_store.clone());
+        let slow_app = slow_server::router(slow_store.clone(), None);
         let slow_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let slow_addr = slow_listener.local_addr().unwrap();
         let slow_task = tokio::spawn(async move {
@@ -186,6 +186,7 @@ impl TestCluster {
                 }],
                 bloom_interval_secs: 60,
                 data_dir: PathBuf::from("/tmp"),
+                cluster_key: None,
             };
 
             let node = Arc::new(QuickNode::new(config));
@@ -269,6 +270,7 @@ impl TestCluster {
             }],
             bloom_interval_secs: 60,
             data_dir: PathBuf::from("/tmp"),
+            cluster_key: None,
         };
 
         let node = Arc::new(QuickNode::new(config));

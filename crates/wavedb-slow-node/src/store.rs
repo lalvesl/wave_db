@@ -134,6 +134,7 @@ mod tests {
             write_seq,
             tenant,
             records: vec![VersionedRecord::new(id, data.to_vec())],
+            token: None,
         }
     }
 
