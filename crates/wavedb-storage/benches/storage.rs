@@ -95,8 +95,12 @@ fn bench_hash_functions(c: &mut Criterion) {
     let mut group = c.benchmark_group("hash");
     group.throughput(Throughput::Elements(1));
 
-    group.bench_function("page_hash", |b| {
-        b.iter(|| std::hint::black_box(hash::page_hash(7, 42, 3, 256)));
+    group.bench_function("tuple2_page", |b| {
+        b.iter(|| std::hint::black_box(hash::tuple2_page(7, 42, 256)));
+    });
+
+    group.bench_function("tuple4_page", |b| {
+        b.iter(|| std::hint::black_box(hash::tuple4_page(7, 42, 3, 1_000_000, 256)));
     });
 
     group.bench_function("double_hash_step", |b| {
@@ -107,7 +111,7 @@ fn bench_hash_functions(c: &mut Criterion) {
     group.bench_function("full_double_hash_probe", |b| {
         b.iter(|| {
             let page_count = 256u64;
-            let primary = hash::page_hash(7, 42, 3, page_count);
+            let primary = hash::tuple4_page(7, 42, 3, 1_000_000, page_count);
             let step = hash::double_hash_step(7, 42, 3, page_count);
             std::hint::black_box((primary + step) % page_count)
         });

@@ -31,6 +31,7 @@
 
 mod clients;
 mod quick_node;
+mod schema;
 mod slow_node;
 
 use std::sync::Arc;
@@ -117,19 +118,19 @@ pub async fn run_continuous(
             }
 
             // Flush: push newly committed writes to the slow-node every 10 s.
-            _ = flush_tick.tick() => {
-                if quit.load(Ordering::Relaxed) { break; }
-                let total = counters.total_committed();
-                flush_write_seq = slow_node::flush_incremental(
-                    cluster,
-                    flushed_count,
-                    total,
-                    flush_write_seq,
-                    log,
-                )
-                .await;
-                flushed_count = total;
-            }
+            // _ = flush_tick.tick() => {
+            //     if quit.load(Ordering::Relaxed) { break; }
+            //     let total = counters.total_committed();
+            //     flush_write_seq = slow_node::flush_incremental(
+            //         cluster,
+            //         flushed_count,
+            //         total,
+            //         flush_write_seq,
+            //         log,
+            //     )
+            //     .await;
+            //     flushed_count = total;
+            // }
 
             // Chaos: drain node[0] or node[1] on a staggered schedule.
             () = tokio::time::sleep_until(chaos_at) => {

@@ -1,10 +1,21 @@
 //! Continuous payment-processor client load generation.
 //!
-//! Each client is a tokio task that loops indefinitely, sending write requests
-//! with randomised payload sizes and per-client jitter delays.  When a node
+//! Each client is a tokio task that loops indefinitely, writing typed
+//! `#[wave_db]` records of all three shapes (`Unique`, `NonUnique`,
+//! `NestedNonUnique`) through the typed `Db::save` sugar.  When a node
 //! drains or errors the client exits its loop (its task ends naturally).
 //!
-//! All 39 clients are evenly distributed across the three quick-nodes.
+//! ## Per-iteration write pattern
+//!
+//! 1. First iteration only — save the [`MerchantAccount`] (Unique).
+//! 2. Every iteration — save a [`Payment`] (NonUnique) anchored to the
+//!    merchant.
+//! 3. Every iteration — save 2–3 [`PaymentLineItem`]s (NestedNonUnique)
+//!    anchored to the freshly-saved payment.
+//!
+//! Roughly 4 writes per client per loop turn, exercising all routing
+//! strategies in the storage layer (`tuple2` for the merchant + payment
+//! tracker, `tuple4` for payment elements and nested line items).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,16 +24,18 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
-use wavedb_net::request::RequestKind;
 use wavedb_test_cluster::TestCluster;
 
 use crate::TENANT;
+use crate::schema::{MerchantAccount, Payment, PaymentLineItem};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Total concurrent clients (divisible by 3 for even distribution).
-pub const NUM_CLIENTS: usize = 39;
-/// Clients per node (39 / 3 = 13).
+///
+/// 13 per Quick-Node — small enough that an in-process `TestCluster` can
+/// open every WS connection in well under a second.
+pub const NUM_CLIENTS: usize = 3900;
 pub const PER_NODE: usize = NUM_CLIENTS / 3;
 
 // ── Counters ──────────────────────────────────────────────────────────────────
@@ -50,17 +63,14 @@ impl Counters {
 
 // ── Launch ────────────────────────────────────────────────────────────────────
 
-/// Connect all [`NUM_CLIENTS`] clients and start continuous writes.
+/// Connect all [`NUM_CLIENTS`] clients and start continuous typed writes.
 ///
 /// Each client task loops until:
-/// - its node returns `draining` or an error (task exits), or
+/// - its node returns `draining` or any save errors (task exits), or
 /// - the task is externally aborted (call `.abort()` on the handle).
 ///
-/// Payload sizes vary between 64–512 bytes per client+write, driven by a
-/// simple deterministic hash of `(user_id, seq)` — no external RNG needed.
-///
 /// Per-client write delay: `base_ms + jitter_ms` where both factors depend
-/// on `user_id` so all 39 clients have distinct duty cycles.
+/// on `user_id` so all clients have distinct duty cycles.
 pub async fn launch_continuous(cluster: &TestCluster) -> (Vec<JoinHandle<()>>, Counters) {
     let counters = Counters::new();
     let mut tasks = Vec::with_capacity(NUM_CLIENTS);
@@ -72,49 +82,79 @@ pub async fn launch_continuous(cluster: &TestCluster) -> (Vec<JoinHandle<()>>, C
         let ctr = counters.clone();
 
         tasks.push(tokio::spawn(async move {
+            // ── Step 1: Unique save — the merchant profile ────────────────
+            //
+            // One MerchantAccount per (tenant, user).  Saved once at
+            // start; routing uses `tuple2_page(struct_id, tenant)`.
+            let merchant = MerchantAccount {
+                name: format!("merchant-{user_id}"),
+                balance_cents: 0,
+                writes_seen: 0,
+                ..Default::default()
+            };
+            if db.save(&merchant).await.is_err() {
+                ctr.dropped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            ctr.committed.fetch_add(1, Ordering::Relaxed);
+            let merchant_anchor = merchant.anchor();
+
             let mut seq: u64 = 0;
 
             loop {
-                // Deterministic pseudo-random payload size 64–512 bytes.
-                let payload_len = 64
-                    + ((user_id.wrapping_mul(31).wrapping_add(seq.wrapping_mul(17))) % 449)
+                // ── Step 2: NonUnique save — a payment record ─────────────
+                //
+                // Routing uses `tuple4_page` over the element's full Id,
+                // so each `seq` lands on a fresh page slot.
+                let note_len = 64
+                    + ((user_id.wrapping_mul(31).wrapping_add(seq.wrapping_mul(17))) % 384)
                         as usize;
+                let note = make_padded_note(user_id, seq, note_len);
 
-                let mut payload = format!(
-                    r#"{{"payment_id":{},"user":{},"seq":{},"amount_cents":{}}}"#,
-                    user_id * 100_000 + seq,
-                    user_id + 1,
+                let payment = Payment {
+                    merchant: merchant_anchor,
+                    amount_cents: (seq + 1) * 100,
                     seq,
-                    (seq + 1) * 100,
-                )
-                .into_bytes();
-
-                // Pad with ASCII digits to reach the target size.
-                let base = b'0';
-                while payload.len() < payload_len {
-                    payload.push(base + ((payload.len() as u8) % 10));
+                    note,
+                    ..Default::default()
+                };
+                if db.save(&payment).await.is_err() {
+                    ctr.dropped.fetch_add(1, Ordering::Relaxed);
+                    break;
                 }
+                ctr.committed.fetch_add(1, Ordering::Relaxed);
 
-                match db
-                    .send(RequestKind::Write {
-                        struct_id: 1,
-                        user: user_id + 1,
-                        tenant: TENANT,
-                        payload,
-                    })
-                    .await
-                {
-                    Ok(resp) if resp != b"not_owner" && resp != b"draining" => {
-                        ctr.committed.fetch_add(1, Ordering::Relaxed);
-                    }
-                    // Node draining or transport error — this client's node is gone.
-                    _ => {
+                // Anchor of the payment we just saved — used to bind
+                // line-items to it as their NestedNonUnique parent.
+                let payment_anchor = payment.anchor();
+
+                // ── Step 3: NestedNonUnique saves — 2 or 3 line items ─────
+                //
+                // Routing also uses `tuple4_page`.  Nested elements share
+                // the same routing as NonUnique elements per the design
+                // (see the `PageKey` strategy table).
+                let n_lines = 2 + (seq % 2) as u8; // 2 or 3 per payment
+                let mut ok = true;
+                for li in 0..n_lines {
+                    let line = PaymentLineItem {
+                        payment: payment_anchor,
+                        product: 100 + u64::from(li),
+                        quantity: 1 + u32::from(li),
+                        unit_cents: 100,
+                        ..Default::default()
+                    };
+                    if db.save(&line).await.is_err() {
                         ctr.dropped.fetch_add(1, Ordering::Relaxed);
+                        ok = false;
                         break;
                     }
+                    ctr.committed.fetch_add(1, Ordering::Relaxed);
+                }
+                if !ok {
+                    break;
                 }
 
-                // Per-client jitter: 3–25 ms depending on user_id and write burst phase.
+                // ── Pacing — same jitter shape as the original load ───────
                 let burst = if (seq % 20) < 5 { 1u64 } else { 3 };
                 let delay_ms = burst + (user_id % 7) * 2 + (seq % 5);
                 sleep(Duration::from_millis(delay_ms)).await;
@@ -125,4 +165,19 @@ pub async fn launch_continuous(cluster: &TestCluster) -> (Vec<JoinHandle<()>>, C
     }
 
     (tasks, counters)
+}
+
+/// Build a deterministic ASCII note string padded to `target_len` bytes.
+///
+/// Replaces the hand-rolled JSON byte-builder from the previous version —
+/// `Payment.note` is `String` because the record is serde-encoded by the
+/// macro, so we just construct a regular String.
+fn make_padded_note(user_id: u64, seq: u64, target_len: usize) -> String {
+    let mut s = format!("u={user_id} seq={seq} ");
+    while s.len() < target_len {
+        // Cycle through digits so the payload is non-trivial to compress.
+        let n = u8::try_from(s.len() % 10).unwrap_or(0);
+        s.push((b'0' + n) as char);
+    }
+    s
 }

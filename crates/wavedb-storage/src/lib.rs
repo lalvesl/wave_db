@@ -23,7 +23,7 @@ pub mod versioned;
 pub use anchor::{AnchorKey, AnchorKind, AnchorMode, AnchorSlot};
 pub use error::{StorageError, StorageResult};
 pub use file::data::DataFile;
-pub use hash::page_hash;
+pub use hash::{PageKey, mix64, tuple2_page, tuple4_page};
 pub use heap::HeapFile;
 pub use index::{AdaptiveIndex, IndexBackend, IndexKey};
 pub use page::{Page, PageHeader};

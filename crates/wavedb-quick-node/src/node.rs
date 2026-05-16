@@ -15,10 +15,12 @@ use crate::gossip::{GossipClient, GossipKind, GossipMessage, GossipResponse, Gos
 use crate::ownership::{OwnershipMap, ShardRange, TransferTracker};
 use crate::replication::ReplicationWatermark;
 use crate::ring::{ConsistentRing, NodeId};
+use wavedb_core::Id;
 use wavedb_net::EventBus;
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
 use wavedb_net::metrics::{MAX_MAP_PAGES, PAGE_MAP_VISUAL_FULL, QuickNodeMetrics};
 use wavedb_net::request::{RequestKind, TransportRequest, TransportResponse};
+use wavedb_storage::tuple4_page;
 
 // ── QuickNode ─────────────────────────────────────────────────────────────────
 
@@ -312,11 +314,24 @@ impl QuickNode {
         self.inner
             .write_bytes
             .fetch_add(payload_len, Ordering::Relaxed);
-        // Route to page by FNV-1a hash of (user, struct_id) so each user/struct
-        // pair consistently hits the same page slot, creating realistic hotspots.
-        let page_idx = fnv1a_page(user, struct_id, MAX_MAP_PAGES);
-        self.inner.page_bytes[page_idx].fetch_add(payload_len, Ordering::Relaxed);
+        // Assign the per-record sequence first so the synthetic Id carries
+        // distinct entropy in its low bits — that is what makes the heat
+        // map spread uniformly instead of collapsing onto one slot per user.
         let write_seq = self.inner.replication.next_seq();
+        // Route the heat-map slot the same way the storage engine routes
+        // disk pages: SplitMix64 over the full Id.  Writes from one user
+        // therefore land on different slots (the `created_at` low bits
+        // change every record) instead of clustering on
+        // `hash(user, struct_id)`.  Tracks the actual on-disk distribution.
+        // Heat-map slot reflects how the storage layer would route this
+        // write as a tuple4 (NonUnique/element-style) record.  Every write
+        // varies in `write_seq` so the tuple4 hash spreads writes across
+        // the full page range instead of collapsing per-user.
+        let _ = Id::new(tenant, 0, struct_id, write_seq);
+        #[allow(clippy::cast_possible_truncation)]
+        let page_idx = tuple4_page(struct_id, tenant, 0, write_seq, MAX_MAP_PAGES as u64) as usize;
+        let _ = user; // user is no longer part of the slot key — preserved in payload.
+        self.inner.page_bytes[page_idx].fetch_add(payload_len, Ordering::Relaxed);
         for peer_id in self.peer_ids() {
             self.inner.replication.record_send(peer_id, write_seq);
         }
@@ -626,24 +641,6 @@ impl QuickNode {
     }
 }
 
-// ── fnv1a_page ────────────────────────────────────────────────────────────────
-
-/// Map `(user, struct_id)` to a page-map slot via FNV-1a so the same
-/// caller always hits the same slot, creating realistic per-user hotspots.
-#[allow(clippy::cast_possible_truncation)]
-fn fnv1a_page(user: u64, struct_id: u32, n_pages: usize) -> usize {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in user.to_le_bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    for b in struct_id.to_le_bytes() {
-        h ^= u64::from(b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    (h % n_pages as u64) as usize
-}
-
 // ── addr_to_node_id ───────────────────────────────────────────────────────────
 
 /// Derive a stable [`NodeId`] from a peer socket-address string using FNV-1a.
@@ -751,6 +748,44 @@ mod tests {
         let req = TransportRequest::new(1, RequestKind::Disconnect { user: 1, tenant: 1 });
         let resp = node.handle(req).await;
         assert_eq!(resp.seq, 1);
+    }
+
+    /// Regression: 39 writes from 13 distinct users must populate ≥ 30 of
+    /// the 512 heat-map slots — the old `fnv1a_page(user, struct_id)` only
+    /// hit ~13 slots because the routing key collapsed every write from
+    /// one user onto the same slot.
+    ///
+    /// Probes `inner.page_bytes` directly because the visual `page_count`
+    /// in [`QuickNodeMetrics`] is scaled against a 2 MiB-per-slot threshold
+    /// and rounds small test payloads to 0.
+    #[tokio::test]
+    async fn writes_spread_across_heat_map_slots() {
+        let node = QuickNode::new(cfg(100, 0, 4095));
+        // 13 users × 3 writes each, mirroring the real_example layout.
+        for user in 0..13u64 {
+            for _ in 0..3 {
+                let req = TransportRequest::new(
+                    1,
+                    RequestKind::Write {
+                        struct_id: 7,
+                        user,
+                        tenant: 100,
+                        payload: vec![0u8; 128],
+                    },
+                );
+                node.handle(req).await;
+            }
+        }
+        let lit = node
+            .inner
+            .page_bytes
+            .iter()
+            .filter(|p| p.load(Ordering::Relaxed) > 0)
+            .count();
+        // Old routing pinned all 3 writes from one user onto a single slot
+        // → ≤ 13 distinct slots ever lit up.  The new routing varies the
+        // synthetic Id by write_seq so every write lands somewhere new.
+        assert!(lit >= 30, "expected ≥ 30 distinct slots, got {lit}");
     }
 
     #[test]
