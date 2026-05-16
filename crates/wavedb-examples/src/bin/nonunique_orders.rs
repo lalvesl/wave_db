@@ -81,19 +81,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;
 
-    // Write three orders
+    // Write three orders — `db.save(&order)` keeps ownership at the call site
+    // (no `.clone().save(&db)` boilerplate).
     for order in &orders_all {
-        order.clone().save(&db).await?;
+        db.save(order).await?;
     }
     println!("Wrote {} orders", orders_all.len());
 
     // Query all
-    let all = Order::query(&db, Expr::all()).await?;
+    let all: Vec<Order> = db.query(Expr::all()).await?;
     assert_eq!(all.len(), 3);
     println!("All orders: {}", all.len());
 
-    // Query filtered: amount > 100
-    let large = Order::query(&db, Expr::gt("amount", 100u64)).await?;
+    // Query filtered: amount > 100 — using the typed `FIELDS` handle so a
+    // misspelt field name becomes a compile error rather than an empty result.
+    let large: Vec<Order> = db.query(Order::FIELDS.amount().gt(100u64)).await?;
     assert_eq!(large.len(), 2);
     println!("Orders with amount > 100: {}", large.len());
 
@@ -103,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Deleted order with amount=150");
 
     // Confirm deletion
-    let remaining = Order::query(&db, Expr::all()).await?;
+    let remaining: Vec<Order> = db.query(Expr::all()).await?;
     assert_eq!(remaining.len(), 2);
     assert!(remaining.iter().all(|o| o.amount != 150));
     println!("Remaining orders: {}", remaining.len());

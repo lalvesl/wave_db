@@ -139,6 +139,26 @@ pub mod query;
 
 pub use db::Db;
 
+/// Network transport re-exports.
+///
+/// Lets users build a custom transport without depending on `wavedb-net`
+/// directly:
+///
+/// ```ignore
+/// use wavedb::net::{Transport, MockTransport};
+/// ```
+///
+/// Native-only transports (`WsClient`, `HttpClient`, `ChannelTransport`,
+/// `MockServer`, `EventBus`) are re-exported behind the `native` feature.
+pub mod net {
+    pub use wavedb_net::{
+        MockTransport, Transport, TransportRequest, TransportResponse,
+        mock::ScriptedReply, request::RequestKind,
+    };
+    #[cfg(feature = "native")]
+    pub use wavedb_net::{ChannelTransport, EventBus, HttpClient, MockServer, WsClient};
+}
+
 /// Re-exports of the most commonly used types and traits.
 ///
 /// Import everything with `use wavedb::prelude::*` to get [`Db`],

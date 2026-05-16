@@ -274,6 +274,50 @@ pub fn build_anchors_impl(name: &Ident, args: &WaveDbArgs) -> proc_macro2::Token
     }
 }
 
+/// Emit a `XxxFields` sentinel type with one `const fn` per user-declared field.
+///
+/// Each method returns a [`wavedb::query::Field`] handle so callers can write
+/// `Order::FIELDS.amount().gt(100u64)` — typo-safe (the field name is checked
+/// against the struct at compile time) and free of string literals.
+///
+/// `field_idents` must contain only **user-declared** fields — `id` and
+/// `metadata` are auto-injected by the macro and should be excluded here.
+pub fn build_fields_accessor(
+    name: &Ident,
+    vis: &syn::Visibility,
+    field_idents: &[Ident],
+) -> proc_macro2::TokenStream {
+    let fields_name = format_ident!("{}Fields", name);
+
+    let methods = field_idents.iter().map(|f| {
+        let fname = f.to_string();
+        quote! {
+            /// Build a [`::wavedb::query::Field`] handle for this struct field.
+            pub const fn #f(self) -> ::wavedb::query::Field {
+                ::wavedb::query::Field::new(#fname)
+            }
+        }
+    });
+
+    quote! {
+        /// Typed field handles for [`#name`] — emitted by `#[wave_db]`.
+        ///
+        /// Use the `FIELDS` associated constant on the struct to access these:
+        /// `MyStruct::FIELDS.some_field().gt(42u64)`.
+        #[derive(
+            ::core::fmt::Debug,
+            ::core::clone::Clone,
+            ::core::marker::Copy,
+            ::core::default::Default,
+        )]
+        #vis struct #fields_name;
+
+        impl #fields_name {
+            #(#methods)*
+        }
+    }
+}
+
 pub fn build_auto_derives(attrs: &[Attribute]) -> proc_macro2::TokenStream {
     let existing_derives = collect_derived_traits(attrs);
     let mut needed = Vec::new();

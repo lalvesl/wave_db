@@ -10,9 +10,12 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use wavedb_core::{Id, Result};
+use wavedb_core::{Id, MigrationChain, Result, WaveDbStruct};
 use wavedb_net::TransportResponse;
 use wavedb_net::request::{RequestKind, TransportRequest};
+
+use crate::object::{do_delete, do_query_non_unique, do_search_unique, do_write};
+use crate::query::Expr;
 
 // ── Disconnect sink ─────────────────────────────────────────────────────────
 //
@@ -246,6 +249,93 @@ impl Db {
     /// For Unique objects, `shard_id = 0` and `created_at = 0`.
     pub fn unique_anchor_id(&self, struct_id: u32) -> Id {
         Id::new(self.inner.tenant, 0, struct_id, 0)
+    }
+
+    // ── Generic CRUD sugar ───────────────────────────────────────────────
+    //
+    // These mirror `UniqueObject` / `NonUniqueObject` trait methods but read
+    // more naturally at the call site:
+    //
+    //     db.save(&order).await?;
+    //     let big = db.query::<Order>(amount.gt(100)).await?;
+    //     let profile = db.find::<UserProfile>().await?;
+
+    /// Look up the single live Unique record of type `T` for the current tenant.
+    ///
+    /// Equivalent to `T::search(&db)` but reads as a method call on `db`.
+    pub async fn find<T>(&self) -> Result<Option<T>>
+    where
+        T: MigrationChain<Self> + WaveDbStruct,
+    {
+        do_search_unique::<T>(self).await
+    }
+
+    /// Query live NonUnique records of type `T` matching `expr`.
+    ///
+    /// Equivalent to `T::query(&db, expr)`.
+    pub async fn query<T>(&self, expr: Expr) -> Result<Vec<T>>
+    where
+        T: MigrationChain<Self> + WaveDbStruct,
+    {
+        do_query_non_unique::<T>(self, expr).await
+    }
+
+    /// Persist `record` as a new version.
+    ///
+    /// Works for both Unique and NonUnique shapes.  Takes `&T` so the caller
+    /// keeps ownership — no `.clone()` boilerplate at the call site.
+    pub async fn save<T>(&self, record: &T) -> Result<()>
+    where
+        T: WaveDbStruct + serde::Serialize + Sync,
+    {
+        do_write(self, record).await
+    }
+
+    /// Tombstone a NonUnique record by its raw [`Id`].
+    pub async fn delete(&self, id: Id) -> Result<()> {
+        do_delete(self, id.raw()).await
+    }
+
+    // ── URL-scheme constructor (native only) ────────────────────────────
+
+    /// Open a session by URL scheme — the most ergonomic constructor.
+    ///
+    /// Picks a concrete transport based on the URL scheme:
+    ///
+    /// | Scheme | Transport |
+    /// |--------|-----------|
+    /// | `ws://`, `wss://` | [`WsClient`](wavedb_net::WsClient) (full-duplex, server-push) |
+    /// | `http://`, `https://` | [`HttpClient`](wavedb_net::HttpClient) (single-queue POST) |
+    ///
+    /// The background receive / poll task is spawned on the current Tokio
+    /// runtime.  It lives for as long as the returned `Db` (or any clone) is
+    /// alive — `Db::drop` fires a `disconnect`, which lets the task exit.
+    ///
+    /// For custom transports or test harnesses, use
+    /// [`Db::open_with_transport`] instead.
+    ///
+    /// # Errors
+    ///
+    /// - Unrecognised URL scheme → `Error::Transport`
+    /// - Underlying transport handshake failure → bubbled from the client
+    #[cfg(feature = "native")]
+    pub async fn connect(url: &str, user: u64, tenant: u64) -> Result<Self> {
+        let lower = url.to_ascii_lowercase();
+        if lower.starts_with("ws://") || lower.starts_with("wss://") {
+            let (client, pump) = wavedb_net::WsClient::connect(url.to_string()).await?;
+            tokio::spawn(pump);
+            Self::open_with_transport(client, user, tenant).await
+        } else if lower.starts_with("http://") || lower.starts_with("https://") {
+            let client =
+                wavedb_net::HttpClient::new(url.to_string(), std::time::Duration::from_millis(50));
+            let runner = client.clone();
+            tokio::spawn(async move { runner.run().await });
+            Self::open_with_transport(client, user, tenant).await
+        } else {
+            Err(wavedb_core::Error::Transport(format!(
+                "unsupported URL scheme in `{url}` — expected ws://, wss://, http://, or https://"
+            )))
+        }
     }
 
     // ── Noop constructor ─────────────────────────────────────────────────

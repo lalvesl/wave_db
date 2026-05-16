@@ -58,14 +58,44 @@ impl From<u8> for Value {
         Self::U64(v.into())
     }
 }
+impl From<usize> for Value {
+    fn from(v: usize) -> Self {
+        Self::U64(v as u64)
+    }
+}
 impl From<i64> for Value {
     fn from(v: i64) -> Self {
         Self::I64(v)
     }
 }
+impl From<i32> for Value {
+    fn from(v: i32) -> Self {
+        Self::I64(v.into())
+    }
+}
+impl From<i16> for Value {
+    fn from(v: i16) -> Self {
+        Self::I64(v.into())
+    }
+}
+impl From<i8> for Value {
+    fn from(v: i8) -> Self {
+        Self::I64(v.into())
+    }
+}
+impl From<isize> for Value {
+    fn from(v: isize) -> Self {
+        Self::I64(v as i64)
+    }
+}
 impl From<f64> for Value {
     fn from(v: f64) -> Self {
         Self::F64(v)
+    }
+}
+impl From<f32> for Value {
+    fn from(v: f32) -> Self {
+        Self::F64(v.into())
     }
 }
 impl From<&str> for Value {
@@ -78,9 +108,24 @@ impl From<String> for Value {
         Self::Str(v)
     }
 }
+impl From<&String> for Value {
+    fn from(v: &String) -> Self {
+        Self::Str(v.clone())
+    }
+}
 impl From<bool> for Value {
     fn from(v: bool) -> Self {
         Self::Bool(v)
+    }
+}
+impl From<Vec<u8>> for Value {
+    fn from(v: Vec<u8>) -> Self {
+        Self::Bytes(v)
+    }
+}
+impl From<&[u8]> for Value {
+    fn from(v: &[u8]) -> Self {
+        Self::Bytes(v.to_vec())
     }
 }
 
@@ -255,6 +300,20 @@ impl Expr {
         Self::Not(Box::new(expr))
     }
 
+    /// Build a [`Field`] handle for combinator-style construction.
+    ///
+    /// Sugar for the macro-generated `XxxFields` constants; useful when the
+    /// field name is dynamic.
+    ///
+    /// ```
+    /// use wavedb::query::Expr;
+    /// let e = Expr::field("amount").gt(100u64);
+    /// assert!(e.to_bytes().is_ok());
+    /// ```
+    pub const fn field(name: &'static str) -> Field {
+        Field::new(name)
+    }
+
     /// Serialise this expression to bytes (postcard).
     pub fn to_bytes(&self) -> wavedb_core::Result<Vec<u8>> {
         Ok(postcard::to_allocvec(self)?)
@@ -263,6 +322,95 @@ impl Expr {
     /// Deserialise an expression from bytes (postcard).
     pub fn from_bytes(bytes: &[u8]) -> wavedb_core::Result<Self> {
         Ok(postcard::from_bytes(bytes)?)
+    }
+}
+
+// ── Operator overloads ───────────────────────────────────────────────────────
+//
+// Sugar so users can write `a & b`, `a | b`, `!a` instead of
+// `Expr::and(a, b)`, `Expr::or(a, b)`, `Expr::negate(a)`.
+
+impl ::core::ops::BitAnd for Expr {
+    type Output = Self;
+    fn bitand(self, rhs: Self) -> Self {
+        Self::and(self, rhs)
+    }
+}
+
+impl ::core::ops::BitOr for Expr {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self {
+        Self::or(self, rhs)
+    }
+}
+
+impl ::core::ops::Not for Expr {
+    type Output = Self;
+    fn not(self) -> Self {
+        Self::negate(self)
+    }
+}
+
+// ── Field DSL ────────────────────────────────────────────────────────────────
+
+/// A typed field handle used to build [`Expr`] values fluently.
+///
+/// `Field` is the receiver type of the macro-generated `XxxFields` const
+/// accessors.  Each comparison method returns an [`Expr`].
+///
+/// # Example
+///
+/// ```
+/// use wavedb::query::{Expr, Field};
+/// const AMOUNT: Field = Field::new("amount");
+/// let e: Expr = AMOUNT.gt(100u64);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    name: &'static str,
+}
+
+impl Field {
+    /// Create a new field handle.
+    ///
+    /// `const`-compatible so the proc-macro can emit `const FOO: Field = ...`.
+    pub const fn new(name: &'static str) -> Self {
+        Self { name }
+    }
+
+    /// The underlying field name.
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// `self == value`
+    pub fn eq(self, value: impl Into<Value>) -> Expr {
+        Expr::eq(self.name, value)
+    }
+
+    /// `self != value`
+    pub fn ne(self, value: impl Into<Value>) -> Expr {
+        Expr::ne(self.name, value)
+    }
+
+    /// `self > value`
+    pub fn gt(self, value: impl Into<Value>) -> Expr {
+        Expr::gt(self.name, value)
+    }
+
+    /// `self >= value`
+    pub fn gte(self, value: impl Into<Value>) -> Expr {
+        Expr::gte(self.name, value)
+    }
+
+    /// `self < value`
+    pub fn lt(self, value: impl Into<Value>) -> Expr {
+        Expr::lt(self.name, value)
+    }
+
+    /// `self <= value`
+    pub fn lte(self, value: impl Into<Value>) -> Expr {
+        Expr::lte(self.name, value)
     }
 }
 

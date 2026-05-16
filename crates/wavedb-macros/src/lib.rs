@@ -50,9 +50,13 @@ use quote::quote;
 use syn::{ItemStruct, parse_macro_input};
 
 use args::WaveDbArgs;
-use codegen::{build_anchors_impl, build_auto_derives, build_shape, build_typed_wrappers};
+use codegen::{
+    build_anchors_impl, build_auto_derives, build_fields_accessor, build_shape,
+    build_typed_wrappers,
+};
 use crud::build_crud_impl;
 use migration::build_migration_impl;
+use quote::format_ident;
 use utils::parse_trailing_version;
 use validation::{validate_migration_attributes, validate_struct_id};
 
@@ -71,6 +75,10 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     let name = &input.ident;
     let name_str = name.to_string();
 
+    // Captured **before** `id`/`metadata` are injected — used to emit
+    // `XxxFields` typed field handles for the query DSL.
+    let mut user_field_idents: Vec<syn::Ident> = Vec::new();
+
     if let syn::Fields::Named(ref mut fields) = input.fields {
         for f in &fields.named {
             if let Some(ident) = &f.ident {
@@ -82,6 +90,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .to_compile_error()
                     .into();
                 }
+                user_field_idents.push(ident.clone());
             }
         }
 
@@ -121,6 +130,15 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     let typed_wrappers = build_typed_wrappers(name, &args, &input.vis);
     let anchors_impl = build_anchors_impl(name, &args);
     let auto_derives = build_auto_derives(&input.attrs);
+    let fields_accessor = build_fields_accessor(name, &input.vis, &user_field_idents);
+    let fields_name = format_ident!("{}Fields", name);
+    let fields_const = quote! {
+        /// Typed field handles for the query DSL — see [`::wavedb::query::Field`].
+        ///
+        /// `MyStruct::FIELDS.field_name().gt(value)` produces an [`::wavedb::query::Expr`]
+        /// with a compile-time-checked field name (typos become compile errors).
+        pub const FIELDS: #fields_name = #fields_name;
+    };
 
     // ── Auto-impl UniqueObject / NonUniqueObject ────────────────────────────
     let crud_impl = build_crud_impl(name, &args);
@@ -133,6 +151,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     // scope for any code in the same module that references them.
     let expanded = quote! {
         #typed_wrappers
+        #fields_accessor
 
         #auto_derives
         #input
@@ -145,6 +164,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl #name {
             #anchors_impl
+            #fields_const
         }
 
         #crud_impl
