@@ -31,6 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Quick-Node starting",
     );
 
+    // Bind before spawning tasks so the port is reserved when gossip fires.
+    let listener = TcpListener::bind(&listen).await?;
+    info!(%listen, "listening for connections");
+
     // Background: periodic bloom-filter publish tick.
     let node_bg = node.clone();
     tokio::spawn(async move {
@@ -42,9 +46,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Gossip: announce this node to all configured peers.  Runs concurrently
+    // with axum::serve so the server is already accepting connections by the
+    // time peers try to verify we're alive.
+    let node_gossip = node.clone();
+    tokio::spawn(async move {
+        node_gossip.announce_self().await;
+    });
+
     let app = server::router(node);
-    let listener = TcpListener::bind(&listen).await?;
-    info!(%listen, "listening for connections");
     axum::serve(listener, app).await?;
 
     Ok(())

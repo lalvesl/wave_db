@@ -1,17 +1,21 @@
 //! [`QuickNode`] — the central state object for a running Quick-Node process.
 //!
-//! Combines partition ownership, cluster routing, replication bookkeeping, and
-//! event broadcasting into a single cheaply-cloneable handle.
+//! Combines partition ownership, cluster routing, replication bookkeeping,
+//! event broadcasting, gossip-based peer discovery, and graceful drain into a
+//! single cheaply-cloneable handle.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::RwLock;
 
 use crate::config::Config;
+use crate::gossip::{GossipClient, GossipKind, GossipMessage, GossipResponse, GossipState};
 use crate::ownership::{OwnershipMap, ShardRange, TransferTracker};
 use crate::replication::ReplicationWatermark;
 use crate::ring::{ConsistentRing, NodeId};
 use wavedb_net::EventBus;
+use wavedb_net::auth::{ClusterKey, TokenPurpose};
 use wavedb_net::request::{RequestKind, TransportRequest, TransportResponse};
 
 // ── QuickNode ─────────────────────────────────────────────────────────────────
@@ -35,6 +39,16 @@ struct QuickNodeInner {
     replication: ReplicationWatermark,
     events: EventBus,
     config: Config,
+    // ── Gossip + drain ────────────────────────────────────────────────────
+    gossip: GossipState,
+    gossip_client: GossipClient,
+    /// Set to `true` when the operator triggers a graceful drain.
+    /// All data handlers redirect clients to another node while draining.
+    draining: AtomicBool,
+    // ── Auth ──────────────────────────────────────────────────────────────
+    /// Shared cluster secret for HMAC-SHA256 node-to-node auth.
+    /// `None` in open/dev mode — gossip is accepted without a token.
+    auth_key: Option<ClusterKey>,
 }
 
 impl QuickNode {
@@ -61,6 +75,7 @@ impl QuickNode {
         }
 
         let listen_addr = config.listen.clone();
+        let auth_key = config.cluster_key.clone();
         Self {
             inner: Arc::new(QuickNodeInner {
                 node_id,
@@ -71,6 +86,10 @@ impl QuickNode {
                 replication,
                 events: EventBus::new(),
                 config,
+                gossip: GossipState::new(),
+                gossip_client: GossipClient::new(),
+                draining: AtomicBool::new(false),
+                auth_key,
             }),
         }
     }
@@ -117,6 +136,16 @@ impl QuickNode {
         &self.inner.config
     }
 
+    /// `true` while a graceful drain is in progress.
+    pub fn is_draining(&self) -> bool {
+        self.inner.draining.load(Ordering::Acquire)
+    }
+
+    /// Cluster key used to verify incoming gossip tokens, or `None` in open mode.
+    pub fn auth_key(&self) -> Option<&ClusterKey> {
+        self.inner.auth_key.as_ref()
+    }
+
     /// Address of the node responsible for `(tenant, shard)`, if known.
     pub fn route_to(&self, tenant: u64, shard: u16) -> Option<String> {
         let ring = self.inner.ring.read();
@@ -129,8 +158,7 @@ impl QuickNode {
     /// Process an incoming [`TransportRequest`] and return a [`TransportResponse`].
     ///
     /// This is the single dispatch point used by both the HTTP and WebSocket
-    /// server handlers.  Phase 14 will wire in the real storage engine;
-    /// for now the data-layer operations are stubbed.
+    /// server handlers.
     #[allow(clippy::unused_async)]
     pub async fn handle(&self, req: TransportRequest) -> TransportResponse {
         match req.kind {
@@ -180,6 +208,9 @@ impl QuickNode {
         _user: u64,
         tenant: u64,
     ) -> TransportResponse {
+        if self.inner.draining.load(Ordering::Acquire) {
+            return self.draining_resp(seq);
+        }
         if !self.inner.ownership.owns(tenant, 0) {
             return self.not_owner_resp(seq);
         }
@@ -201,6 +232,9 @@ impl QuickNode {
         tenant: u64,
         _filter: Vec<u8>,
     ) -> TransportResponse {
+        if self.inner.draining.load(Ordering::Acquire) {
+            return self.draining_resp(seq);
+        }
         if !self.inner.ownership.owns(tenant, 0) {
             return self.not_owner_resp(seq);
         }
@@ -221,10 +255,12 @@ impl QuickNode {
         tenant: u64,
         _payload: Vec<u8>,
     ) -> TransportResponse {
+        if self.inner.draining.load(Ordering::Acquire) {
+            return self.draining_resp(seq);
+        }
         if !self.inner.ownership.owns(tenant, 0) {
             return self.not_owner_resp(seq);
         }
-        // Advance replication sequence so peers know a write occurred.
         let write_seq = self.inner.replication.next_seq();
         for peer_id in self.peer_ids() {
             self.inner.replication.record_send(peer_id, write_seq);
@@ -240,6 +276,9 @@ impl QuickNode {
     }
 
     fn handle_delete(&self, seq: u64, _id: u128, _user: u64, tenant: u64) -> TransportResponse {
+        if self.inner.draining.load(Ordering::Acquire) {
+            return self.draining_resp(seq);
+        }
         if !self.inner.ownership.owns(tenant, 0) {
             return self.not_owner_resp(seq);
         }
@@ -263,12 +302,191 @@ impl QuickNode {
         }
     }
 
+    // ── Gossip ────────────────────────────────────────────────────────────
+
+    /// Process an incoming [`GossipMessage`] and return the appropriate
+    /// [`GossipResponse`].
+    ///
+    /// Deduplication ensures each `(origin, epoch)` pair is applied at most
+    /// once even if multiple peers relay the same event.
+    pub async fn handle_gossip(&self, msg: GossipMessage) -> GossipResponse {
+        // Duplicate — already processed this event.
+        if !self.inner.gossip.mark_seen(msg.origin, msg.epoch) {
+            return match msg.kind {
+                GossipKind::Announce => GossipResponse::NodeList {
+                    nodes: self.known_nodes(),
+                },
+                GossipKind::Withdraw => GossipResponse::Ack,
+            };
+        }
+
+        match &msg.kind {
+            GossipKind::Announce => {
+                let peer_id = addr_to_node_id(&msg.addr);
+                {
+                    let mut ring = self.inner.ring.write();
+                    ring.add_node(peer_id, msg.addr.clone());
+                }
+                self.inner.replication.add_peer(peer_id);
+                tracing::info!(
+                    peer = %msg.addr,
+                    peer_id,
+                    "gossip: node announced, added to ring"
+                );
+
+                // Fan out to all known peers except the originator.
+                self.fanout(msg, peer_id);
+
+                GossipResponse::NodeList {
+                    nodes: self.known_nodes(),
+                }
+            }
+            GossipKind::Withdraw => {
+                let peer_id = addr_to_node_id(&msg.addr);
+
+                // Fan out before removing so the peer list is still intact.
+                self.fanout(msg.clone(), peer_id);
+
+                {
+                    let mut ring = self.inner.ring.write();
+                    ring.remove_node(peer_id);
+                }
+                self.inner.replication.remove_peer(peer_id);
+                tracing::info!(
+                    peer = %msg.addr,
+                    peer_id,
+                    "gossip: node withdrew, removed from ring"
+                );
+
+                GossipResponse::Ack
+            }
+        }
+    }
+
+    /// Announce this node's existence to all configured peers and merge their
+    /// [`GossipResponse::NodeList`] replies into the local ring.
+    ///
+    /// Called once at startup, after the listening socket is bound.
+    pub async fn announce_self(&self) {
+        let epoch = self.inner.gossip.next_epoch();
+        let token = self
+            .inner
+            .auth_key
+            .as_ref()
+            .map(|k| k.mint(self.inner.node_id, TokenPurpose::Gossip));
+        let msg = GossipMessage {
+            epoch,
+            origin: self.inner.node_id,
+            addr: self.inner.listen_addr.clone(),
+            kind: GossipKind::Announce,
+            token,
+        };
+
+        // Mark our own announce as seen so we don't process it if relayed back.
+        self.inner.gossip.mark_seen(self.inner.node_id, epoch);
+
+        for peer_addr in self.peer_addresses() {
+            match self.inner.gossip_client.send(&peer_addr, &msg).await {
+                Some(GossipResponse::NodeList { nodes }) => {
+                    tracing::info!(
+                        peer = %peer_addr,
+                        discovered = nodes.len(),
+                        "gossip: announce accepted, merging node list"
+                    );
+                    let mut ring = self.inner.ring.write();
+                    for (id, addr) in nodes {
+                        if id != self.inner.node_id {
+                            ring.add_node(id, addr);
+                            self.inner.replication.add_peer(id);
+                        }
+                    }
+                }
+                Some(_) | None => {
+                    tracing::warn!(peer = %peer_addr, "gossip: announce to peer failed or got unexpected response");
+                }
+            }
+        }
+    }
+
+    // ── Drain ─────────────────────────────────────────────────────────────
+
+    /// Begin a graceful drain:
+    ///
+    /// 1. Set the `draining` flag so all data handlers redirect clients.
+    /// 2. Flush in-memory writes to the Slow-Node (Phase 14 hook).
+    /// 3. Send [`GossipKind::Withdraw`] to all peers so they remove this node
+    ///    from their rings before it stops accepting connections.
+    pub async fn drain(&self) {
+        self.inner.draining.store(true, Ordering::Release);
+        tracing::info!(
+            node_id = self.inner.node_id,
+            listen = %self.inner.listen_addr,
+            "drain: started — redirecting clients"
+        );
+
+        self.sync_to_slow().await;
+
+        let epoch = self.inner.gossip.next_epoch();
+        let token = self
+            .inner
+            .auth_key
+            .as_ref()
+            .map(|k| k.mint(self.inner.node_id, TokenPurpose::Gossip));
+        let msg = GossipMessage {
+            epoch,
+            origin: self.inner.node_id,
+            addr: self.inner.listen_addr.clone(),
+            kind: GossipKind::Withdraw,
+            token,
+        };
+        self.inner.gossip.mark_seen(self.inner.node_id, epoch);
+
+        for peer_addr in self.peer_addresses() {
+            let _ = self.inner.gossip_client.send(&peer_addr, &msg).await;
+        }
+
+        tracing::info!(
+            node_id = self.inner.node_id,
+            "drain: withdraw gossip sent to all peers"
+        );
+    }
+
+    /// Flush in-memory writes to the configured Slow-Node.
+    ///
+    /// Phase 14: replace with actual record serialisation and batch POST.
+    async fn sync_to_slow(&self) {
+        let Some(slow_addr) = self.inner.config.slow_node.as_deref() else {
+            return;
+        };
+        // Phase 14: collect pending in-memory records and send them in a
+        // FlushBatch to `http://{slow_addr}/flush`.  For now we just log the
+        // intent so the operator knows the hook is in place.
+        let write_seq = self.inner.replication.current_seq();
+        tracing::info!(
+            slow_node = slow_addr,
+            write_seq,
+            "drain: Phase-14 sync_to_slow (no-op until storage engine wired)"
+        );
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     fn not_owner_resp(&self, seq: u64) -> TransportResponse {
         TransportResponse {
             seq,
             payload: b"not_owner".to_vec(),
+            owner_url: self.route_to_owner_hint(),
+            backup_url: None,
+            notifications: Vec::new(),
+        }
+    }
+
+    /// Response returned while draining: same redirect hint as `not_owner` but
+    /// with a distinct payload so clients can distinguish the reason.
+    fn draining_resp(&self, seq: u64) -> TransportResponse {
+        TransportResponse {
+            seq,
+            payload: b"draining".to_vec(),
             owner_url: self.route_to_owner_hint(),
             backup_url: None,
             notifications: Vec::new(),
@@ -295,6 +513,58 @@ impl QuickNode {
         ring.nodes()
             .filter(|&id| id != self.inner.node_id)
             .collect()
+    }
+
+    /// Listen addresses of all known peers (excludes self).
+    fn peer_addresses(&self) -> Vec<String> {
+        let ring = self.inner.ring.read();
+        ring.nodes()
+            .filter(|&id| id != self.inner.node_id)
+            .filter_map(|id| ring.addr_of(id).map(ToString::to_string))
+            .collect()
+    }
+
+    /// Listen addresses of all known peers, excluding `skip_id` and self.
+    fn peer_addresses_except(&self, skip_id: NodeId) -> Vec<String> {
+        let ring = self.inner.ring.read();
+        ring.nodes()
+            .filter(|&id| id != self.inner.node_id && id != skip_id)
+            .filter_map(|id| ring.addr_of(id).map(ToString::to_string))
+            .collect()
+    }
+
+    /// Snapshot of all nodes in the ring as `(node_id, addr)` pairs.
+    fn known_nodes(&self) -> Vec<(NodeId, String)> {
+        let ring = self.inner.ring.read();
+        ring.nodes()
+            .filter_map(|id| ring.addr_of(id).map(|a| (id, a.to_string())))
+            .collect()
+    }
+
+    /// Fire-and-forget gossip fanout: spawn a task that relays `msg` to all
+    /// peers except `skip_id` (the originator).
+    fn fanout(&self, msg: GossipMessage, skip_id: NodeId) {
+        let peers = self.peer_addresses_except(skip_id);
+        if peers.is_empty() {
+            return;
+        }
+        let node = self.clone();
+        tokio::spawn(async move {
+            for peer_addr in peers {
+                if node
+                    .inner
+                    .gossip_client
+                    .send(&peer_addr, &msg)
+                    .await
+                    .is_none()
+                {
+                    tracing::warn!(
+                        peer = %peer_addr,
+                        "gossip: fanout to peer failed"
+                    );
+                }
+            }
+        });
     }
 }
 
@@ -329,6 +599,7 @@ mod tests {
             }],
             bloom_interval_secs: 1,
             data_dir: std::path::PathBuf::from("/tmp"),
+            cluster_key: None,
         }
     }
 
@@ -421,8 +692,106 @@ mod tests {
     #[test]
     fn route_to_returns_addr_for_known_partition() {
         let node = QuickNode::new(cfg(42, 0, 4095));
-        // This node owns tenant 42, so route_to should return this node's address.
         let addr = node.route_to(42, 0);
         assert!(addr.is_some());
+    }
+
+    #[tokio::test]
+    async fn draining_node_redirects_writes() {
+        let node = QuickNode::new(cfg(42, 0, 4095));
+        // Drain without network (no peers configured).
+        node.drain().await;
+        assert!(node.is_draining());
+
+        let req = TransportRequest::new(
+            1,
+            RequestKind::Write {
+                struct_id: 1,
+                user: 1,
+                tenant: 42,
+                payload: Vec::new(),
+            },
+        );
+        let resp = node.handle(req).await;
+        assert_eq!(resp.payload, b"draining");
+    }
+
+    #[tokio::test]
+    async fn draining_node_still_connects() {
+        let node = QuickNode::new(cfg(1, 0, 4095));
+        node.drain().await;
+
+        // Connect is not affected by draining — clients use it to discover
+        // the redirect target.
+        let req = TransportRequest::new(1, RequestKind::Connect { user: 1, tenant: 1 });
+        let resp = node.handle(req).await;
+        assert_eq!(resp.seq, 1);
+        assert_ne!(resp.payload, b"draining" as &[u8]);
+    }
+
+    #[tokio::test]
+    async fn gossip_announce_adds_peer_to_ring() {
+        let node = QuickNode::new(cfg(1, 0, 4095));
+        let initial_peers = node.peer_addresses();
+        assert!(initial_peers.is_empty());
+
+        let msg = crate::gossip::GossipMessage {
+            epoch: 1,
+            origin: addr_to_node_id("10.0.0.2:7700"),
+            addr: "10.0.0.2:7700".into(),
+            kind: crate::gossip::GossipKind::Announce,
+            token: None,
+        };
+        let resp = node.handle_gossip(msg).await;
+        assert!(matches!(resp, GossipResponse::NodeList { .. }));
+
+        let peers = node.peer_addresses();
+        assert!(peers.contains(&"10.0.0.2:7700".to_string()));
+    }
+
+    #[tokio::test]
+    async fn gossip_withdraw_removes_peer_from_ring() {
+        let node = QuickNode::new(cfg(1, 0, 4095));
+
+        // Add a peer via Announce.
+        node.handle_gossip(crate::gossip::GossipMessage {
+            epoch: 1,
+            origin: addr_to_node_id("10.0.0.3:7700"),
+            addr: "10.0.0.3:7700".into(),
+            kind: crate::gossip::GossipKind::Announce,
+            token: None,
+        })
+        .await;
+        assert!(node.peer_addresses().contains(&"10.0.0.3:7700".to_string()));
+
+        // Withdraw removes it.
+        node.handle_gossip(crate::gossip::GossipMessage {
+            epoch: 2,
+            origin: addr_to_node_id("10.0.0.3:7700"),
+            addr: "10.0.0.3:7700".into(),
+            kind: crate::gossip::GossipKind::Withdraw,
+            token: None,
+        })
+        .await;
+        assert!(!node.peer_addresses().contains(&"10.0.0.3:7700".to_string()));
+    }
+
+    #[tokio::test]
+    async fn gossip_dedup_prevents_double_add() {
+        let node = QuickNode::new(cfg(1, 0, 4095));
+
+        let msg = crate::gossip::GossipMessage {
+            epoch: 5,
+            origin: addr_to_node_id("10.0.0.4:7700"),
+            addr: "10.0.0.4:7700".into(),
+            kind: crate::gossip::GossipKind::Announce,
+            token: None,
+        };
+        node.handle_gossip(msg.clone()).await;
+        node.handle_gossip(msg).await; // duplicate — should be no-op
+
+        // Still just one entry for this peer.
+        let peers = node.peer_addresses();
+        assert_eq!(peers.iter().filter(|a| a.as_str() == "10.0.0.4:7700").count(), 1);
     }
 }

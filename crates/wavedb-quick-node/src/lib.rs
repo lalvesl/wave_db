@@ -7,6 +7,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod config;
+pub mod gossip;
 pub mod node;
 pub mod ownership;
 pub mod replication;
