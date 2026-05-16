@@ -17,7 +17,7 @@ use crate::replication::ReplicationWatermark;
 use crate::ring::{ConsistentRing, NodeId};
 use wavedb_net::EventBus;
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
-use wavedb_net::metrics::{HEAP_PAGE_SIZE, MAX_MAP_PAGES, QuickNodeMetrics};
+use wavedb_net::metrics::{MAX_MAP_PAGES, PAGE_MAP_VISUAL_FULL, QuickNodeMetrics};
 use wavedb_net::request::{RequestKind, TransportRequest, TransportResponse};
 
 // ── QuickNode ─────────────────────────────────────────────────────────────────
@@ -164,24 +164,17 @@ impl QuickNode {
     /// Snapshot of this node's current metrics.
     pub fn metrics(&self) -> QuickNodeMetrics {
         let write_bytes = self.inner.write_bytes.load(Ordering::Relaxed);
-        let page_count = (write_bytes + HEAP_PAGE_SIZE - 1) / HEAP_PAGE_SIZE;
-        let raw: Vec<u64> = self
+        let page_map: Vec<u8> = self
             .inner
             .page_bytes
             .iter()
-            .map(|pb| pb.load(Ordering::Relaxed))
-            .collect();
-        let max_pb = raw.iter().copied().max().unwrap_or(0);
-        let page_map: Vec<u8> = raw
-            .iter()
-            .map(|&b| {
-                if max_pb == 0 {
-                    0
-                } else {
-                    (b * 255 / max_pb) as u8
-                }
+            .map(|pb| {
+                let b = pb.load(Ordering::Relaxed);
+                (b.saturating_mul(255) / PAGE_MAP_VISUAL_FULL).min(255) as u8
             })
             .collect();
+        // Count only slots that have received at least one write.
+        let page_count = page_map.iter().filter(|&&o| o > 0).count() as u64;
         QuickNodeMetrics {
             node_id: self.inner.node_id,
             listen_addr: self.inner.listen_addr.clone(),

@@ -18,10 +18,16 @@ pub struct MetricsRequest {
 /// Page size used by the storage engine (4 KiB).
 pub const HEAP_PAGE_SIZE: u64 = 4096;
 
-/// Maximum pages reported in [`QuickNodeMetrics::page_map`].
+/// Number of hash-map slots tracked in [`QuickNodeMetrics::page_map`].
 ///
-/// Each byte encodes the occupancy of one page (0 = empty, 255 = full).
+/// Each byte encodes the occupancy of one slot (0 = empty, 255 = full).
 pub const MAX_MAP_PAGES: usize = 512;
+
+/// Byte threshold at which a page-map slot appears visually "full" (255).
+///
+/// Chosen so pages take tens of seconds to saturate under typical load,
+/// keeping the heat-map informative throughout a stress test.
+pub const PAGE_MAP_VISUAL_FULL: u64 = 2 * 1024 * 1024; // 2 MiB per slot
 
 /// Snapshot of a Quick-Node's operational state.
 #[derive(Debug, Clone, Serialize, Deserialize)]

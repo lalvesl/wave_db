@@ -494,9 +494,11 @@ fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {
     let title = match selected_entry {
         Some(NodeEntry::Quick { metrics: Some(m), .. }) => {
             let i = state.table.selected().unwrap_or(0);
+            let mb = m.write_bytes / (1024 * 1024);
             format!(
-                " Page Map — node[{i}] Quick — {} B — {} pages ",
-                m.write_bytes, m.page_count
+                " Page Map — node[{i}] Quick — {mb} MB written — {} active slots / {} ",
+                m.page_count,
+                wavedb_net::metrics::MAX_MAP_PAGES,
             )
         }
         Some(NodeEntry::Quick { .. }) => {
