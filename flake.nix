@@ -118,6 +118,19 @@
           '';
         };
 
+        apps.real_example = {
+          type = "app";
+          program = "${
+            pkgs.writeShellApplication {
+              name = "real_example";
+              runtimeInputs = [ rustToolchain ];
+              text = ''
+                cargo run --release --bin real_example "$@"
+              '';
+            }
+          }/bin/real_example";
+        };
+
         apps.fmt = {
           type = "app";
           program = "${

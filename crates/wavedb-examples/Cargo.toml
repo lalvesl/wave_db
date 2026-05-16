@@ -44,6 +44,10 @@ path = "src/bin/anchors.rs"
 name = "cross_references"
 path = "src/bin/cross_references.rs"
 
+[[bin]]
+name = "real_example"
+path = "src/bin/real_example/main.rs"
+
 [dependencies]
 wavedb = { path = "../wavedb" }
 wavedb-net = { path = "../wavedb-net" }
