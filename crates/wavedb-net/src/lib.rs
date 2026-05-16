@@ -15,6 +15,7 @@
 
 pub mod auth;
 pub mod frame;
+pub mod metrics;
 pub mod mock;
 pub mod request;
 

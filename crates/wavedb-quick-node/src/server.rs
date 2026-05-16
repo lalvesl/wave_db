@@ -19,6 +19,7 @@ use futures_util::{SinkExt, StreamExt};
 
 use wavedb_net::auth::TokenPurpose;
 use wavedb_net::frame::{decode_payload, encode_payload};
+use wavedb_net::metrics::MetricsRequest;
 use wavedb_net::request::{TransportRequest, TransportResponse};
 
 use crate::gossip::{GossipMessage, GossipResponse};
@@ -35,6 +36,7 @@ pub fn router(node: QuickNode) -> Router {
         .route("/ws", get(handle_ws_upgrade))
         .route("/gossip", post(handle_gossip))
         .route("/drain", post(handle_drain))
+        .route("/metrics", post(handle_metrics))
         .with_state(Arc::new(node))
 }
 
@@ -135,6 +137,33 @@ async fn handle_gossip(State(node): State<Arc<QuickNode>>, body: Bytes) -> impl 
 async fn handle_drain(State(node): State<Arc<QuickNode>>) -> impl IntoResponse {
     node.drain().await;
     StatusCode::OK
+}
+
+// ── Metrics handler ───────────────────────────────────────────────────────────
+
+async fn handle_metrics(State(node): State<Arc<QuickNode>>, body: Bytes) -> impl IntoResponse {
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, Bytes::new());
+    }
+    let req: MetricsRequest = match decode_payload(&body) {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::BAD_REQUEST, Bytes::new()),
+    };
+
+    if let Some(key) = node.auth_key() {
+        let valid = req
+            .token
+            .as_ref()
+            .is_some_and(|t| key.verify(t, TokenPurpose::Monitor));
+        if !valid {
+            return (StatusCode::FORBIDDEN, Bytes::new());
+        }
+    }
+
+    let snapshot = node.metrics();
+    encode_payload(&snapshot).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+        (StatusCode::OK, b)
+    })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

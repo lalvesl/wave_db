@@ -118,6 +118,19 @@
           '';
         };
 
+        apps.wavedb_monitor = {
+          type = "app";
+          program = "${
+            pkgs.writeShellApplication {
+              name = "wavedb-monitor";
+              runtimeInputs = [ rustToolchain ];
+              text = ''
+                cargo run --release --bin wavedb-monitor "$@"
+              '';
+            }
+          }/bin/wavedb-monitor";
+        };
+
         apps.real_example = {
           type = "app";
           program = "${

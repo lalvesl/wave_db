@@ -22,6 +22,8 @@ pub enum TokenPurpose {
     Gossip = 0x01,
     /// History flush from Quick-Node to Slow-Node.
     Flush = 0x02,
+    /// Metrics poll from the monitor to any node.
+    Monitor = 0x03,
 }
 
 /// A short-lived HMAC-SHA256 proof of cluster membership.

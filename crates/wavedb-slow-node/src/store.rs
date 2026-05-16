@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 use wavedb_storage::Journal;
@@ -20,6 +21,7 @@ use crate::flush::{FlushBatch, ReceiptWatermark};
 #[derive(Clone)]
 pub struct HistoryStore {
     inner: Arc<Mutex<HistoryStoreInner>>,
+    flush_count: Arc<AtomicU64>,
 }
 
 struct HistoryStoreInner {
@@ -38,6 +40,7 @@ impl HistoryStore {
                 journal: Journal::in_memory(),
                 watermark: ReceiptWatermark::new(),
             })),
+            flush_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -48,6 +51,7 @@ impl HistoryStore {
 
         let mut index: HashMap<(u64, u128), Vec<u8>> = HashMap::new();
         let mut watermark = ReceiptWatermark::new();
+        let mut replay_flush_count: u64 = 0;
 
         for entry in journal.all_entries() {
             if let JournalEntry::WriteVersioned { record } = entry {
@@ -62,6 +66,7 @@ impl HistoryStore {
                 }
                 if write_seq > 0 {
                     watermark.advance(tenant, write_seq);
+                    replay_flush_count = replay_flush_count.max(write_seq);
                 }
             }
         }
@@ -72,6 +77,7 @@ impl HistoryStore {
                 journal,
                 watermark,
             })),
+            flush_count: Arc::new(AtomicU64::new(replay_flush_count)),
         })
     }
 
@@ -97,6 +103,7 @@ impl HistoryStore {
         guard.journal.flush()?;
         guard.watermark.advance(tenant, write_seq);
         drop(guard);
+        self.flush_count.fetch_add(1, Ordering::Relaxed);
         Ok(write_seq)
     }
 
@@ -120,6 +127,21 @@ impl HistoryStore {
     /// `true` when no records are indexed.
     pub fn is_empty(&self) -> bool {
         self.inner.lock().index.is_empty()
+    }
+
+    /// Number of distinct tenants with at least one indexed record.
+    pub fn tenant_count(&self) -> usize {
+        let guard = self.inner.lock();
+        let mut tenants = std::collections::HashSet::new();
+        for (tenant, _) in guard.index.keys() {
+            tenants.insert(*tenant);
+        }
+        tenants.len()
+    }
+
+    /// Cumulative number of flush batches successfully applied.
+    pub fn flush_count(&self) -> u64 {
+        self.flush_count.load(Ordering::Relaxed)
     }
 }
 

@@ -5,6 +5,7 @@
 //! - `POST /history` — serve a [`HistoryReadRequest`] from any client.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::Router;
 use axum::extract::State;
@@ -15,6 +16,7 @@ use bytes::Bytes;
 
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
 use wavedb_net::frame::{decode_payload, encode_payload};
+use wavedb_net::metrics::{MetricsRequest, SlowNodeMetrics};
 
 use crate::flush::{FlushAck, FlushBatch, HistoryReadRequest, HistoryReadResponse};
 use crate::store::HistoryStore;
@@ -24,15 +26,21 @@ use crate::store::HistoryStore;
 struct AppState {
     store: HistoryStore,
     auth_key: Option<ClusterKey>,
+    start_time: Instant,
 }
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
 pub fn router(store: HistoryStore, auth_key: Option<ClusterKey>) -> Router {
-    let state = Arc::new(AppState { store, auth_key });
+    let state = Arc::new(AppState {
+        store,
+        auth_key,
+        start_time: Instant::now(),
+    });
     Router::new()
         .route("/flush", post(handle_flush))
         .route("/history", post(handle_history))
+        .route("/metrics", post(handle_metrics))
         .with_state(state)
 }
 
@@ -88,6 +96,38 @@ async fn handle_history(State(state): State<Arc<AppState>>, body: Bytes) -> impl
         .unwrap_or_default();
     let resp = HistoryReadResponse { data };
     encode_payload(&resp).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+        (StatusCode::OK, b)
+    })
+}
+
+// ── Metrics handler ───────────────────────────────────────────────────────────
+
+async fn handle_metrics(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, Bytes::new());
+    }
+    let req: MetricsRequest = match decode_payload(&body) {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::BAD_REQUEST, Bytes::new()),
+    };
+
+    if let Some(key) = &state.auth_key {
+        let valid = req
+            .token
+            .as_ref()
+            .is_some_and(|t| key.verify(t, TokenPurpose::Monitor));
+        if !valid {
+            return (StatusCode::FORBIDDEN, Bytes::new());
+        }
+    }
+
+    let snapshot = SlowNodeMetrics {
+        record_count: state.store.len(),
+        tenant_count: state.store.tenant_count(),
+        flush_count: state.store.flush_count(),
+        uptime_secs: state.start_time.elapsed().as_secs(),
+    };
+    encode_payload(&snapshot).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
         (StatusCode::OK, b)
     })
 }

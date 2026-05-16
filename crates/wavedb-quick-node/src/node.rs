@@ -5,7 +5,8 @@
 //! single cheaply-cloneable handle.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Instant;
 
 use parking_lot::RwLock;
 
@@ -16,6 +17,7 @@ use crate::replication::ReplicationWatermark;
 use crate::ring::{ConsistentRing, NodeId};
 use wavedb_net::EventBus;
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
+use wavedb_net::metrics::QuickNodeMetrics;
 use wavedb_net::request::{RequestKind, TransportRequest, TransportResponse};
 
 // ── QuickNode ─────────────────────────────────────────────────────────────────
@@ -49,6 +51,10 @@ struct QuickNodeInner {
     /// Shared cluster secret for HMAC-SHA256 node-to-node auth.
     /// `None` in open/dev mode — gossip is accepted without a token.
     auth_key: Option<ClusterKey>,
+    // ── Metrics ───────────────────────────────────────────────────────────
+    write_count: AtomicU64,
+    read_count: AtomicU64,
+    start_time: Instant,
 }
 
 impl QuickNode {
@@ -90,6 +96,9 @@ impl QuickNode {
                 gossip_client: GossipClient::new(),
                 draining: AtomicBool::new(false),
                 auth_key,
+                write_count: AtomicU64::new(0),
+                read_count: AtomicU64::new(0),
+                start_time: Instant::now(),
             }),
         }
     }
@@ -144,6 +153,20 @@ impl QuickNode {
     /// Cluster key used to verify incoming gossip tokens, or `None` in open mode.
     pub fn auth_key(&self) -> Option<&ClusterKey> {
         self.inner.auth_key.as_ref()
+    }
+
+    /// Snapshot of this node's current metrics.
+    pub fn metrics(&self) -> QuickNodeMetrics {
+        QuickNodeMetrics {
+            node_id: self.inner.node_id,
+            listen_addr: self.inner.listen_addr.clone(),
+            is_draining: self.inner.draining.load(Ordering::Relaxed),
+            ring_size: self.inner.ring.read().node_count(),
+            owned_partitions: self.inner.ownership.len(),
+            write_count: self.inner.write_count.load(Ordering::Relaxed),
+            read_count: self.inner.read_count.load(Ordering::Relaxed),
+            uptime_secs: self.inner.start_time.elapsed().as_secs(),
+        }
     }
 
     /// Address of the node responsible for `(tenant, shard)`, if known.
@@ -214,6 +237,7 @@ impl QuickNode {
         if !self.inner.ownership.owns(tenant, 0) {
             return self.not_owner_resp(seq);
         }
+        self.inner.read_count.fetch_add(1, Ordering::Relaxed);
         // Phase 14 wires the storage engine lookup here.
         TransportResponse {
             seq,
@@ -261,6 +285,7 @@ impl QuickNode {
         if !self.inner.ownership.owns(tenant, 0) {
             return self.not_owner_resp(seq);
         }
+        self.inner.write_count.fetch_add(1, Ordering::Relaxed);
         let write_seq = self.inner.replication.next_seq();
         for peer_id in self.peer_ids() {
             self.inner.replication.record_send(peer_id, write_seq);
