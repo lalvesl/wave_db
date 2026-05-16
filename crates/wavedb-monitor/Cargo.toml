@@ -12,6 +12,10 @@ workspace = true
 name = "wavedb-monitor"
 path = "src/main.rs"
 
+[lib]
+name = "wavedb_monitor"
+path = "src/lib.rs"
+
 [dependencies]
 wavedb-net = { path = "../wavedb-net" }
 tokio.workspace = true

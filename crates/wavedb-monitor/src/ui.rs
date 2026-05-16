@@ -65,6 +65,8 @@ pub struct AppState {
     pub process_rss: u64,
     /// Process CPU % (filled by sysinfo each tick).
     pub process_cpu: f32,
+    /// Log messages from the embedding application (e.g. stress-test events).
+    pub event_log: VecDeque<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +92,17 @@ impl AppState {
             prev_reads: 0,
             process_rss: 0,
             process_cpu: 0.0,
+            event_log: VecDeque::new(),
         }
+    }
+
+    /// Append a message to the event log (shown in the Events panel).
+    pub fn push_log(&mut self, msg: impl Into<String>) {
+        const MAX_LOG: usize = 500;
+        if self.event_log.len() >= MAX_LOG {
+            self.event_log.pop_front();
+        }
+        self.event_log.push_back(msg.into());
     }
 
     /// Ingest a fresh snapshot and update sparklines.
@@ -309,9 +321,9 @@ pub fn render(f: &mut Frame, state: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(6),     // quick-node table
+            Constraint::Min(5),     // quick-node table
             Constraint::Length(3),  // sparklines
-            Constraint::Length(3),  // slow-node block
+            Constraint::Length(6),  // info row: slow-node | events
             Constraint::Length(3),  // system block
             Constraint::Length(1),  // status bar
         ])
@@ -319,7 +331,15 @@ pub fn render(f: &mut Frame, state: &mut AppState) {
 
     render_quick_table(f, state, chunks[0]);
     render_sparklines(f, state, chunks[1]);
-    render_slow_node(f, state, chunks[2]);
+
+    // Info row: slow-node metrics on the left, event log on the right.
+    let info = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+        .split(chunks[2]);
+    render_slow_node(f, state, info[0]);
+    render_event_log(f, state, info[1]);
+
     render_system(f, state, chunks[3]);
     render_statusbar(f, state, chunks[4]);
 }
@@ -483,6 +503,23 @@ fn render_system(f: &mut Frame, state: &AppState, area: Rect) {
     ]);
     let p = Paragraph::new(text)
         .block(Block::default().borders(Borders::ALL).title(" System "));
+    f.render_widget(p, area);
+}
+
+fn render_event_log(f: &mut Frame, state: &AppState, area: Rect) {
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let total = state.event_log.len();
+    let skip = total.saturating_sub(inner_height);
+
+    let lines: Vec<Line> = state
+        .event_log
+        .iter()
+        .skip(skip)
+        .map(|msg| Line::from(Span::raw(format!("  {msg}"))))
+        .collect();
+
+    let p = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(" Events "));
     f.render_widget(p, area);
 }
 

@@ -53,6 +53,7 @@ wavedb = { path = "../wavedb" }
 wavedb-net = { path = "../wavedb-net" }
 wavedb-core = { path = "../wavedb-core" }
 wavedb-test-cluster = { path = "../wavedb-test-cluster" }
+wavedb-monitor = { path = "../wavedb-monitor" }
 tokio.workspace = true
 postcard.workspace = true
 serde.workspace = true

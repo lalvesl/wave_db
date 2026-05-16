@@ -3117,6 +3117,7 @@ dependencies = [
  "tokio",
  "wavedb",
  "wavedb-core",
+ "wavedb-monitor",
  "wavedb-net",
  "wavedb-test-cluster",
 ]
