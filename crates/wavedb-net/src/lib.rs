@@ -29,6 +29,8 @@ pub mod ws;
 pub use http::HttpClient;
 pub use mock::MockTransport;
 #[cfg(feature = "native")]
+pub use mock::{ChannelTransport, MockServer};
+#[cfg(feature = "native")]
 pub use notify::EventBus;
 pub use request::{TransportRequest, TransportResponse};
 #[cfg(feature = "native")]

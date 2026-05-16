@@ -31,15 +31,9 @@
 //!   cargo run --bin anchors
 
 use wavedb::prelude::*;
-use wavedb_net::MockTransport;
-use wavedb_net::mock::ScriptedReply;
+use wavedb_net::ChannelTransport;
 
 // ── Struct with explicit anchors ─────────────────────────────────────────────
-//
-// `username` is the natural primary key. `email` and the compound
-// `(department, employee_number)` are alternate keys that should resolve
-// to the same record. `btree_threshold = 32` keeps the per-tenant index
-// as a flat array up to 32 employees, then promotes to a B+tree.
 
 #[wave_db(
     struct_id = 50,
@@ -60,10 +54,6 @@ pub struct Employee1 {
 pub type Employee = Employee1;
 
 // ── Struct with default addressing ───────────────────────────────────────────
-//
-// No `primary_anchor` → the writing Quick-Node mints a fresh `SHARD_ID`
-// for each record. No `secondary_anchor` → no alias addresses. No
-// `btree_threshold` → uses the engine default.
 
 #[wave_db(struct_id = 51, NonUnique)]
 #[derive(PartialEq, Eq)]
@@ -90,47 +80,23 @@ where
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ── Compile-time anchor metadata ─────────────────────────────────────────
-    //
-    // The macro emits these for any struct that declares anchors. The
-    // storage engine reads them at runtime to compute anchor addresses;
-    // applications can introspect them for tooling / diagnostics.
     println!("== Employee (custom anchors) ==");
-    println!(
-        "  primary_anchor_field    = {:?}",
-        Employee::primary_anchor_field()
-    );
-    println!(
-        "  SECONDARY_ANCHOR_FIELDS = {:?}",
-        Employee::SECONDARY_ANCHOR_FIELDS
-    );
+    println!("  primary_anchor_field    = {:?}", Employee::primary_anchor_field());
+    println!("  SECONDARY_ANCHOR_FIELDS = {:?}", Employee::SECONDARY_ANCHOR_FIELDS);
     println!("  BTREE_THRESHOLD         = {}", Employee::BTREE_THRESHOLD);
     println!("  SHAPE                   = {:?}", Employee::SHAPE);
     println!("  STRUCT_ID               = {}", Employee::STRUCT_ID);
 
     assert_eq!(Employee::primary_anchor_field(), "username");
-    assert_eq!(
-        Employee::SECONDARY_ANCHOR_FIELDS,
-        &["email", "department, employee_number"],
-    );
+    assert_eq!(Employee::SECONDARY_ANCHOR_FIELDS, &["email", "department, employee_number"]);
     assert_eq!(Employee::BTREE_THRESHOLD, 32);
 
-    // ── Default-addressing contrast ──────────────────────────────────────────
-    //
-    // `Session` has no `primary_anchor` so `primary_anchor_field()` is not
-    // emitted, no `SECONDARY_ANCHOR_FIELDS` const, no `BTREE_THRESHOLD`.
-    // The lines below would not compile — left as comments on purpose.
-    //
-    //     let _ = Session::primary_anchor_field();      // ← no such fn
-    //     let _ = Session::SECONDARY_ANCHOR_FIELDS;     // ← no such const
-    //     let _ = Session::BTREE_THRESHOLD;             // ← no such const
     println!();
     println!("== Session (default addressing) ==");
     println!("  STRUCT_ID = {}", Session::STRUCT_ID);
     println!("  SHAPE     = {:?}", Session::SHAPE);
     println!("  (no anchor accessors emitted — uses node-allocated SHARD_ID)");
 
-    // ── End-to-end write / lookup against a mock transport ──────────────────
     let alice = Employee {
         username: "alice".into(),
         email: "alice@corp.example".into(),
@@ -150,45 +116,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let everyone = vec![alice.clone(), bob.clone()];
     let just_alice = vec![alice.clone()];
 
-    let mock = MockTransport::new();
-    mock.push(ScriptedReply::connect(
-        "ws://owner:7700",
-        "ws://backup:7700",
-    ));
-    // 2 writes — alice, bob
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    // query username == "alice" → primary anchor hit
-    mock.push(ScriptedReply::ok(encode_query(&just_alice)));
-    // query email == "alice@corp.example" → secondary anchor → primary
-    mock.push(ScriptedReply::ok(encode_query(&just_alice)));
-    // query (department, employee_number) == ("platform", 17) → other secondary
-    mock.push(ScriptedReply::ok(encode_query(&just_alice)));
-    // query all → both
-    mock.push(ScriptedReply::ok(encode_query(&everyone)));
+    let enc_just_alice = encode_query(&just_alice);
+    let enc_everyone = encode_query(&everyone);
 
-    let db = Db::open_with_transport(mock, /* user= */ 1, /* tenant= */ 42).await?;
+    let (transport, mut server) = ChannelTransport::pair();
+    tokio::spawn(async move {
+        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
+        server.reply_ok_n(2).await;                        // write alice, bob
+        server.reply_data(enc_just_alice.clone()).await;   // query username == "alice"
+        server.reply_data(enc_just_alice.clone()).await;   // query email == "alice@..."
+        server.reply_data(enc_just_alice).await;           // query (department, employee_number)
+        server.reply_data(enc_everyone).await;             // query all
+    });
+
+    let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;
 
     alice.clone().save(&db).await?;
     bob.clone().save(&db).await?;
     println!();
     println!("Wrote 2 employees");
 
-    // Lookup via the *primary* anchor field. In production the engine
-    // hashes "alice" into the SHARD_ID slot and resolves the anchor in
-    // one IO — no index walk.
     let by_username = Employee::query(&db, Expr::eq("username", "alice")).await?;
     assert_eq!(by_username.len(), 1);
     println!("by username 'alice'      → {}", by_username[0].display_name);
 
-    // Lookup via the *secondary* anchor on email. Same record, different
-    // address — the secondary anchor holds a pointer back to the primary.
     let by_email = Employee::query(&db, Expr::eq("email", "alice@corp.example")).await?;
     assert_eq!(by_email.len(), 1);
     assert_eq!(by_email[0].username, by_username[0].username);
     println!("by email                 → {}", by_email[0].display_name);
 
-    // Lookup via the *compound* secondary anchor.
     let by_dep_num = Employee::query(
         &db,
         Expr::and(
@@ -198,10 +154,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     assert_eq!(by_dep_num.len(), 1);
-    println!(
-        "by (department, employee_number) → {}",
-        by_dep_num[0].display_name
-    );
+    println!("by (department, employee_number) → {}", by_dep_num[0].display_name);
 
     let all = Employee::query(&db, Expr::all()).await?;
     assert_eq!(all.len(), 2);

@@ -37,8 +37,7 @@
 //!   cargo run --bin cross_references
 
 use wavedb::prelude::*;
-use wavedb_net::MockTransport;
-use wavedb_net::mock::ScriptedReply;
+use wavedb_net::ChannelTransport;
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 
@@ -241,57 +240,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
 
-    // ── Scripted server replies ──────────────────────────────────────────────
+    // ── Server task ──────────────────────────────────────────────────────────
 
-    let mock = MockTransport::new();
-    mock.push(ScriptedReply::connect(
-        "ws://owner:7700",
-        "ws://backup:7700",
-    ));
-
-    // 1:1 — write citizen_v1, passport, citizen_v2 (replacement at same anchor)
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    // 1:1 — query: engine returns the live (v2) citizen
-    mock.push(ScriptedReply::ok(encode_query(std::slice::from_ref(
-        &citizen_v2,
-    ))));
-
-    // 1:N — write company, worker_alice, worker_bob
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    // 1:N — query: all workers
-    mock.push(ScriptedReply::ok(encode_query(&[
-        worker_alice.clone(),
-        worker_bob.clone(),
-    ])));
-
-    // M:N — write 2 students + 2 courses + 3 enrollments
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    // M:N — queries: all enrollments, then courses, then students
-    mock.push(ScriptedReply::ok(encode_query(&[
+    let enc_citizen_v2 = encode_query(std::slice::from_ref(&citizen_v2));
+    let enc_workers = encode_query(&[worker_alice.clone(), worker_bob.clone()]);
+    let enc_enrollments = encode_query(&[
         enroll_alice_rust.clone(),
         enroll_alice_async.clone(),
         enroll_bob_rust.clone(),
-    ])));
-    mock.push(ScriptedReply::ok(encode_query(&[
-        course_rust.clone(),
-        course_async.clone(),
-    ])));
-    mock.push(ScriptedReply::ok(encode_query(&[
-        student_alice.clone(),
-        student_bob.clone(),
-    ])));
+    ]);
+    let enc_courses = encode_query(&[course_rust.clone(), course_async.clone()]);
+    let enc_students = encode_query(&[student_alice.clone(), student_bob.clone()]);
 
-    let db = Db::open_with_transport(mock, /* user= */ 1, tenant).await?;
+    let (transport, mut server) = ChannelTransport::pair();
+    tokio::spawn(async move {
+        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
+        server.reply_ok_n(3).await;                    // 1:1 — write citizen_v1, passport, citizen_v2
+        server.reply_data(enc_citizen_v2).await;       // 1:1 — query → live (v2) citizen
+        server.reply_ok_n(3).await;                    // 1:N — write company, worker_alice, worker_bob
+        server.reply_data(enc_workers).await;          // 1:N — query all workers
+        server.reply_ok_n(7).await;                    // M:N — write 2 students + 2 courses + 3 enrollments
+        server.reply_data(enc_enrollments).await;      // M:N — query all enrollments
+        server.reply_data(enc_courses).await;          // M:N — query all courses
+        server.reply_data(enc_students).await;         // M:N — query all students
+    });
+
+    let db = Db::open_with_transport(transport, /* user= */ 1, tenant).await?;
 
     // ── 1. Single-to-Single operations ───────────────────────────────────────
 

@@ -3,14 +3,13 @@
 //! Roles:
 //!   client  — opens a `Db`, searches for an existing profile, creates one if
 //!             absent, then updates the bio.
-//!   server  — simulated in-process via `MockTransport` (no network required).
+//!   server  — simulated in-process via `ChannelTransport` (no network required).
 //!
 //! Run with:
 //!   cargo run --bin unique_user_profile
 
 use wavedb::prelude::*;
-use wavedb_net::MockTransport;
-use wavedb_net::mock::ScriptedReply;
+use wavedb_net::ChannelTransport;
 
 // ── Schema ───────────────────────────────────────────────────────────────────
 //
@@ -54,25 +53,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let serialized = encode_versioned(&new_profile);
     let serialized_updated = encode_versioned(&updated_profile);
 
-    // Pre-load scripted replies in order:
+    // Server task handles each request in the same order the client issues them:
     //   1. Connect handshake
     //   2. search → None (empty payload)
-    //   3. update (create) → ok
+    //   3. save (create) → ok
     //   4. search → Some(new_profile)
-    //   5. update (update bio) → ok
+    //   5. save (update bio) → ok
     //   6. search → Some(updated_profile)
-    let mock = MockTransport::new();
-    mock.push(ScriptedReply::connect(
-        "ws://owner:7700",
-        "ws://backup:7700",
-    ));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(serialized));
-    mock.push(ScriptedReply::ok(Vec::new()));
-    mock.push(ScriptedReply::ok(serialized_updated));
+    let (transport, mut server) = ChannelTransport::pair();
+    tokio::spawn(async move {
+        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
+        server.reply_data(Vec::new()).await;   // search → absent
+        server.reply_ok().await;               // save (create)
+        server.reply_data(serialized).await;   // search → new_profile
+        server.reply_ok().await;               // save (update bio)
+        server.reply_data(serialized_updated).await; // search → updated_profile
+    });
 
-    let db = Db::open_with_transport(mock, /* user= */ 1, /* tenant= */ 42).await?;
+    let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;
 
     // Client role: search → absent → create
     let profile = if let Some(existing) = UserProfile::search(&db).await? {

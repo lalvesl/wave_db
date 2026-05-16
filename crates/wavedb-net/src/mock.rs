@@ -1,9 +1,28 @@
-//! In-process mock transport for unit-testing the `Db` client layer.
+//! In-process mock transports for unit-testing the `Db` client layer.
 //!
-//! [`MockTransport`] records every request sent and replies from a
-//! user-provided scripted state machine.  Tests can inspect the log to
-//! verify that `Db` sends the expected messages and reacts correctly to
-//! server responses (including failover and disconnect).
+//! Two styles:
+//!
+//! | Type | Style | Best for |
+//! |------|-------|----------|
+//! | [`MockTransport`] | Scripted FIFO queue | Precise replay, log inspection |
+//! | [`ChannelTransport`] + [`MockServer`] | Spawned async server | Readable examples, flexible handlers |
+//!
+//! ## `MockTransport` — scripted
+//!
+//! Pre-load replies with [`MockTransport::push`]; the transport pops them in
+//! order.  Inspect what the client sent via [`MockTransport::log`].
+//!
+//! ## `ChannelTransport` — channel-backed server task
+//!
+//! ```rust,ignore
+//! let (transport, mut server) = ChannelTransport::pair();
+//! tokio::spawn(async move {
+//!     server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
+//!     server.reply_ok_n(3).await;        // 3 writes
+//!     server.reply_data(payload).await;  // 1 query
+//! });
+//! let db = Db::open_with_transport(transport, user, tenant).await?;
+//! ```
 
 use crate::Transport;
 use crate::request::{TransportRequest, TransportResponse};
@@ -156,6 +175,123 @@ impl Transport for MockTransport {
         self.inner.lock().disconnects.push((user, tenant));
     }
 }
+
+// ── ChannelTransport ─────────────────────────────────────────────────────────
+
+#[cfg(feature = "native")]
+mod channel {
+    use crate::Transport;
+    use crate::request::{TransportRequest, TransportResponse};
+    use tokio::sync::{mpsc, oneshot};
+    use wavedb_core::Result;
+
+    type Envelope = (TransportRequest, oneshot::Sender<Result<TransportResponse>>);
+
+    /// A channel-backed transport whose other end is a [`MockServer`].
+    ///
+    /// Create a matched pair with [`ChannelTransport::pair`], then spawn the
+    /// [`MockServer`] in a `tokio::spawn` to drive each request/reply in order.
+    #[derive(Clone)]
+    pub struct ChannelTransport {
+        tx: mpsc::Sender<Envelope>,
+    }
+
+    impl ChannelTransport {
+        /// Create a matched `(transport, server)` pair.
+        pub fn pair() -> (Self, MockServer) {
+            let (tx, rx) = mpsc::channel(32);
+            (Self { tx }, MockServer { rx })
+        }
+    }
+
+    impl Transport for ChannelTransport {
+        async fn send(&self, req: TransportRequest) -> Result<TransportResponse> {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            self.tx
+                .send((req, reply_tx))
+                .await
+                .map_err(|_| wavedb_core::Error::Transport("MockServer dropped".into()))?;
+            reply_rx
+                .await
+                .map_err(|_| wavedb_core::Error::Transport("MockServer dropped".into()))?
+        }
+
+        fn disconnect(&self, _user: u64, _tenant: u64) {}
+    }
+
+    /// The server handle for a [`ChannelTransport`].
+    ///
+    /// Run this in `tokio::spawn` and call the `reply_*` methods in the same
+    /// order that the client issues operations.
+    pub struct MockServer {
+        rx: mpsc::Receiver<Envelope>,
+    }
+
+    impl MockServer {
+        async fn take(&mut self) -> Envelope {
+            self.rx
+                .recv()
+                .await
+                .expect("ChannelTransport dropped before MockServer finished")
+        }
+
+        fn ok_response(seq: u64, payload: Vec<u8>) -> TransportResponse {
+            TransportResponse {
+                seq,
+                payload,
+                owner_url: None,
+                backup_url: None,
+                notifications: Vec::new(),
+            }
+        }
+
+        /// Consume the next request and reply with a `Connect` handshake.
+        pub async fn reply_connect(
+            &mut self,
+            owner: impl Into<String>,
+            backup: impl Into<String>,
+        ) {
+            let (req, tx) = self.take().await;
+            let _ = tx.send(Ok(TransportResponse {
+                seq: req.seq,
+                payload: Vec::new(),
+                owner_url: Some(owner.into()),
+                backup_url: Some(backup.into()),
+                notifications: Vec::new(),
+            }));
+        }
+
+        /// Consume the next request and reply with an empty-payload success.
+        pub async fn reply_ok(&mut self) {
+            let (req, tx) = self.take().await;
+            let _ = tx.send(Ok(Self::ok_response(req.seq, Vec::new())));
+        }
+
+        /// Consume `n` requests and reply to each with an empty-payload success.
+        pub async fn reply_ok_n(&mut self, n: usize) {
+            for _ in 0..n {
+                self.reply_ok().await;
+            }
+        }
+
+        /// Consume the next request and reply with `payload` (query results).
+        pub async fn reply_data(&mut self, payload: Vec<u8>) {
+            let (req, tx) = self.take().await;
+            let _ = tx.send(Ok(Self::ok_response(req.seq, payload)));
+        }
+
+        /// Consume the next request and reply with a transport-level error.
+        pub async fn reply_err(&mut self) {
+            let (_, tx) = self.take().await;
+            let _ = tx.send(Err(wavedb_core::Error::Transport(
+                "MockServer: scripted error".into(),
+            )));
+        }
+    }
+}
+
+#[cfg(feature = "native")]
+pub use channel::{ChannelTransport, MockServer};
 
 #[cfg(test)]
 mod tests {
