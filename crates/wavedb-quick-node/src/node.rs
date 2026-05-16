@@ -17,7 +17,7 @@ use crate::replication::ReplicationWatermark;
 use crate::ring::{ConsistentRing, NodeId};
 use wavedb_net::EventBus;
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
-use wavedb_net::metrics::QuickNodeMetrics;
+use wavedb_net::metrics::{HEAP_PAGE_SIZE, MAX_MAP_PAGES, QuickNodeMetrics};
 use wavedb_net::request::{RequestKind, TransportRequest, TransportResponse};
 
 // ── QuickNode ─────────────────────────────────────────────────────────────────
@@ -54,6 +54,7 @@ struct QuickNodeInner {
     // ── Metrics ───────────────────────────────────────────────────────────
     write_count: AtomicU64,
     read_count: AtomicU64,
+    write_bytes: AtomicU64,
     start_time: Instant,
 }
 
@@ -98,6 +99,7 @@ impl QuickNode {
                 auth_key,
                 write_count: AtomicU64::new(0),
                 read_count: AtomicU64::new(0),
+                write_bytes: AtomicU64::new(0),
                 start_time: Instant::now(),
             }),
         }
@@ -157,6 +159,14 @@ impl QuickNode {
 
     /// Snapshot of this node's current metrics.
     pub fn metrics(&self) -> QuickNodeMetrics {
+        let write_bytes = self.inner.write_bytes.load(Ordering::Relaxed);
+        let page_count = (write_bytes + HEAP_PAGE_SIZE - 1) / HEAP_PAGE_SIZE;
+        let full_pages = (write_bytes / HEAP_PAGE_SIZE).min(MAX_MAP_PAGES as u64) as usize;
+        let remainder = write_bytes % HEAP_PAGE_SIZE;
+        let mut page_map: Vec<u8> = vec![255u8; full_pages];
+        if remainder > 0 && page_map.len() < MAX_MAP_PAGES {
+            page_map.push((remainder * 255 / HEAP_PAGE_SIZE) as u8);
+        }
         QuickNodeMetrics {
             node_id: self.inner.node_id,
             listen_addr: self.inner.listen_addr.clone(),
@@ -166,6 +176,10 @@ impl QuickNode {
             write_count: self.inner.write_count.load(Ordering::Relaxed),
             read_count: self.inner.read_count.load(Ordering::Relaxed),
             uptime_secs: self.inner.start_time.elapsed().as_secs(),
+            write_bytes,
+            page_count,
+            page_map,
+            estimated_memory_bytes: write_bytes + 65536,
         }
     }
 
@@ -277,7 +291,7 @@ impl QuickNode {
         _struct_id: u32,
         _user: u64,
         tenant: u64,
-        _payload: Vec<u8>,
+        payload: Vec<u8>,
     ) -> TransportResponse {
         if self.inner.draining.load(Ordering::Acquire) {
             return self.draining_resp(seq);
@@ -286,6 +300,9 @@ impl QuickNode {
             return self.not_owner_resp(seq);
         }
         self.inner.write_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .write_bytes
+            .fetch_add(payload.len() as u64, Ordering::Relaxed);
         let write_seq = self.inner.replication.next_seq();
         for peer_id in self.peer_ids() {
             self.inner.replication.record_send(peer_id, write_seq);

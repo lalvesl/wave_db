@@ -323,7 +323,8 @@ pub fn render(f: &mut Frame, state: &mut AppState) {
         .constraints([
             Constraint::Min(5),     // quick-node table
             Constraint::Length(3),  // sparklines
-            Constraint::Length(6),  // info row: slow-node | events
+            Constraint::Length(4),  // info row: slow-node | events
+            Constraint::Length(8),  // page map for selected node
             Constraint::Length(3),  // system block
             Constraint::Length(1),  // status bar
         ])
@@ -340,8 +341,9 @@ pub fn render(f: &mut Frame, state: &mut AppState) {
     render_slow_node(f, state, info[0]);
     render_event_log(f, state, info[1]);
 
-    render_system(f, state, chunks[3]);
-    render_statusbar(f, state, chunks[4]);
+    render_page_map(f, state, chunks[3]);
+    render_system(f, state, chunks[4]);
+    render_statusbar(f, state, chunks[5]);
 }
 
 fn render_quick_table(f: &mut Frame, state: &mut AppState, area: Rect) {
@@ -459,49 +461,119 @@ fn render_sparklines(f: &mut Frame, state: &AppState, area: Rect) {
 }
 
 fn render_slow_node(f: &mut Frame, state: &AppState, area: Rect) {
-    let text = match &state.snapshot.slow {
-        Some(m) => Line::from(vec![
-            Span::raw("  Records: "),
-            Span::styled(m.record_count.to_string(), Style::default().fg(Color::Cyan)),
-            Span::raw("  │  Tenants: "),
-            Span::styled(
-                m.tenant_count.to_string(),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::raw("  │  Flushes: "),
-            Span::styled(m.flush_count.to_string(), Style::default().fg(Color::Cyan)),
-            Span::raw("  │  Uptime: "),
-            Span::styled(
-                format!("{}s", m.uptime_secs),
-                Style::default().fg(Color::Cyan),
-            ),
-        ]),
-        None => Line::from(Span::styled(
+    let lines = match &state.snapshot.slow {
+        Some(m) => {
+            let journal_kb = m.journal_estimated_bytes / 1024;
+            vec![
+                Line::from(vec![
+                    Span::raw("  Records: "),
+                    Span::styled(m.record_count.to_string(), Style::default().fg(Color::Cyan)),
+                    Span::raw("  Tenants: "),
+                    Span::styled(m.tenant_count.to_string(), Style::default().fg(Color::Cyan)),
+                ]),
+                Line::from(vec![
+                    Span::raw("  Flushes: "),
+                    Span::styled(m.flush_count.to_string(), Style::default().fg(Color::Cyan)),
+                    Span::raw("  Journal: "),
+                    Span::styled(
+                        format!("{journal_kb} KB"),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                ]),
+            ]
+        }
+        None => vec![Line::from(Span::styled(
             "  Slow-node unreachable",
             Style::default().fg(Color::Red),
-        )),
+        ))],
     };
 
-    let p = Paragraph::new(text)
+    let p = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(" Slow-Node "));
     f.render_widget(p, area);
 }
 
+fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {
+    let selected = state.table.selected();
+    let node = selected.and_then(|i| state.snapshot.quick.get(i));
+    let metrics = node.and_then(|n| n.metrics.as_ref());
+
+    let title = match (selected, metrics) {
+        (Some(i), Some(m)) => format!(
+            " Page Map — node[{i}] — {} B written — {} pages ",
+            m.write_bytes, m.page_count
+        ),
+        (Some(i), None) => format!(" Page Map — node[{i}] — no data "),
+        _ => " Page Map — (no node selected) ".to_string(),
+    };
+
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if let Some(m) = metrics {
+        if inner.height == 0 || inner.width == 0 || m.page_map.is_empty() {
+            return;
+        }
+        let cols = inner.width as usize;
+        let rows = inner.height as usize;
+        let max_pages = cols * rows;
+        let pages: Vec<u8> = m.page_map.iter().take(max_pages).copied().collect();
+
+        let lines: Vec<Line> = pages
+            .chunks(cols)
+            .map(|row_pages| {
+                let spans: Vec<Span> = row_pages
+                    .iter()
+                    .map(|&occ| {
+                        let (ch, color) = match occ {
+                            0 => ('·', Color::DarkGray),
+                            1..=63 => ('░', Color::Green),
+                            64..=127 => ('▒', Color::Yellow),
+                            128..=191 => ('▓', Color::LightYellow),
+                            _ => ('█', Color::Red),
+                        };
+                        Span::styled(ch.to_string(), Style::default().fg(color))
+                    })
+                    .collect();
+                Line::from(spans)
+            })
+            .collect();
+
+        let p = Paragraph::new(lines);
+        f.render_widget(p, inner);
+    }
+}
+
 fn render_system(f: &mut Frame, state: &AppState, area: Rect) {
     let rss_mb = state.process_rss / (1024 * 1024);
-    let text = Line::from(vec![
+
+    let node_mem_span = state
+        .table
+        .selected()
+        .and_then(|i| state.snapshot.quick.get(i))
+        .and_then(|n| n.metrics.as_ref())
+        .map(|m| {
+            let kb = m.estimated_memory_bytes / 1024;
+            vec![
+                Span::raw("  │  Node est. mem: "),
+                Span::styled(format!("{kb} KB"), Style::default().fg(Color::Magenta)),
+            ]
+        })
+        .unwrap_or_default();
+
+    let mut spans = vec![
         Span::raw("  Process RSS: "),
-        Span::styled(
-            format!("{rss_mb} MB"),
-            Style::default().fg(Color::Magenta),
-        ),
-        Span::raw("  │  CPU: "),
+        Span::styled(format!("{rss_mb} MB"), Style::default().fg(Color::Magenta)),
+        Span::raw("  CPU: "),
         Span::styled(
             format!("{:.1} %", state.process_cpu),
             Style::default().fg(Color::Magenta),
         ),
-    ]);
-    let p = Paragraph::new(text)
+    ];
+    spans.extend(node_mem_span);
+
+    let p = Paragraph::new(Line::from(spans))
         .block(Block::default().borders(Borders::ALL).title(" System "));
     f.render_widget(p, area);
 }

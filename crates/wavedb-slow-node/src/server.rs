@@ -121,11 +121,13 @@ async fn handle_metrics(State(state): State<Arc<AppState>>, body: Bytes) -> impl
         }
     }
 
+    let record_count = state.store.len();
     let snapshot = SlowNodeMetrics {
-        record_count: state.store.len(),
+        record_count,
         tenant_count: state.store.tenant_count(),
         flush_count: state.store.flush_count(),
         uptime_secs: state.start_time.elapsed().as_secs(),
+        journal_estimated_bytes: record_count as u64 * 300,
     };
     encode_payload(&snapshot).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
         (StatusCode::OK, b)
