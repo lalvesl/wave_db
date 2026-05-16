@@ -6,54 +6,65 @@ use wavedb_net::metrics::{MetricsRequest, QuickNodeMetrics, SlowNodeMetrics};
 
 use crate::config::Config;
 
+/// Unified entry for a node in the cluster — quick or slow.
+#[derive(Debug, Clone)]
+pub enum NodeEntry {
+    Quick {
+        url: String,
+        metrics: Option<QuickNodeMetrics>,
+        error: bool,
+    },
+    Slow {
+        url: String,
+        metrics: Option<SlowNodeMetrics>,
+        error: bool,
+    },
+}
+
+impl NodeEntry {
+    /// URL this node was polled at.
+    pub fn url(&self) -> &str {
+        match self {
+            NodeEntry::Quick { url, .. } | NodeEntry::Slow { url, .. } => url,
+        }
+    }
+
+    /// `true` if the last poll failed.
+    pub fn error(&self) -> bool {
+        match self {
+            NodeEntry::Quick { error, .. } | NodeEntry::Slow { error, .. } => *error,
+        }
+    }
+}
+
 /// Snapshot of all cluster metrics collected in a single poll cycle.
+///
+/// Quick nodes appear first (in config order), slow nodes follow.
 #[derive(Debug, Clone, Default)]
 pub struct ClusterSnapshot {
-    pub quick: Vec<NodeSnapshot>,
-    pub slow: Vec<SlowNodeSnapshot>,
-}
-
-/// Per-Quick-Node metrics, annotated with whether the poll succeeded.
-#[derive(Debug, Clone)]
-pub struct NodeSnapshot {
-    /// The URL this node was polled at.
-    pub url: String,
-    pub metrics: Option<QuickNodeMetrics>,
-    /// `true` if the last poll returned an error (auth failure, timeout, etc.).
-    pub error: bool,
-}
-
-/// Per-Slow-Node metrics, annotated with whether the poll succeeded.
-#[derive(Debug, Clone)]
-pub struct SlowNodeSnapshot {
-    /// The URL this node was polled at.
-    pub url: String,
-    pub metrics: Option<SlowNodeMetrics>,
-    /// `true` if the last poll returned an error.
-    pub error: bool,
+    pub nodes: Vec<NodeEntry>,
 }
 
 /// Poll all nodes once and return a fresh snapshot.
 pub async fn poll_all(cfg: &Config, client: &reqwest::Client) -> ClusterSnapshot {
-    let mut quick = Vec::with_capacity(cfg.quick_node_urls.len());
+    let mut nodes = Vec::with_capacity(cfg.quick_node_urls.len() + cfg.slow_node_urls.len());
+
     for url in &cfg.quick_node_urls {
-        quick.push(poll_quick(url, cfg, client).await);
+        nodes.push(poll_quick(url, cfg, client).await);
     }
-
-    let mut slow = Vec::with_capacity(cfg.slow_node_urls.len());
     for url in &cfg.slow_node_urls {
-        slow.push(poll_slow_node(url, cfg, client).await);
+        nodes.push(poll_slow(url, cfg, client).await);
     }
 
-    ClusterSnapshot { quick, slow }
+    ClusterSnapshot { nodes }
 }
 
-async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeSnapshot {
+async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEntry {
     let req = build_request(cfg, TokenPurpose::Monitor);
     let body = match encode_payload(&req) {
         Ok(b) => b,
         Err(_) => {
-            return NodeSnapshot {
+            return NodeEntry::Quick {
                 url: url.to_string(),
                 metrics: None,
                 error: true,
@@ -71,14 +82,13 @@ async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeSn
     match result {
         Ok(resp) if resp.status().is_success() => {
             let bytes = resp.bytes().await.unwrap_or_default();
-            let metrics: Option<QuickNodeMetrics> = decode_payload(&bytes).ok();
-            NodeSnapshot {
+            NodeEntry::Quick {
                 url: url.to_string(),
-                metrics,
+                metrics: decode_payload(&bytes).ok(),
                 error: false,
             }
         }
-        _ => NodeSnapshot {
+        _ => NodeEntry::Quick {
             url: url.to_string(),
             metrics: None,
             error: true,
@@ -86,12 +96,12 @@ async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeSn
     }
 }
 
-async fn poll_slow_node(url: &str, cfg: &Config, client: &reqwest::Client) -> SlowNodeSnapshot {
+async fn poll_slow(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEntry {
     let req = build_request(cfg, TokenPurpose::Monitor);
     let body = match encode_payload(&req) {
         Ok(b) => b,
         Err(_) => {
-            return SlowNodeSnapshot {
+            return NodeEntry::Slow {
                 url: url.to_string(),
                 metrics: None,
                 error: true,
@@ -109,14 +119,13 @@ async fn poll_slow_node(url: &str, cfg: &Config, client: &reqwest::Client) -> Sl
     match result {
         Ok(resp) if resp.status().is_success() => {
             let bytes = resp.bytes().await.unwrap_or_default();
-            let metrics: Option<SlowNodeMetrics> = decode_payload(&bytes).ok();
-            SlowNodeSnapshot {
+            NodeEntry::Slow {
                 url: url.to_string(),
-                metrics,
+                metrics: decode_payload(&bytes).ok(),
                 error: false,
             }
         }
-        _ => SlowNodeSnapshot {
+        _ => NodeEntry::Slow {
             url: url.to_string(),
             metrics: None,
             error: true,
@@ -125,9 +134,6 @@ async fn poll_slow_node(url: &str, cfg: &Config, client: &reqwest::Client) -> Sl
 }
 
 fn build_request(cfg: &Config, purpose: TokenPurpose) -> MetricsRequest {
-    let token = cfg
-        .cluster_key
-        .as_ref()
-        .map(|k| k.mint(0, purpose));
+    let token = cfg.cluster_key.as_ref().map(|k| k.mint(0, purpose));
     MetricsRequest { token }
 }

@@ -55,6 +55,9 @@ struct QuickNodeInner {
     write_count: AtomicU64,
     read_count: AtomicU64,
     write_bytes: AtomicU64,
+    /// Per-page byte totals for hash-map style page occupancy.
+    /// Write N goes to slot `N % MAX_MAP_PAGES`.
+    page_bytes: Vec<AtomicU64>,
     start_time: Instant,
 }
 
@@ -100,6 +103,7 @@ impl QuickNode {
                 write_count: AtomicU64::new(0),
                 read_count: AtomicU64::new(0),
                 write_bytes: AtomicU64::new(0),
+                page_bytes: (0..MAX_MAP_PAGES).map(|_| AtomicU64::new(0)).collect(),
                 start_time: Instant::now(),
             }),
         }
@@ -161,12 +165,15 @@ impl QuickNode {
     pub fn metrics(&self) -> QuickNodeMetrics {
         let write_bytes = self.inner.write_bytes.load(Ordering::Relaxed);
         let page_count = (write_bytes + HEAP_PAGE_SIZE - 1) / HEAP_PAGE_SIZE;
-        let full_pages = (write_bytes / HEAP_PAGE_SIZE).min(MAX_MAP_PAGES as u64) as usize;
-        let remainder = write_bytes % HEAP_PAGE_SIZE;
-        let mut page_map: Vec<u8> = vec![255u8; full_pages];
-        if remainder > 0 && page_map.len() < MAX_MAP_PAGES {
-            page_map.push((remainder * 255 / HEAP_PAGE_SIZE) as u8);
-        }
+        let page_map: Vec<u8> = self
+            .inner
+            .page_bytes
+            .iter()
+            .map(|pb| {
+                let b = pb.load(Ordering::Relaxed);
+                (b.saturating_mul(255) / HEAP_PAGE_SIZE).min(255) as u8
+            })
+            .collect();
         QuickNodeMetrics {
             node_id: self.inner.node_id,
             listen_addr: self.inner.listen_addr.clone(),
@@ -299,10 +306,11 @@ impl QuickNode {
         if !self.inner.ownership.owns(tenant, 0) {
             return self.not_owner_resp(seq);
         }
-        self.inner.write_count.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .write_bytes
-            .fetch_add(payload.len() as u64, Ordering::Relaxed);
+        let payload_len = payload.len() as u64;
+        let write_idx = self.inner.write_count.fetch_add(1, Ordering::Relaxed);
+        self.inner.write_bytes.fetch_add(payload_len, Ordering::Relaxed);
+        let page_idx = (write_idx % MAX_MAP_PAGES as u64) as usize;
+        self.inner.page_bytes[page_idx].fetch_add(payload_len, Ordering::Relaxed);
         let write_seq = self.inner.replication.next_seq();
         for peer_id in self.peer_ids() {
             self.inner.replication.record_send(peer_id, write_seq);

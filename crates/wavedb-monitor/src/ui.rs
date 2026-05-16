@@ -1,22 +1,25 @@
-//! Ratatui TUI: node table, sparklines, slow-node block, vim-motion navigation.
+//! Ratatui TUI: unified node table, sparklines, page-map, vim-motion navigation.
 //!
 //! # Layout
 //!
 //! ```text
-//! ┌─ Quick-Nodes ─────────────────────────────────────────────────────────────┐
-//! │  #  │ Node ID  │ Address         │ Status  │ Ring │ Own │ Writes │ Reads  │
-//! │  0  │ deadbeef │ 127.0.0.1:7700  │ OK      │  3   │  1 │  1234  │   56   │
-//! │> 1  │ cafebabe │ 127.0.0.1:7701  │ DRAIN   │  3   │  1 │   888  │   11   │
-//! └────────────────────────────────────────────────────────────────────────────┘
-//! ┌─ Write IOps ──────────────────┐ ┌─ Read IOps ────────────────────────────┐
-//! │ ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃ │ │ ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█ │
-//! └────────────────────────────────┘ └────────────────────────────────────────┘
-//! ┌─ Slow-Node ─────────────────────────────────────────────────────────────┐
-//! │  Records: 5000  │  Tenants: 3  │  Flushes: 100  │  Uptime: 42s        │
-//! └─────────────────────────────────────────────────────────────────────────┘
-//! ┌─ System ────────────────────────────────────────────────────────────────┐
-//! │  Process RSS: 42 MB  │  CPU: 1.2 %                                     │
-//! └─────────────────────────────────────────────────────────────────────────┘
+//! ┌─ Nodes ───────────────────────────────────────────────────────────────────────┐
+//! │  #  │ Type  │ Address         │ Status │ Ring │ Own │ Writes │ Reads │ Recs  │
+//! │  0  │ Quick │ 127.0.0.1:7700  │ OK     │  3   │  1  │  1234  │   56  │  —    │
+//! │> 1  │ Slow  │ 127.0.0.1:7800  │ OK     │  —   │  —  │   —    │   —   │ 5000  │
+//! └────────────────────────────────────────────────────────────────────────────────┘
+//! ┌─ Write IOps ──────────────────┐ ┌─ Read IOps ────────────────────────────────┐
+//! │ ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁              │ │ ▁▂▃▄▅▆▇█▇▆▅▄▃▂▁                          │
+//! └────────────────────────────────┘ └────────────────────────────────────────────┘
+//! ┌─ Events ───────────────────────────────────────────────────────────────────────┐
+//! │  stress-test log lines …                                                       │
+//! └─────────────────────────────────────────────────────────────────────────────────┘
+//! ┌─ Page Map — node[0] Quick — 204800 B — 50 pages ──────────────────────────────┐
+//! │  ████░░░░░░                                                                    │
+//! └────────────────────────────────────────────────────────────────────────────────┘
+//! ┌─ System ────────────────────────────────────────────────────────────────────────┐
+//! │  Process RSS: 42 MB  │  CPU: 1.2 %  │  Node est. mem: 64 KB                   │
+//! └─────────────────────────────────────────────────────────────────────────────────┘
 //! [j/k] move  [g/G] top/bottom  [/] search  [n/N] next/prev  [q] quit
 //! ```
 
@@ -28,44 +31,29 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::bar::NINE_LEVELS;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, Borders, Cell, Paragraph, Row, Sparkline, Table, TableState,
-};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table, TableState};
 
-use crate::poll::{ClusterSnapshot, NodeSnapshot, SlowNodeSnapshot};
+use crate::poll::{ClusterSnapshot, NodeEntry};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/// Number of sparkline data points retained (ring buffer length).
 const SPARKLINE_LEN: usize = 60;
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
 pub struct AppState {
-    /// Latest cluster snapshot.
     pub snapshot: ClusterSnapshot,
-    /// Table selection.
     pub table: TableState,
-    /// Search string (built while in search mode).
     search_query: String,
-    /// Indices of nodes whose address/id matches the current search.
     search_matches: Vec<usize>,
-    /// Which match is currently highlighted.
     search_cursor: usize,
     pub mode: InputMode,
-    /// Historical total-write-count per poll tick for sparklines.
     pub write_history: VecDeque<u64>,
-    /// Historical total-read-count per poll tick for sparklines.
     pub read_history: VecDeque<u64>,
-    /// Previous write total (to compute delta).
     prev_writes: u64,
-    /// Previous read total (to compute delta).
     prev_reads: u64,
-    /// Process RSS in bytes (filled by sysinfo each tick).
     pub process_rss: u64,
-    /// Process CPU % (filled by sysinfo each tick).
     pub process_cpu: f32,
-    /// Log messages from the embedding application (e.g. stress-test events).
     pub event_log: VecDeque<String>,
 }
 
@@ -96,7 +84,6 @@ impl AppState {
         }
     }
 
-    /// Append a message to the event log (shown in the Events panel).
     pub fn push_log(&mut self, msg: impl Into<String>) {
         const MAX_LOG: usize = 500;
         if self.event_log.len() >= MAX_LOG {
@@ -105,24 +92,33 @@ impl AppState {
         self.event_log.push_back(msg.into());
     }
 
-    /// Ingest a fresh snapshot and update sparklines.
     pub fn update(&mut self, snapshot: ClusterSnapshot) {
         self.snapshot = snapshot;
 
-        // Sum writes and reads across all healthy quick-nodes.
+        // Sparklines: sum writes/reads from Quick nodes only.
         let total_writes: u64 = self
             .snapshot
-            .quick
+            .nodes
             .iter()
-            .filter_map(|n| n.metrics.as_ref())
-            .map(|m| m.write_count)
+            .filter_map(|n| {
+                if let NodeEntry::Quick { metrics: Some(m), .. } = n {
+                    Some(m.write_count)
+                } else {
+                    None
+                }
+            })
             .sum();
         let total_reads: u64 = self
             .snapshot
-            .quick
+            .nodes
             .iter()
-            .filter_map(|n| n.metrics.as_ref())
-            .map(|m| m.read_count)
+            .filter_map(|n| {
+                if let NodeEntry::Quick { metrics: Some(m), .. } = n {
+                    Some(m.read_count)
+                } else {
+                    None
+                }
+            })
             .sum();
 
         let write_delta = total_writes.saturating_sub(self.prev_writes);
@@ -139,11 +135,9 @@ impl AppState {
         self.write_history.push_back(write_delta);
         self.read_history.push_back(read_delta);
 
-        // Re-run search so matches stay in sync after topology changes.
         self.refresh_search();
 
-        // Clamp table selection to valid range.
-        let n = self.snapshot.quick.len();
+        let n = self.snapshot.nodes.len();
         if n == 0 {
             self.table.select(None);
         } else if let Some(sel) = self.table.selected() {
@@ -155,10 +149,10 @@ impl AppState {
         }
     }
 
-    // ── Vim motions ───────────────────────────────────────────────────────
+    // ── Vim motions ───────────────────────────────────────────────────────────
 
     pub fn move_down(&mut self) {
-        let n = self.snapshot.quick.len();
+        let n = self.snapshot.nodes.len();
         if n == 0 {
             return;
         }
@@ -167,7 +161,7 @@ impl AppState {
     }
 
     pub fn move_up(&mut self) {
-        let n = self.snapshot.quick.len();
+        let n = self.snapshot.nodes.len();
         if n == 0 {
             return;
         }
@@ -176,19 +170,19 @@ impl AppState {
     }
 
     pub fn go_top(&mut self) {
-        if !self.snapshot.quick.is_empty() {
+        if !self.snapshot.nodes.is_empty() {
             self.table.select(Some(0));
         }
     }
 
     pub fn go_bottom(&mut self) {
-        let n = self.snapshot.quick.len();
+        let n = self.snapshot.nodes.len();
         if n > 0 {
             self.table.select(Some(n - 1));
         }
     }
 
-    // ── Search ────────────────────────────────────────────────────────────
+    // ── Search ────────────────────────────────────────────────────────────────
 
     pub fn search_push(&mut self, c: char) {
         self.search_query.push(c);
@@ -237,18 +231,14 @@ impl AppState {
         let q = self.search_query.to_lowercase();
         self.search_matches = self
             .snapshot
-            .quick
+            .nodes
             .iter()
             .enumerate()
             .filter(|(_, n)| {
-                let hay = format!(
-                    "{} {}",
-                    n.url,
-                    n.metrics
-                        .as_ref()
-                        .map_or(String::new(), |m| format!("{:016x}", m.node_id))
-                )
-                .to_lowercase();
+                let mut hay = n.url().to_lowercase();
+                if let NodeEntry::Quick { metrics: Some(m), .. } = n {
+                    hay.push_str(&format!(" {:016x}", m.node_id));
+                }
                 hay.contains(&q)
             })
             .map(|(i, _)| i)
@@ -262,7 +252,6 @@ impl AppState {
         }
     }
 
-    /// `true` if `node_idx` is a search match.
     pub fn is_match(&self, node_idx: usize) -> bool {
         self.search_matches.contains(&node_idx)
     }
@@ -270,7 +259,6 @@ impl AppState {
 
 // ── Key handling ──────────────────────────────────────────────────────────────
 
-/// Process one terminal key event. Returns `false` when the user wants to quit.
 pub fn handle_key(state: &mut AppState, key: KeyEvent) -> bool {
     match state.mode {
         InputMode::Normal => handle_normal(state, key),
@@ -321,68 +309,66 @@ pub fn render(f: &mut Frame, state: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(5),     // quick-node table
-            Constraint::Length(3),  // sparklines
-            Constraint::Length(4),  // info row: slow-node | events
-            Constraint::Length(8),  // page map for selected node
-            Constraint::Length(3),  // system block
-            Constraint::Length(1),  // status bar
+            Constraint::Min(5),    // unified node table
+            Constraint::Length(3), // sparklines
+            Constraint::Length(4), // events log
+            Constraint::Length(8), // page map
+            Constraint::Length(3), // system
+            Constraint::Length(1), // status bar
         ])
         .split(area);
 
-    render_quick_table(f, state, chunks[0]);
+    render_nodes_table(f, state, chunks[0]);
     render_sparklines(f, state, chunks[1]);
-
-    // Info row: slow-node metrics on the left, event log on the right.
-    let info = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
-        .split(chunks[2]);
-    render_slow_node(f, state, info[0]);
-    render_event_log(f, state, info[1]);
-
+    render_event_log(f, state, chunks[2]);
     render_page_map(f, state, chunks[3]);
     render_system(f, state, chunks[4]);
     render_statusbar(f, state, chunks[5]);
 }
 
-fn render_quick_table(f: &mut Frame, state: &mut AppState, area: Rect) {
+// ── Node table ────────────────────────────────────────────────────────────────
+
+fn render_nodes_table(f: &mut Frame, state: &mut AppState, area: Rect) {
     let header = Row::new(vec![
         Cell::from(" # "),
-        Cell::from("Node ID"),
+        Cell::from("Type"),
         Cell::from("Address"),
         Cell::from("Status"),
         Cell::from("Ring"),
         Cell::from("Own"),
         Cell::from("Writes"),
         Cell::from("Reads"),
+        Cell::from("Records"),
+        Cell::from("Flush"),
         Cell::from("Uptime"),
     ])
     .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
 
     let rows: Vec<Row> = state
         .snapshot
-        .quick
+        .nodes
         .iter()
         .enumerate()
         .map(|(i, n)| node_row(i, n, state.is_match(i)))
         .collect();
 
     let widths = [
-        Constraint::Length(4),
-        Constraint::Length(18),
-        Constraint::Length(22),
-        Constraint::Length(7),
-        Constraint::Length(5),
-        Constraint::Length(4),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(8),
+        Constraint::Length(4),  // #
+        Constraint::Length(6),  // Type
+        Constraint::Length(22), // Address
+        Constraint::Length(7),  // Status
+        Constraint::Length(5),  // Ring
+        Constraint::Length(4),  // Own
+        Constraint::Length(8),  // Writes
+        Constraint::Length(8),  // Reads
+        Constraint::Length(8),  // Records
+        Constraint::Length(6),  // Flush
+        Constraint::Length(8),  // Uptime
     ];
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(" Quick-Nodes "))
+        .block(Block::default().borders(Borders::ALL).title(" Nodes "))
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -392,48 +378,85 @@ fn render_quick_table(f: &mut Frame, state: &mut AppState, area: Rect) {
     f.render_stateful_widget(table, area, &mut state.table);
 }
 
-fn node_row<'a>(idx: usize, n: &'a NodeSnapshot, is_match: bool) -> Row<'a> {
+fn d() -> Cell<'static> {
+    Cell::from("—")
+}
+
+fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
     let match_style = if is_match {
         Style::default().fg(Color::Cyan)
     } else {
         Style::default()
     };
 
-    match &n.metrics {
-        Some(m) => {
-            let status = if m.is_draining {
-                Cell::from("DRAIN").style(Style::default().fg(Color::Red))
-            } else {
-                Cell::from("OK").style(Style::default().fg(Color::Green))
-            };
-            Row::new(vec![
-                Cell::from(format!(" {idx} ")).style(match_style),
-                Cell::from(format!("{:016x}", m.node_id)).style(match_style),
-                Cell::from(m.listen_addr.clone()).style(match_style),
-                status,
-                Cell::from(m.ring_size.to_string()),
-                Cell::from(m.owned_partitions.to_string()),
-                Cell::from(m.write_count.to_string()),
-                Cell::from(m.read_count.to_string()),
-                Cell::from(format!("{}s", m.uptime_secs)),
-            ])
+    match n {
+        NodeEntry::Quick { url, metrics, error } => {
+            let type_cell =
+                Cell::from("Quick").style(Style::default().fg(Color::LightGreen));
+            match metrics {
+                Some(m) => {
+                    let status = if m.is_draining {
+                        Cell::from("DRAIN").style(Style::default().fg(Color::Red))
+                    } else {
+                        Cell::from("OK").style(Style::default().fg(Color::Green))
+                    };
+                    Row::new(vec![
+                        Cell::from(format!(" {idx} ")).style(match_style),
+                        type_cell,
+                        Cell::from(m.listen_addr.clone()).style(match_style),
+                        status,
+                        Cell::from(m.ring_size.to_string()),
+                        Cell::from(m.owned_partitions.to_string()),
+                        Cell::from(m.write_count.to_string()),
+                        Cell::from(m.read_count.to_string()),
+                        d(),
+                        d(),
+                        Cell::from(format!("{}s", m.uptime_secs)),
+                    ])
+                }
+                None => Row::new(vec![
+                    Cell::from(format!(" {idx} ")).style(match_style),
+                    type_cell,
+                    Cell::from(url.clone()).style(Style::default().fg(Color::Red)),
+                    Cell::from(if *error { "ERR" } else { "—" })
+                        .style(Style::default().fg(Color::Red)),
+                    d(), d(), d(), d(), d(), d(), d(),
+                ]),
+            }
         }
-        None => {
-            let err_style = Style::default().fg(Color::Red);
-            Row::new(vec![
-                Cell::from(format!(" {idx} ")).style(match_style),
-                Cell::from("—").style(err_style),
-                Cell::from(n.url.clone()).style(err_style),
-                Cell::from(if n.error { "ERR" } else { "—" }).style(err_style),
-                Cell::from("—"),
-                Cell::from("—"),
-                Cell::from("—"),
-                Cell::from("—"),
-                Cell::from("—"),
-            ])
+        NodeEntry::Slow { url, metrics, error } => {
+            let type_cell =
+                Cell::from("Slow").style(Style::default().fg(Color::LightBlue));
+            match metrics {
+                Some(m) => {
+                    Row::new(vec![
+                        Cell::from(format!(" {idx} ")).style(match_style),
+                        type_cell,
+                        Cell::from(url.clone()).style(match_style),
+                        Cell::from("OK").style(Style::default().fg(Color::Green)),
+                        d(),
+                        d(),
+                        d(),
+                        d(),
+                        Cell::from(m.record_count.to_string()),
+                        Cell::from(format!("{}", m.flush_count)),
+                        Cell::from(format!("{}s", m.uptime_secs)),
+                    ])
+                }
+                None => Row::new(vec![
+                    Cell::from(format!(" {idx} ")).style(match_style),
+                    type_cell,
+                    Cell::from(url.clone()).style(Style::default().fg(Color::Red)),
+                    Cell::from(if *error { "ERR" } else { "—" })
+                        .style(Style::default().fg(Color::Red)),
+                    d(), d(), d(), d(), d(), d(), d(),
+                ]),
+            }
         }
     }
 }
+
+// ── Sparklines ────────────────────────────────────────────────────────────────
 
 fn render_sparklines(f: &mut Frame, state: &AppState, area: Rect) {
     let halves = Layout::default()
@@ -460,122 +483,70 @@ fn render_sparklines(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(read_spark, halves[1]);
 }
 
-fn render_slow_node(f: &mut Frame, state: &AppState, area: Rect) {
-    let header = Row::new(vec![
-        Cell::from(" # "),
-        Cell::from("URL"),
-        Cell::from("Records"),
-        Cell::from("Tenants"),
-        Cell::from("Flushes"),
-        Cell::from("Journal"),
-        Cell::from("St"),
-    ])
-    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
-
-    let rows: Vec<Row> = state
-        .snapshot
-        .slow
-        .iter()
-        .enumerate()
-        .map(|(i, n)| slow_node_row(i, n))
-        .collect();
-
-    let widths = [
-        Constraint::Length(3),
-        Constraint::Min(18),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(7),
-        Constraint::Length(8),
-        Constraint::Length(4),
-    ];
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).title(" Slow-Nodes "));
-    f.render_widget(table, area);
-}
-
-fn slow_node_row(idx: usize, n: &SlowNodeSnapshot) -> Row<'_> {
-    match &n.metrics {
-        Some(m) => {
-            let journal_kb = m.journal_estimated_bytes / 1024;
-            Row::new(vec![
-                Cell::from(format!(" {idx} ")),
-                Cell::from(n.url.clone()),
-                Cell::from(m.record_count.to_string()),
-                Cell::from(m.tenant_count.to_string()),
-                Cell::from(m.flush_count.to_string()),
-                Cell::from(format!("{journal_kb}K")),
-                Cell::from("OK").style(Style::default().fg(Color::Green)),
-            ])
-        }
-        None => {
-            let err_style = Style::default().fg(Color::Red);
-            Row::new(vec![
-                Cell::from(format!(" {idx} ")),
-                Cell::from(n.url.clone()).style(err_style),
-                Cell::from("—"),
-                Cell::from("—"),
-                Cell::from("—"),
-                Cell::from("—"),
-                Cell::from(if n.error { "ERR" } else { "—" }).style(err_style),
-            ])
-        }
-    }
-}
+// ── Page map ──────────────────────────────────────────────────────────────────
 
 fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {
-    let selected = state.table.selected();
-    let node = selected.and_then(|i| state.snapshot.quick.get(i));
-    let metrics = node.and_then(|n| n.metrics.as_ref());
+    let selected_entry = state
+        .table
+        .selected()
+        .and_then(|i| state.snapshot.nodes.get(i));
 
-    let title = match (selected, metrics) {
-        (Some(i), Some(m)) => format!(
-            " Page Map — node[{i}] — {} B written — {} pages ",
-            m.write_bytes, m.page_count
-        ),
-        (Some(i), None) => format!(" Page Map — node[{i}] — no data "),
-        _ => " Page Map — (no node selected) ".to_string(),
+    let title = match selected_entry {
+        Some(NodeEntry::Quick { metrics: Some(m), .. }) => {
+            let i = state.table.selected().unwrap_or(0);
+            format!(
+                " Page Map — node[{i}] Quick — {} B — {} pages ",
+                m.write_bytes, m.page_count
+            )
+        }
+        Some(NodeEntry::Quick { .. }) => {
+            let i = state.table.selected().unwrap_or(0);
+            format!(" Page Map — node[{i}] Quick — no data ")
+        }
+        Some(NodeEntry::Slow { .. }) => " Page Map — Slow nodes have no page map ".to_string(),
+        None => " Page Map — (no node selected) ".to_string(),
     };
 
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if let Some(m) = metrics {
-        if inner.height == 0 || inner.width == 0 || m.page_map.is_empty() {
-            return;
-        }
-        let cols = inner.width as usize;
-        let rows = inner.height as usize;
-        let max_pages = cols * rows;
-        let pages: Vec<u8> = m.page_map.iter().take(max_pages).copied().collect();
+    let page_map = match selected_entry {
+        Some(NodeEntry::Quick { metrics: Some(m), .. }) => &m.page_map,
+        _ => return,
+    };
 
-        let lines: Vec<Line> = pages
-            .chunks(cols)
-            .map(|row_pages| {
-                let spans: Vec<Span> = row_pages
-                    .iter()
-                    .map(|&occ| {
-                        let (ch, color) = match occ {
-                            0 => ('·', Color::DarkGray),
-                            1..=63 => ('░', Color::Green),
-                            64..=127 => ('▒', Color::Yellow),
-                            128..=191 => ('▓', Color::LightYellow),
-                            _ => ('█', Color::Red),
-                        };
-                        Span::styled(ch.to_string(), Style::default().fg(color))
-                    })
-                    .collect();
-                Line::from(spans)
-            })
-            .collect();
-
-        let p = Paragraph::new(lines);
-        f.render_widget(p, inner);
+    if inner.height == 0 || inner.width == 0 || page_map.is_empty() {
+        return;
     }
+
+    let cols = inner.width as usize;
+    let rows = inner.height as usize;
+    let lines: Vec<Line> = page_map
+        .chunks(cols)
+        .take(rows)
+        .map(|row_pages| {
+            let spans: Vec<Span> = row_pages
+                .iter()
+                .map(|&occ| {
+                    let (ch, color) = match occ {
+                        0 => ('·', Color::DarkGray),
+                        1..=63 => ('░', Color::Green),
+                        64..=127 => ('▒', Color::Yellow),
+                        128..=191 => ('▓', Color::LightYellow),
+                        _ => ('█', Color::Red),
+                    };
+                    Span::styled(ch.to_string(), Style::default().fg(color))
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect();
+
+    f.render_widget(Paragraph::new(lines), inner);
 }
+
+// ── System ────────────────────────────────────────────────────────────────────
 
 fn render_system(f: &mut Frame, state: &AppState, area: Rect) {
     let rss_mb = state.process_rss / (1024 * 1024);
@@ -583,10 +554,15 @@ fn render_system(f: &mut Frame, state: &AppState, area: Rect) {
     let node_mem_span = state
         .table
         .selected()
-        .and_then(|i| state.snapshot.quick.get(i))
-        .and_then(|n| n.metrics.as_ref())
-        .map(|m| {
-            let kb = m.estimated_memory_bytes / 1024;
+        .and_then(|i| state.snapshot.nodes.get(i))
+        .and_then(|n| {
+            if let NodeEntry::Quick { metrics: Some(m), .. } = n {
+                Some(m.estimated_memory_bytes / 1024)
+            } else {
+                None
+            }
+        })
+        .map(|kb| {
             vec![
                 Span::raw("  │  Node est. mem: "),
                 Span::styled(format!("{kb} KB"), Style::default().fg(Color::Magenta)),
@@ -610,6 +586,8 @@ fn render_system(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(p, area);
 }
 
+// ── Event log ─────────────────────────────────────────────────────────────────
+
 fn render_event_log(f: &mut Frame, state: &AppState, area: Rect) {
     let inner_height = area.height.saturating_sub(2) as usize;
     let total = state.event_log.len();
@@ -626,6 +604,8 @@ fn render_event_log(f: &mut Frame, state: &AppState, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(" Events "));
     f.render_widget(p, area);
 }
+
+// ── Status bar ────────────────────────────────────────────────────────────────
 
 fn render_statusbar(f: &mut Frame, state: &AppState, area: Rect) {
     let text = match state.mode {
@@ -654,15 +634,11 @@ fn render_statusbar(f: &mut Frame, state: &AppState, area: Rect) {
             ),
         ]),
     };
-    let p = Paragraph::new(text);
-    f.render_widget(p, area);
+    f.render_widget(Paragraph::new(text), area);
 }
 
 // ── Async event helper ────────────────────────────────────────────────────────
 
-/// Poll crossterm for a key event with a zero timeout.
-///
-/// Returns `Some(KeyEvent)` if one is available, `None` otherwise.
 pub fn poll_key() -> Option<KeyEvent> {
     if event::poll(std::time::Duration::ZERO).ok()? {
         if let Event::Key(k) = event::read().ok()? {
