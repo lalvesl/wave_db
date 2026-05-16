@@ -13,9 +13,11 @@ pub struct Args {
     #[arg(long, default_value = "http://127.0.0.1:7700")]
     pub quick_nodes: String,
 
-    /// HTTP URL of the Slow-Node to monitor.
+    /// Comma-separated HTTP URLs of Slow-Nodes to monitor.
+    ///
+    /// Example: `http://127.0.0.1:7800,http://127.0.0.1:7801`
     #[arg(long, default_value = "http://127.0.0.1:7800")]
-    pub slow_node: String,
+    pub slow_nodes: String,
 
     /// 64-hex-character cluster key for HMAC-SHA256 auth.
     ///
@@ -30,7 +32,7 @@ pub struct Args {
 
 pub struct Config {
     pub quick_node_urls: Vec<String>,
-    pub slow_node_url: String,
+    pub slow_node_urls: Vec<String>,
     pub cluster_key: Option<ClusterKey>,
     pub refresh_ms: u64,
 }
@@ -40,15 +42,15 @@ impl Config {
         let cluster_key = args.cluster_key.as_deref().map(|hex| {
             ClusterKey::from_hex(hex).expect("--cluster-key must be 64 hex characters")
         });
-        let quick_node_urls = args
-            .quick_nodes
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let parse_urls = |s: &str| {
+            s.split(',')
+                .map(|u| u.trim().to_string())
+                .filter(|u| !u.is_empty())
+                .collect()
+        };
         Self {
-            quick_node_urls,
-            slow_node_url: args.slow_node,
+            quick_node_urls: parse_urls(&args.quick_nodes),
+            slow_node_urls: parse_urls(&args.slow_nodes),
             cluster_key,
             refresh_ms: args.refresh_ms,
         }

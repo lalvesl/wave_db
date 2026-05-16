@@ -10,7 +10,7 @@ use crate::config::Config;
 #[derive(Debug, Clone, Default)]
 pub struct ClusterSnapshot {
     pub quick: Vec<NodeSnapshot>,
-    pub slow: Option<SlowNodeMetrics>,
+    pub slow: Vec<SlowNodeSnapshot>,
 }
 
 /// Per-Quick-Node metrics, annotated with whether the poll succeeded.
@@ -23,16 +23,27 @@ pub struct NodeSnapshot {
     pub error: bool,
 }
 
+/// Per-Slow-Node metrics, annotated with whether the poll succeeded.
+#[derive(Debug, Clone)]
+pub struct SlowNodeSnapshot {
+    /// The URL this node was polled at.
+    pub url: String,
+    pub metrics: Option<SlowNodeMetrics>,
+    /// `true` if the last poll returned an error.
+    pub error: bool,
+}
+
 /// Poll all nodes once and return a fresh snapshot.
 pub async fn poll_all(cfg: &Config, client: &reqwest::Client) -> ClusterSnapshot {
     let mut quick = Vec::with_capacity(cfg.quick_node_urls.len());
-
     for url in &cfg.quick_node_urls {
-        let snapshot = poll_quick(url, cfg, client).await;
-        quick.push(snapshot);
+        quick.push(poll_quick(url, cfg, client).await);
     }
 
-    let slow = poll_slow(&cfg.slow_node_url, cfg, client).await;
+    let mut slow = Vec::with_capacity(cfg.slow_node_urls.len());
+    for url in &cfg.slow_node_urls {
+        slow.push(poll_slow_node(url, cfg, client).await);
+    }
 
     ClusterSnapshot { quick, slow }
 }
@@ -75,24 +86,42 @@ async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeSn
     }
 }
 
-async fn poll_slow(url: &str, cfg: &Config, client: &reqwest::Client) -> Option<SlowNodeMetrics> {
+async fn poll_slow_node(url: &str, cfg: &Config, client: &reqwest::Client) -> SlowNodeSnapshot {
     let req = build_request(cfg, TokenPurpose::Monitor);
-    let body = encode_payload(&req).ok()?;
+    let body = match encode_payload(&req) {
+        Ok(b) => b,
+        Err(_) => {
+            return SlowNodeSnapshot {
+                url: url.to_string(),
+                metrics: None,
+                error: true,
+            };
+        }
+    };
 
-    let resp = client
+    let result = client
         .post(format!("{url}/metrics"))
         .header("Content-Type", "application/octet-stream")
         .body(body.to_vec())
         .send()
-        .await
-        .ok()?;
+        .await;
 
-    if !resp.status().is_success() {
-        return None;
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            let bytes = resp.bytes().await.unwrap_or_default();
+            let metrics: Option<SlowNodeMetrics> = decode_payload(&bytes).ok();
+            SlowNodeSnapshot {
+                url: url.to_string(),
+                metrics,
+                error: false,
+            }
+        }
+        _ => SlowNodeSnapshot {
+            url: url.to_string(),
+            metrics: None,
+            error: true,
+        },
     }
-
-    let bytes = resp.bytes().await.ok()?;
-    decode_payload(&bytes).ok()
 }
 
 fn build_request(cfg: &Config, purpose: TokenPurpose) -> MetricsRequest {

@@ -32,7 +32,7 @@ use ratatui::widgets::{
     Block, Borders, Cell, Paragraph, Row, Sparkline, Table, TableState,
 };
 
-use crate::poll::{ClusterSnapshot, NodeSnapshot};
+use crate::poll::{ClusterSnapshot, NodeSnapshot, SlowNodeSnapshot};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -461,36 +461,68 @@ fn render_sparklines(f: &mut Frame, state: &AppState, area: Rect) {
 }
 
 fn render_slow_node(f: &mut Frame, state: &AppState, area: Rect) {
-    let lines = match &state.snapshot.slow {
+    let header = Row::new(vec![
+        Cell::from(" # "),
+        Cell::from("URL"),
+        Cell::from("Records"),
+        Cell::from("Tenants"),
+        Cell::from("Flushes"),
+        Cell::from("Journal"),
+        Cell::from("St"),
+    ])
+    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+
+    let rows: Vec<Row> = state
+        .snapshot
+        .slow
+        .iter()
+        .enumerate()
+        .map(|(i, n)| slow_node_row(i, n))
+        .collect();
+
+    let widths = [
+        Constraint::Length(3),
+        Constraint::Min(18),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(8),
+        Constraint::Length(4),
+    ];
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(Block::default().borders(Borders::ALL).title(" Slow-Nodes "));
+    f.render_widget(table, area);
+}
+
+fn slow_node_row(idx: usize, n: &SlowNodeSnapshot) -> Row<'_> {
+    match &n.metrics {
         Some(m) => {
             let journal_kb = m.journal_estimated_bytes / 1024;
-            vec![
-                Line::from(vec![
-                    Span::raw("  Records: "),
-                    Span::styled(m.record_count.to_string(), Style::default().fg(Color::Cyan)),
-                    Span::raw("  Tenants: "),
-                    Span::styled(m.tenant_count.to_string(), Style::default().fg(Color::Cyan)),
-                ]),
-                Line::from(vec![
-                    Span::raw("  Flushes: "),
-                    Span::styled(m.flush_count.to_string(), Style::default().fg(Color::Cyan)),
-                    Span::raw("  Journal: "),
-                    Span::styled(
-                        format!("{journal_kb} KB"),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                ]),
-            ]
+            Row::new(vec![
+                Cell::from(format!(" {idx} ")),
+                Cell::from(n.url.clone()),
+                Cell::from(m.record_count.to_string()),
+                Cell::from(m.tenant_count.to_string()),
+                Cell::from(m.flush_count.to_string()),
+                Cell::from(format!("{journal_kb}K")),
+                Cell::from("OK").style(Style::default().fg(Color::Green)),
+            ])
         }
-        None => vec![Line::from(Span::styled(
-            "  Slow-node unreachable",
-            Style::default().fg(Color::Red),
-        ))],
-    };
-
-    let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" Slow-Node "));
-    f.render_widget(p, area);
+        None => {
+            let err_style = Style::default().fg(Color::Red);
+            Row::new(vec![
+                Cell::from(format!(" {idx} ")),
+                Cell::from(n.url.clone()).style(err_style),
+                Cell::from("—"),
+                Cell::from("—"),
+                Cell::from("—"),
+                Cell::from("—"),
+                Cell::from(if n.error { "ERR" } else { "—" }).style(err_style),
+            ])
+        }
+    }
 }
 
 fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {

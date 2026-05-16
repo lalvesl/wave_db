@@ -202,7 +202,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Monitor config from live cluster ──────────────────────────────────
     let monitor_cfg = wavedb_monitor::config::Config {
         quick_node_urls: cluster.quick_nodes.iter().map(|n| n.http_url()).collect(),
-        slow_node_url: cluster.slow_node.http_url(),
+        slow_node_urls: vec![cluster.slow_node.http_url()],
         cluster_key: None,
         refresh_ms: 400,
     };
