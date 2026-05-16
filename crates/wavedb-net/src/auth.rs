@@ -122,7 +122,7 @@ fn compute_tag(
     tag
 }
 
-fn hex_nibble(b: u8) -> Result<u8, &'static str> {
+const fn hex_nibble(b: u8) -> Result<u8, &'static str> {
     match b {
         b'0'..=b'9' => Ok(b - b'0'),
         b'a'..=b'f' => Ok(b - b'a' + 10),

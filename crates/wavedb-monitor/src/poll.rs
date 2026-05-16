@@ -25,14 +25,14 @@ impl NodeEntry {
     /// URL this node was polled at.
     pub fn url(&self) -> &str {
         match self {
-            NodeEntry::Quick { url, .. } | NodeEntry::Slow { url, .. } => url,
+            Self::Quick { url, .. } | Self::Slow { url, .. } => url,
         }
     }
 
     /// `true` if the last poll failed.
-    pub fn error(&self) -> bool {
+    pub const fn error(&self) -> bool {
         match self {
-            NodeEntry::Quick { error, .. } | NodeEntry::Slow { error, .. } => *error,
+            Self::Quick { error, .. } | Self::Slow { error, .. } => *error,
         }
     }
 }
@@ -61,15 +61,12 @@ pub async fn poll_all(cfg: &Config, client: &reqwest::Client) -> ClusterSnapshot
 
 async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEntry {
     let req = build_request(cfg, TokenPurpose::Monitor);
-    let body = match encode_payload(&req) {
-        Ok(b) => b,
-        Err(_) => {
-            return NodeEntry::Quick {
-                url: url.to_string(),
-                metrics: None,
-                error: true,
-            };
-        }
+    let Ok(body) = encode_payload(&req) else {
+        return NodeEntry::Quick {
+            url: url.to_string(),
+            metrics: None,
+            error: true,
+        };
     };
 
     let result = client
@@ -98,15 +95,12 @@ async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEn
 
 async fn poll_slow(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEntry {
     let req = build_request(cfg, TokenPurpose::Monitor);
-    let body = match encode_payload(&req) {
-        Ok(b) => b,
-        Err(_) => {
-            return NodeEntry::Slow {
-                url: url.to_string(),
-                metrics: None,
-                error: true,
-            };
-        }
+    let Ok(body) = encode_payload(&req) else {
+        return NodeEntry::Slow {
+            url: url.to_string(),
+            metrics: None,
+            error: true,
+        };
     };
 
     let result = client

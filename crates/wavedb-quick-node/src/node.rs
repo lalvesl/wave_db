@@ -224,7 +224,7 @@ impl QuickNode {
                 user,
                 tenant,
                 payload,
-            } => self.handle_write(req.seq, struct_id, user, tenant, payload),
+            } => self.handle_write(req.seq, struct_id, user, tenant, &payload),
             RequestKind::Delete { id, user, tenant } => {
                 self.handle_delete(req.seq, id, user, tenant)
             }
@@ -299,7 +299,7 @@ impl QuickNode {
         struct_id: u32,
         user: u64,
         tenant: u64,
-        payload: Vec<u8>,
+        payload: &[u8],
     ) -> TransportResponse {
         if self.inner.draining.load(Ordering::Acquire) {
             return self.draining_resp(seq);
@@ -364,6 +364,7 @@ impl QuickNode {
     ///
     /// Deduplication ensures each `(origin, epoch)` pair is applied at most
     /// once even if multiple peers relay the same event.
+    #[allow(clippy::unused_async)]
     pub async fn handle_gossip(&self, msg: GossipMessage) -> GossipResponse {
         // Duplicate — already processed this event.
         if !self.inner.gossip.mark_seen(msg.origin, msg.epoch) {
@@ -455,6 +456,7 @@ impl QuickNode {
                             self.inner.replication.add_peer(id);
                         }
                     }
+                    drop(ring);
                 }
                 Some(_) | None => {
                     tracing::warn!(peer = %peer_addr, "gossip: announce to peer failed or got unexpected response");
@@ -509,6 +511,7 @@ impl QuickNode {
     /// Flush in-memory writes to the configured Slow-Node.
     ///
     /// Phase 14: replace with actual record serialisation and batch POST.
+    #[allow(clippy::unused_async)]
     async fn sync_to_slow(&self) {
         let Some(slow_addr) = self.inner.config.slow_node.as_deref() else {
             return;
@@ -627,6 +630,7 @@ impl QuickNode {
 
 /// Map `(user, struct_id)` to a page-map slot via FNV-1a so the same
 /// caller always hits the same slot, creating realistic per-user hotspots.
+#[allow(clippy::cast_possible_truncation)]
 fn fnv1a_page(user: u64, struct_id: u32, n_pages: usize) -> usize {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in user.to_le_bytes() {

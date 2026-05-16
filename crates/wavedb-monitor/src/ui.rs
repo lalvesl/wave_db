@@ -24,6 +24,7 @@
 //! ```
 
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
@@ -246,7 +247,7 @@ impl AppState {
                     metrics: Some(m), ..
                 } = n
                 {
-                    hay.push_str(&format!(" {:016x}", m.node_id));
+                    let _ = write!(hay, " {:016x}", m.node_id);
                 }
                 hay.contains(&q)
             })
@@ -263,6 +264,12 @@ impl AppState {
 
     pub fn is_match(&self, node_idx: usize) -> bool {
         self.search_matches.contains(&node_idx)
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

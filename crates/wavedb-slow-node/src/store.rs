@@ -136,6 +136,7 @@ impl HistoryStore {
         for (tenant, _) in guard.index.keys() {
             tenants.insert(*tenant);
         }
+        drop(guard);
         tenants.len()
     }
 

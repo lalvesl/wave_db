@@ -65,6 +65,7 @@ pub async fn launch_continuous(cluster: &TestCluster) -> (Vec<JoinHandle<()>>, C
     let counters = Counters::new();
     let mut tasks = Vec::with_capacity(NUM_CLIENTS);
 
+    #[allow(clippy::cast_possible_truncation)]
     for user_id in 0u64..NUM_CLIENTS as u64 {
         let node_idx = (user_id as usize / PER_NODE).min(2);
         let db = cluster.open_user_via(user_id + 1, TENANT, node_idx).await;

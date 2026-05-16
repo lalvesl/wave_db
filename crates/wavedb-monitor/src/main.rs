@@ -13,7 +13,7 @@ use wavedb_monitor::config::{Args, Config};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = Config::from_args(Args::parse());
+    let cfg = Config::from_args(&Args::parse());
     let log = wavedb_monitor::new_log();
     let done = Arc::new(AtomicBool::new(false));
 

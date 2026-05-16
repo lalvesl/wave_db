@@ -38,7 +38,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use wavedb_monitor::{LogBuffer, new_log, push_log, run_tui_thread};
-use wavedb_test_cluster::{ClusterSpec, TestCluster};
+use wavedb_test_cluster::{ClusterSpec, QuickNodeHandle, TestCluster};
 
 pub const TENANT: u64 = 100;
 
@@ -98,7 +98,7 @@ pub async fn run_continuous(
     loop {
         tokio::select! {
             // Quit-check: 50 ms polling so we don't spin but also don't lag.
-            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+            () = tokio::time::sleep(Duration::from_millis(50)) => {
                 if quit.load(Ordering::Relaxed) { break; }
             }
 
@@ -132,7 +132,7 @@ pub async fn run_continuous(
             }
 
             // Chaos: drain node[0] or node[1] on a staggered schedule.
-            _ = tokio::time::sleep_until(chaos_at) => {
+            () = tokio::time::sleep_until(chaos_at) => {
                 if quit.load(Ordering::Relaxed) { break; }
                 let node_idx = chaos_step % 2; // alternates 0 → 1 → 0 → …
                 let node = &cluster.quick_nodes[node_idx].node;
@@ -203,7 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Monitor config from live cluster ──────────────────────────────────
     let monitor_cfg = wavedb_monitor::config::Config {
-        quick_node_urls: cluster.quick_nodes.iter().map(|n| n.http_url()).collect(),
+        quick_node_urls: cluster.quick_nodes.iter().map(QuickNodeHandle::http_url).collect(),
         slow_node_urls: vec![cluster.slow_node.http_url()],
         cluster_key: None,
         refresh_ms: 400,
@@ -230,9 +230,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Duration            : {:.1}s", elapsed.as_secs_f64());
     println!("  Writes committed    : {committed}");
     println!("  Writes dropped      : {dropped}  (clients on drained nodes)");
+    #[allow(clippy::cast_precision_loss)]
+    let throughput = committed as f64 / elapsed.as_secs_f64().max(0.001);
     println!(
         "  Throughput (avg)    : {:.0} writes/s",
-        committed as f64 / elapsed.as_secs_f64().max(0.001)
+        throughput
     );
     println!();
     println!("✓  Continuous load test complete.");

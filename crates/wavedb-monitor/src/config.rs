@@ -38,7 +38,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_args(args: Args) -> Self {
+    pub fn from_args(args: &Args) -> Self {
         let cluster_key = args
             .cluster_key
             .as_deref()
