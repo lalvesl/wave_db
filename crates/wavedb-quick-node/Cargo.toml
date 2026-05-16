@@ -28,6 +28,7 @@ bytes.workspace = true
 futures-util.workspace = true
 axum = { workspace = true, features = ["ws"] }
 clap = { workspace = true }
+reqwest = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

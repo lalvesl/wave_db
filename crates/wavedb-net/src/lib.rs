@@ -13,6 +13,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
+pub mod auth;
 pub mod frame;
 pub mod mock;
 pub mod request;
@@ -25,6 +26,7 @@ pub mod notify;
 #[cfg(feature = "native")]
 pub mod ws;
 
+pub use auth::{ClusterKey, NodeToken, TokenPurpose};
 #[cfg(feature = "native")]
 pub use http::HttpClient;
 pub use mock::MockTransport;

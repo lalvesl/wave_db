@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use wavedb_net::auth::ClusterKey;
 
 // ── OwnershipSpec ─────────────────────────────────────────────────────────────
 
@@ -95,6 +96,12 @@ pub struct Args {
     /// Bloom-filter publish interval in seconds.
     #[arg(long, default_value_t = 1)]
     pub bloom_interval_secs: u64,
+
+    /// Shared cluster secret as a 64-hex-character string (32 bytes).
+    /// When set, all gossip messages are HMAC-SHA256 signed and verified.
+    /// Omit to run in open/dev mode with no node-to-node authentication.
+    #[arg(long)]
+    pub cluster_key: Option<String>,
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -114,6 +121,8 @@ pub struct Config {
     pub bloom_interval_secs: u64,
     /// Data directory.
     pub data_dir: PathBuf,
+    /// Parsed cluster key for HMAC-SHA256 node-to-node auth, or `None` for open mode.
+    pub cluster_key: Option<ClusterKey>,
 }
 
 impl Config {
@@ -126,6 +135,10 @@ impl Config {
             owns: args.owns,
             bloom_interval_secs: args.bloom_interval_secs,
             data_dir: args.data_dir,
+            cluster_key: args.cluster_key.as_deref().map(|hex| {
+                ClusterKey::from_hex(hex)
+                    .expect("--cluster-key must be a 64-hex-character string (32 bytes)")
+            }),
         }
     }
 
@@ -193,6 +206,7 @@ mod tests {
             owns: Vec::new(),
             bloom_interval_secs: 1,
             data_dir: std::path::PathBuf::from("/tmp"),
+            cluster_key: None,
         };
         let addrs = config.peer_addrs();
         assert_eq!(addrs, ["10.0.0.2:7700", "10.0.0.3:7700"]);
@@ -207,6 +221,7 @@ mod tests {
             owns: Vec::new(),
             bloom_interval_secs: 1,
             data_dir: std::path::PathBuf::from("/tmp"),
+            cluster_key: None,
         };
         assert!(config.peer_addrs().is_empty());
     }
@@ -220,6 +235,7 @@ mod tests {
             owns: Vec::new(),
             bloom_interval_secs: 1,
             data_dir: std::path::PathBuf::from("/tmp"),
+            cluster_key: None,
         };
         assert_eq!(config.peer_addrs(), ["a:1", "b:2"]);
     }

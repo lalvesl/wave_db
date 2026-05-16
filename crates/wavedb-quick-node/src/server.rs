@@ -1,8 +1,10 @@
 //! Axum HTTP + WebSocket server for the Quick-Node.
 //!
-//! Two endpoints:
-//! - `POST /`  — HTTP single-queue transport with piggyback notifications.
-//! - `GET /ws` — WebSocket upgrade for full-duplex, push-capable communication.
+//! Endpoints:
+//! - `POST /`       — HTTP single-queue transport with piggyback notifications.
+//! - `GET /ws`      — WebSocket upgrade for full-duplex, push-capable comms.
+//! - `POST /gossip` — Peer-to-peer gossip (join / withdraw announcements).
+//! - `POST /drain`  — Operator command: start a graceful drain of this node.
 
 use std::sync::Arc;
 
@@ -15,9 +17,11 @@ use axum::routing::{get, post};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 
+use wavedb_net::auth::TokenPurpose;
 use wavedb_net::frame::{decode_payload, encode_payload};
 use wavedb_net::request::{TransportRequest, TransportResponse};
 
+use crate::gossip::{GossipMessage, GossipResponse};
 use crate::node::QuickNode;
 
 // ── Router ────────────────────────────────────────────────────────────────────
@@ -29,6 +33,8 @@ pub fn router(node: QuickNode) -> Router {
     Router::new()
         .route("/", post(handle_http))
         .route("/ws", get(handle_ws_upgrade))
+        .route("/gossip", post(handle_gossip))
+        .route("/drain", post(handle_drain))
         .with_state(Arc::new(node))
 }
 
@@ -90,6 +96,47 @@ async fn handle_ws_session(socket: WebSocket, node: Arc<QuickNode>) {
     }
 }
 
+// ── Gossip handler ────────────────────────────────────────────────────────────
+
+async fn handle_gossip(State(node): State<Arc<QuickNode>>, body: Bytes) -> impl IntoResponse {
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, Bytes::new());
+    }
+    let msg: GossipMessage = match decode_payload(&body) {
+        Ok(m) => m,
+        Err(_) => return (StatusCode::BAD_REQUEST, Bytes::new()),
+    };
+
+    // Reject unsigned messages when a cluster key is configured.
+    if let Some(key) = node.auth_key() {
+        let valid = msg
+            .token
+            .as_ref()
+            .is_some_and(|t| key.verify(t, TokenPurpose::Gossip));
+        if !valid {
+            return (StatusCode::FORBIDDEN, Bytes::new());
+        }
+    }
+
+    let resp: GossipResponse = node.handle_gossip(msg).await;
+    encode_payload(&resp).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+        (StatusCode::OK, b)
+    })
+}
+
+// ── Drain handler ─────────────────────────────────────────────────────────────
+
+/// `POST /drain` — trigger a graceful drain of this Quick-Node.
+///
+/// Sets the draining flag, syncs to the Slow-Node, and fans out a Withdraw
+/// gossip to all peers.  Returns 200 OK once the withdraw gossip is sent;
+/// the operator should then wait for connected clients to redirect before
+/// terminating the process.
+async fn handle_drain(State(node): State<Arc<QuickNode>>) -> impl IntoResponse {
+    node.drain().await;
+    StatusCode::OK
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -112,6 +159,7 @@ mod tests {
             }],
             bloom_interval_secs: 1,
             data_dir: std::path::PathBuf::from("/tmp"),
+            cluster_key: None,
         })
     }
 
