@@ -30,18 +30,22 @@ pub const PER_NODE: usize = NUM_CLIENTS / 3;
 #[derive(Clone)]
 pub struct Counters {
     pub committed: Arc<AtomicU64>,
-    pub dropped:   Arc<AtomicU64>,
+    pub dropped: Arc<AtomicU64>,
 }
 
 impl Counters {
     pub fn new() -> Self {
         Self {
             committed: Arc::new(AtomicU64::new(0)),
-            dropped:   Arc::new(AtomicU64::new(0)),
+            dropped: Arc::new(AtomicU64::new(0)),
         }
     }
-    pub fn total_committed(&self) -> u64 { self.committed.load(Ordering::Relaxed) }
-    pub fn total_dropped(&self)   -> u64 { self.dropped.load(Ordering::Relaxed) }
+    pub fn total_committed(&self) -> u64 {
+        self.committed.load(Ordering::Relaxed)
+    }
+    pub fn total_dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
 }
 
 // ── Launch ────────────────────────────────────────────────────────────────────
@@ -71,8 +75,8 @@ pub async fn launch_continuous(cluster: &TestCluster) -> (Vec<JoinHandle<()>>, C
 
             loop {
                 // Deterministic pseudo-random payload size 64–512 bytes.
-                let payload_len =
-                    64 + ((user_id.wrapping_mul(31).wrapping_add(seq.wrapping_mul(17))) % 449)
+                let payload_len = 64
+                    + ((user_id.wrapping_mul(31).wrapping_add(seq.wrapping_mul(17))) % 449)
                         as usize;
 
                 let mut payload = format!(

@@ -309,7 +309,9 @@ impl QuickNode {
         }
         let payload_len = payload.len() as u64;
         self.inner.write_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.write_bytes.fetch_add(payload_len, Ordering::Relaxed);
+        self.inner
+            .write_bytes
+            .fetch_add(payload_len, Ordering::Relaxed);
         // Route to page by FNV-1a hash of (user, struct_id) so each user/struct
         // pair consistently hits the same page slot, creating realistic hotspots.
         let page_idx = fnv1a_page(user, struct_id, MAX_MAP_PAGES);

@@ -4,8 +4,8 @@
 //!   cargo run --release --bin wavedb-monitor -- --quick-nodes http://127.0.0.1:7700 --slow-node http://127.0.0.1:7800
 //!   nix run .#wavedb_monitor
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use clap::Parser;
 

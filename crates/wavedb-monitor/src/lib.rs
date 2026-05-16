@@ -92,7 +92,9 @@ async fn run_tui(
     _on_quit: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(cfg.refresh_ms.saturating_sub(50).max(200)))
+        .timeout(Duration::from_millis(
+            cfg.refresh_ms.saturating_sub(50).max(200),
+        ))
         .build()?;
 
     enable_raw_mode()?;

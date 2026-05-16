@@ -75,7 +75,10 @@ pub async fn run_continuous(
         ),
     );
     let (client_tasks, counters) = clients::launch_continuous(cluster).await;
-    push_log(log, "  All clients connected — watch the Write IOps sparkline ↑");
+    push_log(
+        log,
+        "  All clients connected — watch the Write IOps sparkline ↑",
+    );
 
     // ── Loop state ────────────────────────────────────────────────────────
     let t_start = Instant::now();
@@ -89,8 +92,7 @@ pub async fn run_continuous(
     flush_tick.tick().await;
 
     // First chaos event fires after 12 s.
-    let mut chaos_at =
-        tokio::time::Instant::now() + Duration::from_secs(12);
+    let mut chaos_at = tokio::time::Instant::now() + Duration::from_secs(12);
 
     // ── Main event loop ───────────────────────────────────────────────────
     loop {

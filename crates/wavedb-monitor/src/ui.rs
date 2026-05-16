@@ -101,7 +101,10 @@ impl AppState {
             .nodes
             .iter()
             .filter_map(|n| {
-                if let NodeEntry::Quick { metrics: Some(m), .. } = n {
+                if let NodeEntry::Quick {
+                    metrics: Some(m), ..
+                } = n
+                {
                     Some(m.write_count)
                 } else {
                     None
@@ -113,7 +116,10 @@ impl AppState {
             .nodes
             .iter()
             .filter_map(|n| {
-                if let NodeEntry::Quick { metrics: Some(m), .. } = n {
+                if let NodeEntry::Quick {
+                    metrics: Some(m), ..
+                } = n
+                {
                     Some(m.read_count)
                 } else {
                     None
@@ -236,7 +242,10 @@ impl AppState {
             .enumerate()
             .filter(|(_, n)| {
                 let mut hay = n.url().to_lowercase();
-                if let NodeEntry::Quick { metrics: Some(m), .. } = n {
+                if let NodeEntry::Quick {
+                    metrics: Some(m), ..
+                } = n
+                {
                     hay.push_str(&format!(" {:016x}", m.node_id));
                 }
                 hay.contains(&q)
@@ -342,7 +351,11 @@ fn render_nodes_table(f: &mut Frame, state: &mut AppState, area: Rect) {
         Cell::from("Flush"),
         Cell::from("Uptime"),
     ])
-    .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    .style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = state
         .snapshot
@@ -390,9 +403,12 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
     };
 
     match n {
-        NodeEntry::Quick { url, metrics, error } => {
-            let type_cell =
-                Cell::from("Quick").style(Style::default().fg(Color::LightGreen));
+        NodeEntry::Quick {
+            url,
+            metrics,
+            error,
+        } => {
+            let type_cell = Cell::from("Quick").style(Style::default().fg(Color::LightGreen));
             match metrics {
                 Some(m) => {
                     let status = if m.is_draining {
@@ -420,36 +436,49 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                     Cell::from(url.clone()).style(Style::default().fg(Color::Red)),
                     Cell::from(if *error { "ERR" } else { "—" })
                         .style(Style::default().fg(Color::Red)),
-                    d(), d(), d(), d(), d(), d(), d(),
+                    d(),
+                    d(),
+                    d(),
+                    d(),
+                    d(),
+                    d(),
+                    d(),
                 ]),
             }
         }
-        NodeEntry::Slow { url, metrics, error } => {
-            let type_cell =
-                Cell::from("Slow").style(Style::default().fg(Color::LightBlue));
+        NodeEntry::Slow {
+            url,
+            metrics,
+            error,
+        } => {
+            let type_cell = Cell::from("Slow").style(Style::default().fg(Color::LightBlue));
             match metrics {
-                Some(m) => {
-                    Row::new(vec![
-                        Cell::from(format!(" {idx} ")).style(match_style),
-                        type_cell,
-                        Cell::from(url.clone()).style(match_style),
-                        Cell::from("OK").style(Style::default().fg(Color::Green)),
-                        d(),
-                        d(),
-                        d(),
-                        d(),
-                        Cell::from(m.record_count.to_string()),
-                        Cell::from(format!("{}", m.flush_count)),
-                        Cell::from(format!("{}s", m.uptime_secs)),
-                    ])
-                }
+                Some(m) => Row::new(vec![
+                    Cell::from(format!(" {idx} ")).style(match_style),
+                    type_cell,
+                    Cell::from(url.clone()).style(match_style),
+                    Cell::from("OK").style(Style::default().fg(Color::Green)),
+                    d(),
+                    d(),
+                    d(),
+                    d(),
+                    Cell::from(m.record_count.to_string()),
+                    Cell::from(format!("{}", m.flush_count)),
+                    Cell::from(format!("{}s", m.uptime_secs)),
+                ]),
                 None => Row::new(vec![
                     Cell::from(format!(" {idx} ")).style(match_style),
                     type_cell,
                     Cell::from(url.clone()).style(Style::default().fg(Color::Red)),
                     Cell::from(if *error { "ERR" } else { "—" })
                         .style(Style::default().fg(Color::Red)),
-                    d(), d(), d(), d(), d(), d(), d(),
+                    d(),
+                    d(),
+                    d(),
+                    d(),
+                    d(),
+                    d(),
+                    d(),
                 ]),
             }
         }
@@ -492,7 +521,9 @@ fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {
         .and_then(|i| state.snapshot.nodes.get(i));
 
     let title = match selected_entry {
-        Some(NodeEntry::Quick { metrics: Some(m), .. }) => {
+        Some(NodeEntry::Quick {
+            metrics: Some(m), ..
+        }) => {
             let i = state.table.selected().unwrap_or(0);
             let mb = m.write_bytes / (1024 * 1024);
             format!(
@@ -514,7 +545,9 @@ fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {
     f.render_widget(block, area);
 
     let page_map = match selected_entry {
-        Some(NodeEntry::Quick { metrics: Some(m), .. }) => &m.page_map,
+        Some(NodeEntry::Quick {
+            metrics: Some(m), ..
+        }) => &m.page_map,
         _ => return,
     };
 
@@ -558,7 +591,10 @@ fn render_system(f: &mut Frame, state: &AppState, area: Rect) {
         .selected()
         .and_then(|i| state.snapshot.nodes.get(i))
         .and_then(|n| {
-            if let NodeEntry::Quick { metrics: Some(m), .. } = n {
+            if let NodeEntry::Quick {
+                metrics: Some(m), ..
+            } = n
+            {
                 Some(m.estimated_memory_bytes / 1024)
             } else {
                 None
@@ -602,8 +638,7 @@ fn render_event_log(f: &mut Frame, state: &AppState, area: Rect) {
         .map(|msg| Line::from(Span::raw(format!("  {msg}"))))
         .collect();
 
-    let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" Events "));
+    let p = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Events "));
     f.render_widget(p, area);
 }
 
@@ -622,8 +657,7 @@ fn render_statusbar(f: &mut Frame, state: &AppState, area: Rect) {
                     state.search_matches.len()
                 )
             } else {
-                "  [j/k] move  [g/G] top/bot  [/] search  [n/N] next/prev  [q] quit"
-                    .to_string()
+                "  [j/k] move  [g/G] top/bot  [/] search  [n/N] next/prev  [q] quit".to_string()
             };
             Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)))
         }
