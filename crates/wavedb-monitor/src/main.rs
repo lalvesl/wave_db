@@ -18,7 +18,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let done = Arc::new(AtomicBool::new(false));
 
     // Standalone mode: TUI runs until the user presses q (done is never set).
-    let handle = wavedb_monitor::run_tui_thread(cfg, log, done);
+    let on_quit = Arc::new(AtomicBool::new(false));
+    let handle = wavedb_monitor::run_tui_thread(cfg, log, done, on_quit);
     handle.join().ok();
     Ok(())
 }

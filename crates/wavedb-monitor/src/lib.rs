@@ -54,16 +54,19 @@ pub fn new_log() -> LogBuffer {
 /// External log messages can be injected via `log`; they appear in the Events
 /// panel on the next render tick.
 ///
-/// The TUI exits when the user presses `q` / `Esc`.  When `done` is set to
-/// `true` the Events panel shows a "stress test complete" banner, but the TUI
-/// stays alive until the user dismisses it.
+/// When `done` is set to `true` the Events panel shows a "scenario complete"
+/// banner, but the TUI stays alive until the user presses `q` / `Esc`.
 ///
-/// Call `handle.join()` after the stress test finishes to wait for the user to
-/// quit before printing any further output.
+/// `on_quit` is set to `true` immediately before the TUI exits — use it as a
+/// shutdown signal for any background scenario loop.
+///
+/// Call `handle.join()` to wait for the terminal to be restored before
+/// printing further output.
 pub fn run_tui_thread(
     cfg: config::Config,
     log: LogBuffer,
     done: Arc<AtomicBool>,
+    on_quit: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -71,10 +74,11 @@ pub fn run_tui_thread(
             .build()
             .expect("TUI runtime");
         rt.block_on(async move {
-            if let Err(e) = run_tui(cfg, log, done).await {
+            if let Err(e) = run_tui(cfg, log, done, on_quit.clone()).await {
                 let _ = disable_raw_mode();
                 eprintln!("TUI error: {e}");
             }
+            on_quit.store(true, Ordering::Release);
         });
     })
 }
@@ -85,6 +89,7 @@ async fn run_tui(
     cfg: config::Config,
     log: LogBuffer,
     done: Arc<AtomicBool>,
+    _on_quit: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(cfg.refresh_ms.saturating_sub(50).max(200)))

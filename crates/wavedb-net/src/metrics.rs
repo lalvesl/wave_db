@@ -15,6 +15,14 @@ pub struct MetricsRequest {
     pub token: Option<NodeToken>,
 }
 
+/// Page size used by the storage engine (4 KiB).
+pub const HEAP_PAGE_SIZE: u64 = 4096;
+
+/// Maximum pages reported in [`QuickNodeMetrics::page_map`].
+///
+/// Each byte encodes the occupancy of one page (0 = empty, 255 = full).
+pub const MAX_MAP_PAGES: usize = 512;
+
 /// Snapshot of a Quick-Node's operational state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuickNodeMetrics {
@@ -34,6 +42,17 @@ pub struct QuickNodeMetrics {
     pub read_count: u64,
     /// Seconds elapsed since this node started.
     pub uptime_secs: u64,
+    /// Total bytes of write payloads processed since startup.
+    pub write_bytes: u64,
+    /// Theoretical heap page count derived from `write_bytes / HEAP_PAGE_SIZE`.
+    pub page_count: u64,
+    /// Per-page occupancy map: each byte is 0 (empty) – 255 (full).
+    ///
+    /// At most [`MAX_MAP_PAGES`] entries.  The last entry may be partially
+    /// filled (< 255) when `write_bytes` is not a multiple of the page size.
+    pub page_map: Vec<u8>,
+    /// Rough in-memory footprint estimate (write_bytes + structural overhead).
+    pub estimated_memory_bytes: u64,
 }
 
 /// Snapshot of a Slow-Node's operational state.
@@ -47,4 +66,6 @@ pub struct SlowNodeMetrics {
     pub flush_count: u64,
     /// Seconds elapsed since this node started.
     pub uptime_secs: u64,
+    /// Estimated journal file size (record_count × ~300 B overhead).
+    pub journal_estimated_bytes: u64,
 }

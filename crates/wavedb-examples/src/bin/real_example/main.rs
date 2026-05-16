@@ -1,4 +1,5 @@
-//! Real-world scenario: payment gateway under high load with cascading node failures.
+//! Real-world scenario: payment gateway under sustained, randomised high load
+//! with periodic cascading node failures.
 //!
 //! # Architecture
 //!
@@ -6,23 +7,23 @@
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │  Quick-Node[0]  ─┐                                          │
 //! │  Quick-Node[1]  ─┼── tenant 100 (payment service hot data)  │
-//! │  Quick-Node[2]  ─┘                                          │
+//! │  Quick-Node[2]  ─┘  (never drained — guaranteed survivor)   │
 //! │        │                                                     │
-//! │        ▼  flush on drain                                     │
+//! │        ▼  flush every 10 s                                   │
 //! │  Slow-Node  ── audit trail (durable versioned history)       │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 //!
-//! # Scenario
+//! # Continuous scenario
 //!
-//! | Time   | Event                                              |
-//! |--------|----------------------------------------------------|
-//! | t=0    | 39 payment-processor clients connect and write     |
-//! | t=100ms| quick-node[0] drains (hardware replacement)        |
-//! | t=200ms| quick-node[1] drains (cascading failure)           |
-//! | t~300ms| All client tasks finish; counters collected         |
-//! | flush  | Committed records pushed to slow-node audit log     |
-//! | verify | Slow-node holds 100% of committed payments          |
+//! - 39 clients write indefinitely with per-client jitter (3–25 ms) and
+//!   pseudo-random payload sizes (64–512 B).
+//! - Every ~12–18 s a chaos step drains node[0] or node[1] (alternating),
+//!   simulating a hardware replacement event.  Clients on the drained node
+//!   stop; the load continues on the surviving nodes.
+//! - Every 10 s committed writes are flushed to the Slow-Node audit log.
+//! - The TUI monitor shows live IOps sparklines, ring-size changes, slow-node
+//!   record counts, and process memory / CPU.
 //!
 //! Run with:
 //!   cargo run --release --bin real_example
@@ -39,7 +40,7 @@ use std::time::{Duration, Instant};
 use wavedb_monitor::{LogBuffer, new_log, push_log, run_tui_thread};
 use wavedb_test_cluster::{ClusterSpec, TestCluster};
 
-pub const TENANT: u64 = 100; // payment service
+pub const TENANT: u64 = 100;
 
 fn sep(title: &str) {
     println!(
@@ -48,108 +49,127 @@ fn sep(title: &str) {
     );
 }
 
-// ── Scenario result ───────────────────────────────────────────────────────────
+// ── Continuous scenario ───────────────────────────────────────────────────────
 
-pub struct ScenarioResult {
-    pub committed: u64,
-    pub dropped: u64,
-    pub attempted: u64,
-    pub elapsed: Duration,
-    pub batch_count: u64,
-}
-
-// ── Core scenario (no TUI, no direct stdout) ──────────────────────────────────
-
-/// Run the full stress-test against an already-spawned `cluster`.
+/// Run continuous load against `cluster` until `quit` is set to `true`.
 ///
-/// All output goes into `log` (shown in the TUI Events panel).  No `println!`
-/// calls inside — safe to run while the TUI owns stdout.
-pub async fn run_scenario(
+/// Uses a single `tokio::select!` loop so all background tasks (checkpoint
+/// logging, chaos injection, slow-node flush) share `&cluster` without
+/// needing a separate Arc or Mutex.
+///
+/// Returns `(total_committed, total_dropped)`.
+pub async fn run_continuous(
     cluster: &TestCluster,
     log: &LogBuffer,
-) -> Result<ScenarioResult, Box<dyn std::error::Error>> {
-    // ── Client launch ─────────────────────────────────────────────────────
+    quit: Arc<AtomicBool>,
+) -> (u64, u64) {
+    // ── Connect clients ───────────────────────────────────────────────────
     push_log(
         log,
         format!(
-            "  {} clients connecting — {} writes each",
+            "  {} clients starting — {}/{}/{} on node[0/1/2] — random 64–512 B payloads",
             clients::NUM_CLIENTS,
-            clients::WRITES_PER_CLIENT,
+            clients::PER_NODE,
+            clients::PER_NODE,
+            clients::NUM_CLIENTS - clients::PER_NODE * 2,
         ),
     );
+    let (client_tasks, counters) = clients::launch_continuous(cluster).await;
+    push_log(log, "  All clients connected — watch the Write IOps sparkline ↑");
 
-    let (tasks, counters) = clients::launch(cluster).await;
-    push_log(log, "  All clients connected and writing…");
+    // ── Loop state ────────────────────────────────────────────────────────
+    let t_start = Instant::now();
+    let mut flushed_count: u64 = 0;
+    let mut flush_write_seq: u64 = 1;
+    let mut chaos_step: usize = 0;
 
-    // ── Failure injection (concurrent with client tasks) ──────────────────
-    let qn0 = cluster.quick_nodes[0].node.clone();
-    let qn1 = cluster.quick_nodes[1].node.clone();
-    let log_fail = log.clone();
-    let fail_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        push_log(&log_fail, "  [t=100ms] DRAIN quick-node[0]  (hardware replacement)");
-        qn0.drain().await;
+    let mut checkpoint = tokio::time::interval(Duration::from_secs(4));
+    let mut flush_tick = tokio::time::interval(Duration::from_secs(10));
+    checkpoint.tick().await; // discard immediate first tick
+    flush_tick.tick().await;
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        push_log(&log_fail, "  [t=200ms] DRAIN quick-node[1]  (cascading failure)");
-        qn1.drain().await;
+    // First chaos event fires after 12 s.
+    let mut chaos_at =
+        tokio::time::Instant::now() + Duration::from_secs(12);
 
-        push_log(
-            &log_fail,
-            format!(
-                "  [t=200ms] node[0] draining: {}  node[1] draining: {}",
-                qn0.is_draining(),
-                qn1.is_draining(),
-            ),
-        );
-    });
+    // ── Main event loop ───────────────────────────────────────────────────
+    loop {
+        tokio::select! {
+            // Quit-check: 50 ms polling so we don't spin but also don't lag.
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                if quit.load(Ordering::Relaxed) { break; }
+            }
 
-    // ── Wait for all tasks ────────────────────────────────────────────────
-    let t0 = Instant::now();
-    fail_task.await?;
-    for t in tasks {
-        let _ = t.await;
+            // Checkpoint: log cumulative counters every 4 s.
+            _ = checkpoint.tick() => {
+                if quit.load(Ordering::Relaxed) { break; }
+                push_log(
+                    log,
+                    format!(
+                        "  [{:>4}s] committed: {}  dropped: {}",
+                        t_start.elapsed().as_secs(),
+                        counters.total_committed(),
+                        counters.total_dropped(),
+                    ),
+                );
+            }
+
+            // Flush: push newly committed writes to the slow-node every 10 s.
+            _ = flush_tick.tick() => {
+                if quit.load(Ordering::Relaxed) { break; }
+                let total = counters.total_committed();
+                flush_write_seq = slow_node::flush_incremental(
+                    cluster,
+                    flushed_count,
+                    total,
+                    flush_write_seq,
+                    log,
+                )
+                .await;
+                flushed_count = total;
+            }
+
+            // Chaos: drain node[0] or node[1] on a staggered schedule.
+            _ = tokio::time::sleep_until(chaos_at) => {
+                if quit.load(Ordering::Relaxed) { break; }
+                let node_idx = chaos_step % 2; // alternates 0 → 1 → 0 → …
+                let node = &cluster.quick_nodes[node_idx].node;
+                if !node.is_draining() {
+                    push_log(
+                        log,
+                        format!("  ── CHAOS: DRAIN quick-node[{node_idx}]  (hardware replacement)"),
+                    );
+                    node.drain().await;
+                    push_log(
+                        log,
+                        format!(
+                            "  ── node[{node_idx}] draining: {}  ring shrinking…",
+                            node.is_draining()
+                        ),
+                    );
+                }
+                chaos_step += 1;
+                // Next chaos event: 14 s + small step-based variation.
+                let next_secs = 14 + (chaos_step as u64 % 5);
+                chaos_at = tokio::time::Instant::now() + Duration::from_secs(next_secs);
+            }
+        }
     }
-    let elapsed = t0.elapsed();
 
-    // ── Collect write results ─────────────────────────────────────────────
+    // ── Cleanup ───────────────────────────────────────────────────────────
+    for t in &client_tasks {
+        t.abort();
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
     let committed = counters.total_committed();
     let dropped = counters.total_dropped();
-    let attempted = (clients::NUM_CLIENTS * clients::WRITES_PER_CLIENT) as u64;
-
-    push_log(log, format!("  Elapsed              : {:.0}ms", elapsed.as_millis()));
-    push_log(log, format!("  Writes attempted     : {attempted}"));
-    push_log(log, format!("  Writes committed     : {committed}"));
-    push_log(log, format!("  Writes dropped       : {dropped}"));
     push_log(
         log,
-        format!(
-            "  node[2] surviving    : {}",
-            !cluster.quick_nodes[2].node.is_draining()
-        ),
+        format!("  Final — committed: {committed}  dropped: {dropped}"),
     );
 
-    assert!(committed > 0, "at least node[2] clients must commit writes");
-    assert!(
-        committed + dropped == attempted,
-        "committed + dropped must equal attempted"
-    );
-
-    // ── Slow-node audit flush ─────────────────────────────────────────────
-    push_log(log, "── Flushing audit trail to slow-node ──────────────────");
-    let batch_count = slow_node::flush_audit_trail(cluster, committed, log).await;
-
-    // ── Slow-node verification ────────────────────────────────────────────
-    push_log(log, "── Verifying slow-node audit log ───────────────────────");
-    slow_node::verify_and_print(cluster, committed, batch_count, log);
-
-    Ok(ScenarioResult {
-        committed,
-        dropped,
-        attempted,
-        elapsed,
-        batch_count,
-    })
+    (committed, dropped)
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -157,10 +177,10 @@ pub async fn run_scenario(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║     WaveDB — Payment Gateway High-Load Stress Test       ║");
+    println!("║     WaveDB — Payment Gateway Continuous Load Test        ║");
     println!("╚══════════════════════════════════════════════════════════╝");
 
-    // ── Cluster spawn (normal stdout, before TUI takes over) ──────────────
+    // ── Cluster spawn ─────────────────────────────────────────────────────
     sep("Spawning cluster");
 
     let cluster = TestCluster::spawn(ClusterSpec {
@@ -174,12 +194,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  slow-node       {}", cluster.slow_node.http_url());
     println!("  tenant          {TENANT}  (payment service)");
     println!();
-    println!("  Starting live monitor — press  q  to exit and see summary.");
+    println!("  Starting live monitor TUI — press  q  to stop and see summary.");
 
-    // Brief pause so HTTP servers are fully up before TUI starts polling.
+    // Brief pause so HTTP servers are up before the TUI starts polling.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // ── Build monitor config from cluster URLs ────────────────────────────
+    // ── Monitor config from live cluster ──────────────────────────────────
     let monitor_cfg = wavedb_monitor::config::Config {
         quick_node_urls: cluster.quick_nodes.iter().map(|n| n.http_url()).collect(),
         slow_node_url: cluster.slow_node.http_url(),
@@ -188,47 +208,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let log: LogBuffer = new_log();
-    let done = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false)); // never set — TUI lives until 'q'
+    let on_quit = Arc::new(AtomicBool::new(false)); // set by TUI on 'q' → stops scenario
 
-    // ── Start TUI in background thread (takes over stdout) ────────────────
-    let tui_handle = run_tui_thread(monitor_cfg, log.clone(), done.clone());
+    // ── TUI takes over stdout ─────────────────────────────────────────────
+    let tui_handle = run_tui_thread(monitor_cfg, log.clone(), done, on_quit.clone());
 
-    // ── Run stress test (sends all output to log → TUI Events panel) ──────
-    let result = run_scenario(&cluster, &log).await?;
+    // ── Continuous load (returns when on_quit fires) ───────────────────────
+    let t_start = Instant::now();
+    let (committed, dropped) = run_continuous(&cluster, &log, on_quit).await;
+    let elapsed = t_start.elapsed();
 
-    // Signal TUI: scenario done, display final state (user presses q to exit).
-    done.store(true, Ordering::Release);
-
-    // Wait for user to press q → TUI exits → terminal restored.
+    // User pressed q → TUI already exiting → join for terminal restore.
     tui_handle.join().ok();
 
-    // ── Print summary (after terminal is restored) ────────────────────────
+    // ── Summary ───────────────────────────────────────────────────────────
     sep("Summary");
 
-    let survivor_writes =
-        (clients::NUM_CLIENTS - clients::PER_NODE * 2) * clients::WRITES_PER_CLIENT;
-
-    println!("  Clients             : {}", clients::NUM_CLIENTS);
-    println!("  Writes attempted    : {}", result.attempted);
-    println!("  Writes committed    : {}", result.committed);
+    println!("  Duration            : {:.1}s", elapsed.as_secs_f64());
+    println!("  Writes committed    : {committed}");
+    println!("  Writes dropped      : {dropped}  (clients on drained nodes)");
     println!(
-        "  Writes dropped      : {}  (2/3 of nodes lost mid-flight)",
-        result.dropped
+        "  Throughput (avg)    : {:.0} writes/s",
+        committed as f64 / elapsed.as_secs_f64().max(0.001)
     );
-    println!(
-        "  Audit records       : {}  (100% of committed)",
-        result.committed
-    );
-    println!(
-        "  Min expected commits: {survivor_writes}  (node[2] alone)"
-    );
-    println!("  Data loss           : 0  (slow-node holds full audit trail)");
     println!();
-    println!("✓  All assertions passed — payment gateway scenario complete.");
+    println!("✓  Continuous load test complete.");
 
-    // ── Shutdown ──────────────────────────────────────────────────────────
     cluster.shutdown().await;
-
     Ok(())
 }
 
@@ -238,8 +245,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
+    /// Headless smoke-test: run continuous load for 600 ms then stop.
     #[tokio::test]
-    async fn test_scenario_headless() {
+    async fn test_continuous_headless() {
         let cluster = TestCluster::spawn(ClusterSpec {
             num_quick_nodes: 3,
             owned_tenant: TENANT,
@@ -248,7 +256,17 @@ mod tests {
         .await;
 
         let log = new_log();
-        run_scenario(&cluster, &log).await.unwrap();
+        let quit = Arc::new(AtomicBool::new(false));
+        let quit_timer = quit.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            quit_timer.store(true, Ordering::Release);
+        });
+
+        let (committed, _dropped) = run_continuous(&cluster, &log, quit).await;
+        assert!(committed > 0, "must have at least one committed write");
+
         cluster.shutdown().await;
     }
 }
