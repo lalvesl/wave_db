@@ -128,6 +128,7 @@ where
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tenant = 42u64;
 

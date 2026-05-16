@@ -13,23 +13,8 @@ pub fn build_shape(args: &WaveDbArgs) -> proc_macro2::TokenStream {
     }
 }
 
-/// Generate the `FooId` and `FooAnchor` typed wrapper types for a struct.
-///
-/// `FooId` wraps a raw `Id` with a struct-specific phantom type so cross-references
-/// between unrelated record families are caught at compile time.
-/// `FooAnchor` enforces the anchor-key invariant (`CREATED_AT = 0`) via its
-/// `From<Id>` implementation, which always calls `anchor_key()`.
-pub fn build_typed_wrappers(
-    name: &Ident,
-    args: &WaveDbArgs,
-    vis: &syn::Visibility,
-) -> proc_macro2::TokenStream {
-    let id_name = format_ident!("{}Id", name);
-    let anchor_name = format_ident!("{}Anchor", name);
-
-    // `get` for a typed ID: find the record whose raw `id` equals the stored ID.
-    // For Unique records there is only one per tenant, so `search` is used instead.
-    let get_by_id = if args.non_unique || args.nested_non_unique {
+fn build_get_by_id(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStream {
+    if args.non_unique || args.nested_non_unique {
         quote! {
             /// Fetch the record whose `id` matches this typed ID.
             ///
@@ -61,12 +46,11 @@ pub fn build_typed_wrappers(
                 <#name as ::wavedb::object::UniqueObject>::search(db).await
             }
         }
-    };
+    }
+}
 
-    // `get` for a typed Anchor: find the record whose `anchor_key()` matches.
-    // This is stable across record mutations — the anchor always resolves to the
-    // current live version without a history walk.
-    let get_by_anchor = if args.non_unique || args.nested_non_unique {
+fn build_get_by_anchor(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStream {
+    if args.non_unique || args.nested_non_unique {
         quote! {
             /// Fetch the live record at this anchor address.
             ///
@@ -98,7 +82,25 @@ pub fn build_typed_wrappers(
                 <#name as ::wavedb::object::UniqueObject>::search(db).await
             }
         }
-    };
+    }
+}
+
+/// Generate the `FooId` and `FooAnchor` typed wrapper types for a struct.
+///
+/// `FooId` wraps a raw `Id` with a struct-specific phantom type so cross-references
+/// between unrelated record families are caught at compile time.
+/// `FooAnchor` enforces the anchor-key invariant (`CREATED_AT = 0`) via its
+/// `From<Id>` implementation, which always calls `anchor_key()`.
+pub fn build_typed_wrappers(
+    name: &Ident,
+    args: &WaveDbArgs,
+    vis: &syn::Visibility,
+) -> proc_macro2::TokenStream {
+    let id_name = format_ident!("{}Id", name);
+    let anchor_name = format_ident!("{}Anchor", name);
+
+    let get_by_id = build_get_by_id(name, args);
+    let get_by_anchor = build_get_by_anchor(name, args);
 
     quote! {
         /// Typed `Id` wrapper for [`#name`] records.

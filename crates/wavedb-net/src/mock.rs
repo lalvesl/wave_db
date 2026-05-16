@@ -235,7 +235,7 @@ mod channel {
                 .expect("ChannelTransport dropped before MockServer finished")
         }
 
-        fn ok_response(seq: u64, payload: Vec<u8>) -> TransportResponse {
+        const fn ok_response(seq: u64, payload: Vec<u8>) -> TransportResponse {
             TransportResponse {
                 seq,
                 payload,
