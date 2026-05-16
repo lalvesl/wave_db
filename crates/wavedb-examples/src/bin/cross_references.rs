@@ -49,18 +49,20 @@ use wavedb_net::mock::ScriptedReply;
 pub struct Citizen1 {
     pub name: String,
     /// Typed anchor of this citizen's `Passport`.
-    pub passport_anchor: Passport1Anchor,
+    pub passport_anchor: PassportAnchor,
 }
 pub type Citizen = Citizen1;
+pub type CitizenAnchor = Citizen1Anchor;
 
 #[wave_db(struct_id = 61, NonUnique)]
 #[derive(PartialEq, Eq)]
 pub struct Passport1 {
     pub number: String,
     /// Typed anchor of the owning `Citizen`.
-    pub citizen_anchor: Citizen1Anchor,
+    pub citizen_anchor: CitizenAnchor,
 }
 pub type Passport = Passport1;
+pub type PassportAnchor = Passport1Anchor;
 
 // ── 2. Single-to-Many (1:N) — Company → Employees ────────────────────────────
 
@@ -70,13 +72,14 @@ pub struct Company1 {
     pub name: String,
 }
 pub type Company = Company1;
+pub type CompanyAnchor = Company1Anchor;
 
 #[wave_db(struct_id = 63, NonUnique)]
 #[derive(PartialEq, Eq)]
 pub struct Worker1 {
     pub name: String,
     /// Typed anchor of the `Company` this worker belongs to.
-    pub company_anchor: Company1Anchor,
+    pub company_anchor: CompanyAnchor,
 }
 pub type Worker = Worker1;
 
@@ -88,6 +91,7 @@ pub struct Student1 {
     pub name: String,
 }
 pub type Student = Student1;
+pub type StudentAnchor = Student1Anchor;
 
 #[wave_db(struct_id = 65, NonUnique)]
 #[derive(PartialEq, Eq)]
@@ -95,6 +99,7 @@ pub struct Course1 {
     pub title: String,
 }
 pub type Course = Course1;
+pub type CourseAnchor = Course1Anchor;
 
 /// Junction record for the M:N Student ↔ Course relationship.
 ///
@@ -103,8 +108,8 @@ pub type Course = Course1;
 #[wave_db(struct_id = 66, NonUnique)]
 #[derive(PartialEq, Eq)]
 pub struct Enrollment1 {
-    pub student_anchor: Student1Anchor,
-    pub course_anchor: Course1Anchor,
+    pub student_anchor: StudentAnchor,
+    pub course_anchor: CourseAnchor,
 }
 pub type Enrollment = Enrollment1;
 
