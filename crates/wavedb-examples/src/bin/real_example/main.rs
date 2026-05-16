@@ -203,7 +203,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Monitor config from live cluster ──────────────────────────────────
     let monitor_cfg = wavedb_monitor::config::Config {
-        quick_node_urls: cluster.quick_nodes.iter().map(QuickNodeHandle::http_url).collect(),
+        quick_node_urls: cluster
+            .quick_nodes
+            .iter()
+            .map(QuickNodeHandle::http_url)
+            .collect(),
         slow_node_urls: vec![cluster.slow_node.http_url()],
         cluster_key: None,
         refresh_ms: 400,
@@ -232,10 +236,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Writes dropped      : {dropped}  (clients on drained nodes)");
     #[allow(clippy::cast_precision_loss)]
     let throughput = committed as f64 / elapsed.as_secs_f64().max(0.001);
-    println!(
-        "  Throughput (avg)    : {:.0} writes/s",
-        throughput
-    );
+    println!("  Throughput (avg)    : {throughput:.0} writes/s");
     println!();
     println!("✓  Continuous load test complete.");
 
