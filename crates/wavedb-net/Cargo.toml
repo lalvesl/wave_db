@@ -27,6 +27,8 @@ thiserror.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true
 fastbloom.workspace = true
+hmac.workspace = true
+sha2.workspace = true
 # Native-only transports
 tokio = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, optional = true }
