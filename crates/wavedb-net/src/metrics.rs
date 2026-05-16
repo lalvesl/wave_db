@@ -72,6 +72,8 @@ pub struct SlowNodeMetrics {
     pub flush_count: u64,
     /// Seconds elapsed since this node started.
     pub uptime_secs: u64,
-    /// Estimated journal file size (record_count × ~300 B overhead).
-    pub journal_estimated_bytes: u64,
+    /// Actual journal file size in bytes (from `fs::metadata`).
+    pub journal_bytes: u64,
+    /// Estimated in-memory index size in bytes (key + serialized value per record).
+    pub index_bytes: u64,
 }

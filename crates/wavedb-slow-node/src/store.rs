@@ -144,6 +144,21 @@ impl HistoryStore {
     pub fn flush_count(&self) -> u64 {
         self.flush_count.load(Ordering::Relaxed)
     }
+
+    /// Actual journal file size on disk (0 for in-memory stores).
+    pub fn journal_bytes(&self) -> u64 {
+        self.inner.lock().journal.file_bytes()
+    }
+
+    /// Estimated in-memory index size: key (24 B) + serialized value per record.
+    pub fn index_bytes(&self) -> u64 {
+        self.inner
+            .lock()
+            .index
+            .values()
+            .map(|v| v.len() as u64 + 24)
+            .sum()
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -165,6 +165,14 @@ impl Journal {
         self.entries.is_empty()
     }
 
+    /// Actual size of the journal file on disk; 0 for in-memory journals.
+    pub fn file_bytes(&self) -> u64 {
+        if self.path.as_os_str().is_empty() {
+            return 0;
+        }
+        std::fs::metadata(&self.path).map_or(0, |m| m.len())
+    }
+
     /// Truncate the journal, removing all entries up to and including
     /// the given checkpoint sequence.
     pub fn truncate_through(&mut self, through_sequence: u64) {

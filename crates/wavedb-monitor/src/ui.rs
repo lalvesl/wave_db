@@ -356,6 +356,8 @@ fn render_nodes_table(f: &mut Frame, state: &mut AppState, area: Rect) {
         Cell::from("Reads"),
         Cell::from("Records"),
         Cell::from("Flush"),
+        Cell::from("Mem"),
+        Cell::from("Disk"),
         Cell::from("Uptime"),
     ])
     .style(
@@ -383,6 +385,8 @@ fn render_nodes_table(f: &mut Frame, state: &mut AppState, area: Rect) {
         Constraint::Length(8),  // Reads
         Constraint::Length(8),  // Records
         Constraint::Length(6),  // Flush
+        Constraint::Length(7),  // Mem
+        Constraint::Length(7),  // Disk
         Constraint::Length(8),  // Uptime
     ];
 
@@ -400,6 +404,19 @@ fn render_nodes_table(f: &mut Frame, state: &mut AppState, area: Rect) {
 
 fn d() -> Cell<'static> {
     Cell::from("—")
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn human_bytes(b: u64) -> String {
+    if b >= 1024 * 1024 * 1024 {
+        format!("{:.1}G", b as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if b >= 1024 * 1024 {
+        format!("{:.1}M", b as f64 / (1024.0 * 1024.0))
+    } else if b >= 1024 {
+        format!("{:.1}K", b as f64 / 1024.0)
+    } else {
+        format!("{b}B")
+    }
 }
 
 fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
@@ -434,6 +451,9 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                         Cell::from(m.read_count.to_string()),
                         d(),
                         d(),
+                        Cell::from(human_bytes(m.estimated_memory_bytes))
+                            .style(Style::default().fg(Color::Cyan)),
+                        d(),
                         Cell::from(format!("{}s", m.uptime_secs)),
                     ])
                 }
@@ -443,6 +463,8 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                     Cell::from(url.clone()).style(Style::default().fg(Color::Red)),
                     Cell::from(if *error { "ERR" } else { "—" })
                         .style(Style::default().fg(Color::Red)),
+                    d(),
+                    d(),
                     d(),
                     d(),
                     d(),
@@ -471,6 +493,10 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                     d(),
                     Cell::from(m.record_count.to_string()),
                     Cell::from(format!("{}", m.flush_count)),
+                    Cell::from(human_bytes(m.index_bytes))
+                        .style(Style::default().fg(Color::Cyan)),
+                    Cell::from(human_bytes(m.journal_bytes))
+                        .style(Style::default().fg(Color::Yellow)),
                     Cell::from(format!("{}s", m.uptime_secs)),
                 ]),
                 None => Row::new(vec![
@@ -479,6 +505,8 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                     Cell::from(url.clone()).style(Style::default().fg(Color::Red)),
                     Cell::from(if *error { "ERR" } else { "—" })
                         .style(Style::default().fg(Color::Red)),
+                    d(),
+                    d(),
                     d(),
                     d(),
                     d(),
