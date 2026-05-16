@@ -45,9 +45,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         InvoiceLine::SHAPE,
     );
 
-    let invoice = Invoice { customer: 7, total_cents: 3000, ..Default::default() };
-    let line_a = InvoiceLine { product: 101, quantity: 2, unit_cents: 1000, ..Default::default() };
-    let line_b = InvoiceLine { product: 202, quantity: 1, unit_cents: 1000, ..Default::default() };
+    let invoice = Invoice {
+        customer: 7,
+        total_cents: 3000,
+        ..Default::default()
+    };
+    let line_a = InvoiceLine {
+        product: 101,
+        quantity: 2,
+        unit_cents: 1000,
+        ..Default::default()
+    };
+    let line_b = InvoiceLine {
+        product: 202,
+        quantity: 1,
+        unit_cents: 1000,
+        ..Default::default()
+    };
     let invoices = vec![invoice.clone()];
     let lines = vec![line_a.clone(), line_b.clone()];
 
@@ -65,12 +79,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (transport, mut server) = ChannelTransport::pair();
     tokio::spawn(async move {
-        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
-        server.reply_ok_n(3).await;                              // write invoice, line_a, line_b
-        server.reply_data(encode_query(&invoices)).await;        // query invoices
+        server
+            .reply_connect("ws://owner:7700", "ws://backup:7700")
+            .await;
+        server.reply_ok_n(3).await; // write invoice, line_a, line_b
+        server.reply_data(encode_query(&invoices)).await; // query invoices
         // Production routes this to the parent invoice's subtree, not a global
         // InvoiceLine index (which doesn't exist — InvoiceLine is NestedNonUnique).
-        server.reply_data(encode_query(&lines)).await;           // query lines through parent
+        server.reply_data(encode_query(&lines)).await; // query lines through parent
     });
 
     let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;

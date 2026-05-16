@@ -28,12 +28,32 @@ pub type Order = Order1;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let orders_all = vec![
-        Order { amount: 50,  customer: 1, ..Default::default() },
-        Order { amount: 150, customer: 2, ..Default::default() },
-        Order { amount: 200, customer: 3, ..Default::default() },
+        Order {
+            amount: 50,
+            customer: 1,
+            ..Default::default()
+        },
+        Order {
+            amount: 150,
+            customer: 2,
+            ..Default::default()
+        },
+        Order {
+            amount: 200,
+            customer: 3,
+            ..Default::default()
+        },
     ];
-    let orders_filtered: Vec<Order> = orders_all.iter().filter(|o| o.amount > 100).cloned().collect();
-    let orders_after_delete: Vec<Order> = orders_all.iter().filter(|o| o.amount != 150).cloned().collect();
+    let orders_filtered: Vec<Order> = orders_all
+        .iter()
+        .filter(|o| o.amount > 100)
+        .cloned()
+        .collect();
+    let orders_after_delete: Vec<Order> = orders_all
+        .iter()
+        .filter(|o| o.amount != 150)
+        .cloned()
+        .collect();
 
     let encode_query = |records: &[Order]| -> Vec<u8> {
         let entries: Vec<(u8, Vec<u8>)> = records
@@ -49,12 +69,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (transport, mut server) = ChannelTransport::pair();
     tokio::spawn(async move {
-        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
-        server.reply_ok_n(3).await;                   // 3 writes
-        server.reply_data(enc_all).await;             // query all
-        server.reply_data(enc_filtered).await;        // query amount > 100
-        server.reply_ok().await;                      // delete
-        server.reply_data(enc_after).await;           // query after delete
+        server
+            .reply_connect("ws://owner:7700", "ws://backup:7700")
+            .await;
+        server.reply_ok_n(3).await; // 3 writes
+        server.reply_data(enc_all).await; // query all
+        server.reply_data(enc_filtered).await; // query amount > 100
+        server.reply_ok().await; // delete
+        server.reply_data(enc_after).await; // query after delete
     });
 
     let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;

@@ -62,11 +62,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   6. search → Some(updated_profile)
     let (transport, mut server) = ChannelTransport::pair();
     tokio::spawn(async move {
-        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
-        server.reply_data(Vec::new()).await;   // search → absent
-        server.reply_ok().await;               // save (create)
-        server.reply_data(serialized).await;   // search → new_profile
-        server.reply_ok().await;               // save (update bio)
+        server
+            .reply_connect("ws://owner:7700", "ws://backup:7700")
+            .await;
+        server.reply_data(Vec::new()).await; // search → absent
+        server.reply_ok().await; // save (create)
+        server.reply_data(serialized).await; // search → new_profile
+        server.reply_ok().await; // save (update bio)
         server.reply_data(serialized_updated).await; // search → updated_profile
     });
 

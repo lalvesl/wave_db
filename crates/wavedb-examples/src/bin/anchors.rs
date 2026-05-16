@@ -81,14 +81,23 @@ where
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("== Employee (custom anchors) ==");
-    println!("  primary_anchor_field    = {:?}", Employee::primary_anchor_field());
-    println!("  SECONDARY_ANCHOR_FIELDS = {:?}", Employee::SECONDARY_ANCHOR_FIELDS);
+    println!(
+        "  primary_anchor_field    = {:?}",
+        Employee::primary_anchor_field()
+    );
+    println!(
+        "  SECONDARY_ANCHOR_FIELDS = {:?}",
+        Employee::SECONDARY_ANCHOR_FIELDS
+    );
     println!("  BTREE_THRESHOLD         = {}", Employee::BTREE_THRESHOLD);
     println!("  SHAPE                   = {:?}", Employee::SHAPE);
     println!("  STRUCT_ID               = {}", Employee::STRUCT_ID);
 
     assert_eq!(Employee::primary_anchor_field(), "username");
-    assert_eq!(Employee::SECONDARY_ANCHOR_FIELDS, &["email", "department, employee_number"]);
+    assert_eq!(
+        Employee::SECONDARY_ANCHOR_FIELDS,
+        &["email", "department, employee_number"]
+    );
     assert_eq!(Employee::BTREE_THRESHOLD, 32);
 
     println!();
@@ -121,12 +130,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (transport, mut server) = ChannelTransport::pair();
     tokio::spawn(async move {
-        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
-        server.reply_ok_n(2).await;                        // write alice, bob
-        server.reply_data(enc_just_alice.clone()).await;   // query username == "alice"
-        server.reply_data(enc_just_alice.clone()).await;   // query email == "alice@..."
-        server.reply_data(enc_just_alice).await;           // query (department, employee_number)
-        server.reply_data(enc_everyone).await;             // query all
+        server
+            .reply_connect("ws://owner:7700", "ws://backup:7700")
+            .await;
+        server.reply_ok_n(2).await; // write alice, bob
+        server.reply_data(enc_just_alice.clone()).await; // query username == "alice"
+        server.reply_data(enc_just_alice.clone()).await; // query email == "alice@..."
+        server.reply_data(enc_just_alice).await; // query (department, employee_number)
+        server.reply_data(enc_everyone).await; // query all
     });
 
     let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;
@@ -154,7 +165,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     assert_eq!(by_dep_num.len(), 1);
-    println!("by (department, employee_number) → {}", by_dep_num[0].display_name);
+    println!(
+        "by (department, employee_number) → {}",
+        by_dep_num[0].display_name
+    );
 
     let all = Employee::query(&db, Expr::all()).await?;
     assert_eq!(all.len(), 2);

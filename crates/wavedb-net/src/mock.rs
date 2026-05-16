@@ -246,11 +246,7 @@ mod channel {
         }
 
         /// Consume the next request and reply with a `Connect` handshake.
-        pub async fn reply_connect(
-            &mut self,
-            owner: impl Into<String>,
-            backup: impl Into<String>,
-        ) {
+        pub async fn reply_connect(&mut self, owner: impl Into<String>, backup: impl Into<String>) {
             let (req, tx) = self.take().await;
             let _ = tx.send(Ok(TransportResponse {
                 seq: req.seq,

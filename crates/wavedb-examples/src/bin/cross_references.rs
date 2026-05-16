@@ -255,15 +255,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (transport, mut server) = ChannelTransport::pair();
     tokio::spawn(async move {
-        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
-        server.reply_ok_n(3).await;                    // 1:1 — write citizen_v1, passport, citizen_v2
-        server.reply_data(enc_citizen_v2).await;       // 1:1 — query → live (v2) citizen
-        server.reply_ok_n(3).await;                    // 1:N — write company, worker_alice, worker_bob
-        server.reply_data(enc_workers).await;          // 1:N — query all workers
-        server.reply_ok_n(7).await;                    // M:N — write 2 students + 2 courses + 3 enrollments
-        server.reply_data(enc_enrollments).await;      // M:N — query all enrollments
-        server.reply_data(enc_courses).await;          // M:N — query all courses
-        server.reply_data(enc_students).await;         // M:N — query all students
+        server
+            .reply_connect("ws://owner:7700", "ws://backup:7700")
+            .await;
+        server.reply_ok_n(3).await; // 1:1 — write citizen_v1, passport, citizen_v2
+        server.reply_data(enc_citizen_v2).await; // 1:1 — query → live (v2) citizen
+        server.reply_ok_n(3).await; // 1:N — write company, worker_alice, worker_bob
+        server.reply_data(enc_workers).await; // 1:N — query all workers
+        server.reply_ok_n(7).await; // M:N — write 2 students + 2 courses + 3 enrollments
+        server.reply_data(enc_enrollments).await; // M:N — query all enrollments
+        server.reply_data(enc_courses).await; // M:N — query all courses
+        server.reply_data(enc_students).await; // M:N — query all students
     });
 
     let db = Db::open_with_transport(transport, /* user= */ 1, tenant).await?;

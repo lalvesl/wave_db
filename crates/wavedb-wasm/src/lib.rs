@@ -4,11 +4,13 @@
 //! crate is empty — it only exists so `cargo test --workspace` can compile it.
 
 #![deny(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::future_not_send)]
 
 // ── WASM implementation ───────────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_impl {
+    use gloo_storage::{LocalStorage, Storage};
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -46,7 +48,7 @@ mod wasm_impl {
         ///
         /// Waits for the underlying WebSocket to open and sends the initial
         /// `Connect` request before resolving.
-        pub async fn connect(ws_url: &str, user: u64, tenant: u64) -> Result<JsDb, JsValue> {
+        pub async fn connect(ws_url: &str, user: u64, tenant: u64) -> Result<Self, JsValue> {
             let ws = web_sys::WebSocket::new(ws_url)?;
             ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
@@ -85,14 +87,12 @@ mod wasm_impl {
             let pending_msg = Rc::clone(&pending);
 
             let onmessage = Closure::wrap(Box::new(move |evt: web_sys::MessageEvent| {
-                let ab = match evt.data().dyn_into::<ArrayBuffer>() {
-                    Ok(a) => a,
-                    Err(_) => return,
+                let Ok(ab) = evt.data().dyn_into::<ArrayBuffer>() else {
+                    return;
                 };
                 let bytes: Vec<u8> = Uint8Array::new(&ab).to_vec();
-                let resp = match decode_payload::<TransportResponse>(&bytes) {
-                    Ok(r) => r,
-                    Err(_) => return,
+                let Ok(resp) = decode_payload::<TransportResponse>(&bytes) else {
+                    return;
                 };
                 if let Some(tx) = pending_msg.borrow_mut().remove(&resp.seq) {
                     let _ = tx.send(resp);
@@ -118,10 +118,9 @@ mod wasm_impl {
 
             // Persist owner URL in localStorage so clients can reconnect after
             // a page refresh without re-discovering the owner via the ring.
-            use gloo_storage::{LocalStorage, Storage};
             LocalStorage::set("wavedb_owner_url", &owner_url).ok();
 
-            Ok(JsDb {
+            Ok(Self {
                 ws,
                 pending,
                 seq: Cell::new(1),
@@ -144,11 +143,13 @@ mod wasm_impl {
         }
 
         /// The authenticated user for this session.
+        #[allow(clippy::missing_const_for_fn)]
         pub fn user(&self) -> u64 {
             self.user
         }
 
         /// The active tenant for this session.
+        #[allow(clippy::missing_const_for_fn)]
         pub fn tenant(&self) -> u64 {
             self.tenant
         }

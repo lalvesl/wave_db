@@ -125,21 +125,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(registry.can_rollback(v42, v41));
     println!("Registry edges wired (optional for graph queries).");
 
-    let stored_v41 = Message41 { body: "Hello, WaveDB!".into(), author: 99, ..Default::default() };
-    let stored_v42 = Message42 { body: "Hello, v42!".into(), author: 7, edited: true, ..Default::default() };
+    let stored_v41 = Message41 {
+        body: "Hello, WaveDB!".into(),
+        author: 99,
+        ..Default::default()
+    };
+    let stored_v42 = Message42 {
+        body: "Hello, v42!".into(),
+        author: 7,
+        edited: true,
+        ..Default::default()
+    };
 
     let enc_v41 = encode_versioned(&stored_v41);
     let enc_v42 = encode_versioned(&stored_v42);
 
     let (transport, mut server) = ChannelTransport::pair();
     tokio::spawn(async move {
-        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
-        server.reply_ok().await;                    // write v41
-        server.reply_data(enc_v41.clone()).await;   // search::<Message42> → v41 bytes → forward migrate
-        server.reply_data(enc_v41).await;           // search::<Message41> → v41 bytes → identity
-        server.reply_ok().await;                    // write v42
-        server.reply_data(enc_v42.clone()).await;   // search::<Message41> → v42 bytes → rollback
-        server.reply_data(enc_v42).await;           // search::<Message42> → v42 bytes → identity
+        server
+            .reply_connect("ws://owner:7700", "ws://backup:7700")
+            .await;
+        server.reply_ok().await; // write v41
+        server.reply_data(enc_v41.clone()).await; // search::<Message42> → v41 bytes → forward migrate
+        server.reply_data(enc_v41).await; // search::<Message41> → v41 bytes → identity
+        server.reply_ok().await; // write v42
+        server.reply_data(enc_v42.clone()).await; // search::<Message41> → v42 bytes → rollback
+        server.reply_data(enc_v42).await; // search::<Message42> → v42 bytes → identity
     });
 
     let db = Db::open_with_transport(transport, 1, 100).await?;

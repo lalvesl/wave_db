@@ -117,11 +117,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (transport, mut server) = ChannelTransport::pair();
     tokio::spawn(async move {
-        server.reply_connect("ws://owner:7700", "ws://backup:7700").await;
-        server.reply_ok_n(5).await;               // author, book, author rotate, chapter_a, chapter_b
-        server.reply_data(enc_author).await;      // query authors
-        server.reply_data(enc_book).await;        // query books
-        server.reply_data(enc_chapters).await;    // query chapters under book
+        server
+            .reply_connect("ws://owner:7700", "ws://backup:7700")
+            .await;
+        server.reply_ok_n(5).await; // author, book, author rotate, chapter_a, chapter_b
+        server.reply_data(enc_author).await; // query authors
+        server.reply_data(enc_book).await; // query books
+        server.reply_data(enc_chapters).await; // query chapters under book
     });
 
     let db = Db::open_with_transport(transport, /* user= */ 1, tenant).await?;
@@ -137,15 +139,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(authors.len(), 1);
     let live_author = &authors[0];
     assert_ne!(live_author.featured_book, Book1Anchor::ZERO);
-    println!("Author {:?} featured_book = {:?}", live_author.name, live_author.featured_book);
+    println!(
+        "Author {:?} featured_book = {:?}",
+        live_author.name, live_author.featured_book
+    );
 
     let all_books = Book::query(&db, Expr::all()).await?;
     let books_for_author: Vec<&Book> = all_books
         .iter()
-        .filter(|b| {
-            b.author == live_author.anchor()
-                || b.anchor() == live_author.featured_book
-        })
+        .filter(|b| b.author == live_author.anchor() || b.anchor() == live_author.featured_book)
         .collect();
     assert_eq!(books_for_author.len(), 1);
     let live_book = books_for_author[0];
