@@ -1,6 +1,7 @@
 //! Wire types for Quick-Node → Slow-Node flush and history-read requests.
 
 use serde::{Deserialize, Serialize};
+use wavedb_net::auth::NodeToken;
 use wavedb_storage::VersionedRecord;
 
 /// A batch of versioned records pushed from a Quick-Node during a history flush.
@@ -12,6 +13,8 @@ pub struct FlushBatch {
     pub tenant: u64,
     /// Records to persist.
     pub records: Vec<VersionedRecord>,
+    /// HMAC-SHA256 cluster membership proof. `None` in open/dev mode.
+    pub token: Option<NodeToken>,
 }
 
 /// Acknowledgement returned to the Quick-Node after a successful flush.
@@ -94,6 +97,7 @@ mod tests {
             write_seq: 7,
             tenant: 42,
             records: vec![VersionedRecord::new(1, b"hello".to_vec())],
+            token: None,
         };
         let bytes = postcard::to_allocvec(&batch).unwrap();
         let decoded: FlushBatch = postcard::from_bytes(&bytes).unwrap();

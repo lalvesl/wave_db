@@ -13,23 +13,35 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use bytes::Bytes;
 
+use wavedb_net::auth::{ClusterKey, TokenPurpose};
 use wavedb_net::frame::{decode_payload, encode_payload};
 
 use crate::flush::{FlushAck, FlushBatch, HistoryReadRequest, HistoryReadResponse};
 use crate::store::HistoryStore;
 
+// ── AppState ──────────────────────────────────────────────────────────────────
+
+struct AppState {
+    store: HistoryStore,
+    auth_key: Option<ClusterKey>,
+}
+
 // ── Router ────────────────────────────────────────────────────────────────────
 
-pub fn router(store: HistoryStore) -> Router {
+pub fn router(store: HistoryStore, auth_key: Option<ClusterKey>) -> Router {
+    let state = Arc::new(AppState { store, auth_key });
     Router::new()
         .route("/flush", post(handle_flush))
         .route("/history", post(handle_history))
-        .with_state(Arc::new(store))
+        .with_state(state)
 }
 
 // ── Flush handler ─────────────────────────────────────────────────────────────
 
-async fn handle_flush(State(store): State<Arc<HistoryStore>>, body: Bytes) -> impl IntoResponse {
+async fn handle_flush(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -39,7 +51,18 @@ async fn handle_flush(State(store): State<Arc<HistoryStore>>, body: Bytes) -> im
         Err(_) => return (StatusCode::BAD_REQUEST, Bytes::new()),
     };
 
-    store.apply_flush(batch).map_or_else(
+    // Verify the sender's cluster membership token when a key is configured.
+    if let Some(key) = &state.auth_key {
+        let valid = batch
+            .token
+            .as_ref()
+            .is_some_and(|t| key.verify(t, TokenPurpose::Flush));
+        if !valid {
+            return (StatusCode::FORBIDDEN, Bytes::new());
+        }
+    }
+
+    state.store.apply_flush(batch).map_or_else(
         |_| (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
         |write_seq| {
             let ack = FlushAck { write_seq };
@@ -52,7 +75,10 @@ async fn handle_flush(State(store): State<Arc<HistoryStore>>, body: Bytes) -> im
 
 // ── History handler ───────────────────────────────────────────────────────────
 
-async fn handle_history(State(store): State<Arc<HistoryStore>>, body: Bytes) -> impl IntoResponse {
+async fn handle_history(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -62,7 +88,7 @@ async fn handle_history(State(store): State<Arc<HistoryStore>>, body: Bytes) -> 
         Err(_) => return (StatusCode::BAD_REQUEST, Bytes::new()),
     };
 
-    let data = store.get(req.tenant, req.record_id).unwrap_or_default();
+    let data = state.store.get(req.tenant, req.record_id).unwrap_or_default();
     let resp = HistoryReadResponse { data };
     encode_payload(&resp).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
         (StatusCode::OK, b)
@@ -79,8 +105,14 @@ mod tests {
     use wavedb_storage::VersionedRecord;
 
     async fn start_server() -> (std::net::SocketAddr, tokio::task::AbortHandle) {
+        start_server_with_key(None).await
+    }
+
+    async fn start_server_with_key(
+        auth_key: Option<ClusterKey>,
+    ) -> (std::net::SocketAddr, tokio::task::AbortHandle) {
         let store = HistoryStore::in_memory();
-        let app = router(store);
+        let app = router(store, auth_key);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
@@ -97,6 +129,7 @@ mod tests {
             write_seq: 3,
             tenant: 42,
             records: vec![VersionedRecord::new(100, b"hello".to_vec())],
+            token: None,
         };
         let body = encode_payload(&batch).unwrap();
 
@@ -123,6 +156,7 @@ mod tests {
             write_seq: 1,
             tenant: 7,
             records: vec![VersionedRecord::new(55, b"the payload".to_vec())],
+            token: None,
         };
         let flush_body = encode_payload(&batch).unwrap();
         reqwest::Client::new()
@@ -191,5 +225,89 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn flush_with_valid_token_succeeds() {
+        let key = ClusterKey::from_hex(
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        )
+        .unwrap();
+        let (addr, _srv) = start_server_with_key(Some(key.clone())).await;
+
+        let token = key.mint(42, TokenPurpose::Flush);
+        let batch = FlushBatch {
+            write_seq: 1,
+            tenant: 42,
+            records: vec![VersionedRecord::new(1, b"data".to_vec())],
+            token: Some(token),
+        };
+        let body = encode_payload(&batch).unwrap();
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{addr}/flush"))
+            .header("Content-Type", "application/octet-stream")
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap();
+
+        assert!(resp.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn flush_without_token_when_key_set_returns_403() {
+        let key = ClusterKey::from_hex(
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        )
+        .unwrap();
+        let (addr, _srv) = start_server_with_key(Some(key)).await;
+
+        let batch = FlushBatch {
+            write_seq: 1,
+            tenant: 42,
+            records: vec![],
+            token: None,
+        };
+        let body = encode_payload(&batch).unwrap();
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{addr}/flush"))
+            .header("Content-Type", "application/octet-stream")
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn flush_with_wrong_purpose_token_returns_403() {
+        let key = ClusterKey::from_hex(
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        )
+        .unwrap();
+        let (addr, _srv) = start_server_with_key(Some(key.clone())).await;
+
+        // Gossip token used against flush endpoint — must be rejected.
+        let gossip_token = key.mint(42, TokenPurpose::Gossip);
+        let batch = FlushBatch {
+            write_seq: 1,
+            tenant: 42,
+            records: vec![],
+            token: Some(gossip_token),
+        };
+        let body = encode_payload(&batch).unwrap();
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{addr}/flush"))
+            .header("Content-Type", "application/octet-stream")
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
     }
 }

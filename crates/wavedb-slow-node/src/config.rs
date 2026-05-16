@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use wavedb_net::auth::ClusterKey;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -19,6 +20,12 @@ pub struct Args {
     /// Minimum replicas that must ack a flush before it is acknowledged.
     #[arg(long, default_value_t = 1)]
     pub min_replicas: u32,
+
+    /// Shared cluster secret as a 64-hex-character string (32 bytes).
+    /// When set, incoming flush requests must carry a valid HMAC-SHA256 token.
+    /// Omit to run in open/dev mode with no node-to-node authentication.
+    #[arg(long)]
+    pub cluster_key: Option<String>,
 }
 
 /// Validated runtime configuration.
@@ -27,6 +34,8 @@ pub struct Config {
     pub listen: String,
     pub data_dir: PathBuf,
     pub min_replicas: u32,
+    /// Parsed cluster key for HMAC-SHA256 flush auth, or `None` for open mode.
+    pub cluster_key: Option<ClusterKey>,
 }
 
 impl Config {
@@ -35,6 +44,10 @@ impl Config {
             listen: args.listen,
             data_dir: args.data_dir,
             min_replicas: args.min_replicas,
+            cluster_key: args.cluster_key.as_deref().map(|hex| {
+                ClusterKey::from_hex(hex)
+                    .expect("--cluster-key must be a 64-hex-character string (32 bytes)")
+            }),
         }
     }
 }

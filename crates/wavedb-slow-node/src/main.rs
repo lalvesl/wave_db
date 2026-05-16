@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(listen = %config.listen, "wavedb-slow-node starting");
 
     let listener = TcpListener::bind(&config.listen).await?;
-    axum::serve(listener, server::router(store)).await?;
+    axum::serve(listener, server::router(store, config.cluster_key)).await?;
 
     Ok(())
 }
