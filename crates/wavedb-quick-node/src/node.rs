@@ -165,13 +165,21 @@ impl QuickNode {
     pub fn metrics(&self) -> QuickNodeMetrics {
         let write_bytes = self.inner.write_bytes.load(Ordering::Relaxed);
         let page_count = (write_bytes + HEAP_PAGE_SIZE - 1) / HEAP_PAGE_SIZE;
-        let page_map: Vec<u8> = self
+        let raw: Vec<u64> = self
             .inner
             .page_bytes
             .iter()
-            .map(|pb| {
-                let b = pb.load(Ordering::Relaxed);
-                (b.saturating_mul(255) / HEAP_PAGE_SIZE).min(255) as u8
+            .map(|pb| pb.load(Ordering::Relaxed))
+            .collect();
+        let max_pb = raw.iter().copied().max().unwrap_or(0);
+        let page_map: Vec<u8> = raw
+            .iter()
+            .map(|&b| {
+                if max_pb == 0 {
+                    0
+                } else {
+                    (b * 255 / max_pb) as u8
+                }
             })
             .collect();
         QuickNodeMetrics {
@@ -295,8 +303,8 @@ impl QuickNode {
     fn handle_write(
         &self,
         seq: u64,
-        _struct_id: u32,
-        _user: u64,
+        struct_id: u32,
+        user: u64,
         tenant: u64,
         payload: Vec<u8>,
     ) -> TransportResponse {
@@ -307,9 +315,11 @@ impl QuickNode {
             return self.not_owner_resp(seq);
         }
         let payload_len = payload.len() as u64;
-        let write_idx = self.inner.write_count.fetch_add(1, Ordering::Relaxed);
+        self.inner.write_count.fetch_add(1, Ordering::Relaxed);
         self.inner.write_bytes.fetch_add(payload_len, Ordering::Relaxed);
-        let page_idx = (write_idx % MAX_MAP_PAGES as u64) as usize;
+        // Route to page by FNV-1a hash of (user, struct_id) so each user/struct
+        // pair consistently hits the same page slot, creating realistic hotspots.
+        let page_idx = fnv1a_page(user, struct_id, MAX_MAP_PAGES);
         self.inner.page_bytes[page_idx].fetch_add(payload_len, Ordering::Relaxed);
         let write_seq = self.inner.replication.next_seq();
         for peer_id in self.peer_ids() {
@@ -616,6 +626,23 @@ impl QuickNode {
             }
         });
     }
+}
+
+// ── fnv1a_page ────────────────────────────────────────────────────────────────
+
+/// Map `(user, struct_id)` to a page-map slot via FNV-1a so the same
+/// caller always hits the same slot, creating realistic per-user hotspots.
+fn fnv1a_page(user: u64, struct_id: u32, n_pages: usize) -> usize {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in user.to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    for b in struct_id.to_le_bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (h % n_pages as u64) as usize
 }
 
 // ── addr_to_node_id ───────────────────────────────────────────────────────────
