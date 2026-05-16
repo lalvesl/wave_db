@@ -50,7 +50,7 @@ use quote::quote;
 use syn::{ItemStruct, parse_macro_input};
 
 use args::WaveDbArgs;
-use codegen::{build_anchors_impl, build_auto_derives, build_shape};
+use codegen::{build_anchors_impl, build_auto_derives, build_shape, build_typed_wrappers};
 use crud::build_crud_impl;
 use migration::build_migration_impl;
 use utils::parse_trailing_version;
@@ -67,6 +67,10 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attr_parser = syn::meta::parser(|meta| args.parse(meta));
     parse_macro_input!(attr with attr_parser);
 
+    // Extract name early — needed for typed ID field injection below.
+    let name = &input.ident;
+    let name_str = name.to_string();
+
     if let syn::Fields::Named(ref mut fields) = input.fields {
         for f in &fields.named {
             if let Some(ident) = &f.ident {
@@ -81,8 +85,9 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        let id_field: syn::Field = syn::parse_quote! { pub id: Id };
-        let metadata_field: syn::Field = syn::parse_quote! { pub metadata: Metadata };
+        let id_field: syn::Field = syn::parse_quote! { pub id: ::wavedb_core::Id };
+        let metadata_field: syn::Field =
+            syn::parse_quote! { pub metadata: ::wavedb_core::Metadata };
 
         fields.named.insert(0, id_field);
         fields.named.insert(1, metadata_field);
@@ -100,9 +105,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         return e.to_compile_error().into();
     }
 
-    // ── Parse version from name ──────────────────────────────────────────────
-    let name = &input.ident;
-    let name_str = name.to_string();
+    // `name` and `name_str` are already set above.
     let version = match parse_trailing_version(&name_str, name.span()) {
         Ok(v) => v,
         Err(e) => return e.to_compile_error().into(),
@@ -115,7 +118,8 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let sid = args.struct_id;
     let shape = build_shape(&args);
-    let anchors_impl = build_anchors_impl(&args);
+    let typed_wrappers = build_typed_wrappers(name, &args, &input.vis);
+    let anchors_impl = build_anchors_impl(name, &args);
     let auto_derives = build_auto_derives(&input.attrs);
 
     // ── Auto-impl UniqueObject / NonUniqueObject ────────────────────────────
@@ -125,7 +129,11 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     let migration_impl = build_migration_impl(name, sid, version, &args);
 
     // ── Final expansion ──────────────────────────────────────────────────────
+    // Typed wrappers (`FooId`, `FooAnchor`) are emitted first so they are in
+    // scope for any code in the same module that references them.
     let expanded = quote! {
+        #typed_wrappers
+
         #auto_derives
         #input
 

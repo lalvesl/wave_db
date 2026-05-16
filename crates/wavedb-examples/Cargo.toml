@@ -40,6 +40,10 @@ path = "src/bin/refs_and_nested.rs"
 name = "anchors"
 path = "src/bin/anchors.rs"
 
+[[bin]]
+name = "cross_references"
+path = "src/bin/cross_references.rs"
+
 [dependencies]
 wavedb = { path = "../wavedb" }
 wavedb-net = { path = "../wavedb-net" }

@@ -1,20 +1,21 @@
-//! References between records, plus a NestedNonUnique child that
-//! complements its NonUnique parent.
+//! Cross-references via anchor keys, plus a NestedNonUnique child.
 //!
 //! Two ideas in one example:
 //!
-//! 1. **Cross-references by `Id`.** Records carry the auto-injected
-//!    `id: Id` field. To "reference" another record, store its `Id`
-//!    on a sibling record — exactly like a foreign-key column in SQL.
-//!    Here `Author` ↔ `Book` form a cyclic reference (author owns books,
-//!    a book points back at its author).
+//! 1. **Cross-references via anchor keys.** Store `other.id.anchor_key()`
+//!    — an `Id` with `CREATED_AT = 0` — instead of the raw versioned `Id`.
+//!    Anchor keys are version-invariant: the storage engine maps them to
+//!    the current live record regardless of mutations or version-chain depth,
+//!    so no history walk is needed to follow a reference. `Author` ↔ `Book`
+//!    form a cyclic reference using anchor keys on both sides.
+//!    On the read side compare with `record.id.anchor_key()`.
 //!
 //! 2. **NestedNonUnique complements NonUnique.** `Chapter` is
 //!    `NestedNonUnique` — physically scoped to a parent `Book`'s anchor
 //!    in the storage engine. It cannot be queried as a top-level
 //!    collection; the only way to reach the chapters is *through* the
-//!    parent book. The `Chapter::book` field makes the parent reference
-//!    explicit on the wire as well.
+//!    parent book. `Chapter::book` stores the parent's anchor key,
+//!    making the relationship explicit on the wire as well.
 //!
 //! Run with:
 //!   cargo run --bin refs_and_nested
@@ -29,9 +30,9 @@ use wavedb_net::mock::ScriptedReply;
 #[derive(PartialEq, Eq)]
 pub struct Author1 {
     pub name: String,
-    /// Forward reference to a `Book` — the author's featured work.
-    /// `Id::ZERO` means "not set yet".
-    pub featured_book: Id,
+    /// Typed anchor of the author's featured `Book`.
+    /// `Book1Anchor::ZERO` means "not set yet".
+    pub featured_book: Book1Anchor,
 }
 pub type Author = Author1;
 
@@ -39,8 +40,8 @@ pub type Author = Author1;
 #[derive(PartialEq, Eq)]
 pub struct Book1 {
     pub title: String,
-    /// Back-reference to the owning `Author`.
-    pub author: Id,
+    /// Typed anchor of the owning `Author`.
+    pub author: Author1Anchor,
 }
 pub type Book = Book1;
 
@@ -49,10 +50,10 @@ pub type Book = Book1;
 pub struct Chapter1 {
     pub number: u32,
     pub title: String,
-    /// Parent `Book`. In production the storage engine *also* scopes
-    /// nested records under the parent's anchor; carrying the id on the
-    /// record makes the relationship explicit to the client too.
-    pub book: Id,
+    /// Typed anchor of the parent `Book`. The storage engine also scopes
+    /// nested records under the parent's anchor; the typed field makes
+    /// the relationship explicit and compiler-checked on the wire.
+    pub book: Book1Anchor,
 }
 pub type Chapter = Chapter1;
 
@@ -88,35 +89,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let author_initial = Author {
         id: author_id,
         name: "Ada".into(),
-        featured_book: Id::ZERO,
+        featured_book: Book1Anchor::ZERO,
         ..Default::default()
     };
 
-    // Phase 2: the book references the author.
+    // Phase 2: the book references the author via typed anchor.
     let book = Book {
         id: book_id,
         title: "Notes on Engines".into(),
-        author: author_id,
+        author: Author1Anchor::from(author_id), // From<Id> calls anchor_key()
         ..Default::default()
     };
 
     // Phase 3: rotate the author to point at the book — closes the cycle.
     let author_with_featured = Author {
-        featured_book: book_id,
+        featured_book: Book1Anchor::from(book_id), // From<Id> calls anchor_key()
         ..author_initial.clone()
     };
 
-    // Phase 4: two chapters nested under the book.
+    // Phase 4: two chapters nested under the book — typed anchor field.
     let chapter_a = Chapter {
         number: 1,
         title: "Anchors".into(),
-        book: book_id,
+        book: Book1Anchor::from(book_id),
         ..Default::default()
     };
     let chapter_b = Chapter {
         number: 2,
         title: "Migrations".into(),
-        book: book_id,
+        book: Book1Anchor::from(book_id),
         ..Default::default()
     };
 
@@ -158,25 +159,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let authors = Author::query(&db, Expr::all()).await?;
     assert_eq!(authors.len(), 1);
     let live_author = &authors[0];
-    assert_ne!(live_author.featured_book, Id::ZERO);
+    assert_ne!(live_author.featured_book, Book1Anchor::ZERO);
     println!(
-        "Author {:?} featured_book = {}",
+        "Author {:?} featured_book = {:?}",
         live_author.name, live_author.featured_book
     );
 
-    // Follow Author → Book. The engine can't filter by an `Id` field
-    // through `Expr` directly (Value has no U128 variant), so we query
-    // and filter client-side. Real schemas can also expose a derived
-    // u64 column (e.g. `created_at`) for server-side filtering.
+    // Follow Author → Book via typed anchors.  The compiler rejects accidental
+    // cross-type comparisons (e.g. Author1Anchor vs Book1Anchor).
+    // `.anchor()` zeroes CREATED_AT, so matches survive record mutations.
     let all_books = Book::query(&db, Expr::all()).await?;
     let books_for_author: Vec<&Book> = all_books
         .iter()
-        .filter(|b| b.author == live_author.id || b.id == live_author.featured_book)
+        .filter(|b| {
+            b.author == live_author.anchor()    // Author1Anchor == Author1Anchor
+                || b.anchor() == live_author.featured_book // Book1Anchor == Book1Anchor
+        })
         .collect();
     assert_eq!(books_for_author.len(), 1);
     let live_book = books_for_author[0];
     println!(
-        "  → resolved Book {:?} (author back-ref = {})",
+        "  → resolved Book {:?} (author back-ref = {:?})",
         live_book.title, live_book.author
     );
 
@@ -187,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // is the parent's children, not all Chapters in the tenant.
     let chapters = Chapter::query(&db, Expr::gte("number", 1u64)).await?;
     assert_eq!(chapters.len(), 2);
-    assert!(chapters.iter().all(|c| c.book == live_book.id));
+    assert!(chapters.iter().all(|c| c.book == live_book.anchor()));
     println!(
         "Chapters under {:?}: {}",
         live_book.title,
