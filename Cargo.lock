@@ -3237,9 +3237,11 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "bytes",
+ "parking_lot",
  "postcard",
  "reqwest",
  "serde",
+ "tempfile",
  "tokio",
  "wavedb",
  "wavedb-core",
