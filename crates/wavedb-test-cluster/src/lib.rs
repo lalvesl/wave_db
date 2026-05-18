@@ -24,6 +24,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex;
+use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::task::AbortHandle;
 
@@ -35,6 +37,7 @@ use wavedb_quick_node::{
     server as quick_server,
 };
 use wavedb_slow_node::{server as slow_server, store::HistoryStore};
+use wavedb_storage::{DataFile, HeapFile, Journal};
 
 // Re-export the most commonly needed test types so integration-test files
 // can write `use wavedb_test_cluster::*` without importing sub-crates.
@@ -69,6 +72,25 @@ impl Default for ClusterSpec {
     }
 }
 
+// ── NodeStorage ──────────────────────────────────────────────────────────────
+
+/// Per-quick-node on-disk storage handles, all rooted at `data_dir`.
+///
+/// Created once when the harness spawns a Quick-Node and attached to the
+/// matching [`QuickNodeHandle`].  Files live inside the cluster's
+/// [`TempDir`](tempfile::TempDir) so they're cleaned up automatically when
+/// the [`TestCluster`] drops.
+pub struct NodeStorage {
+    /// Filesystem root for this node's data files.
+    pub data_dir: PathBuf,
+    /// Disk-backed page table (`{data_dir}/data.bin`).
+    pub data_file: Arc<DataFile>,
+    /// Append-only crash-recovery log (`{data_dir}/journal.log`).
+    pub journal: Arc<Mutex<Journal>>,
+    /// Variable-length heap blobs (`{data_dir}/heap.bin`).
+    pub heap_file: Arc<Mutex<HeapFile>>,
+}
+
 // ── QuickNodeHandle ──────────────────────────────────────────────────────────
 
 /// Handle to a running in-process Quick-Node.
@@ -80,6 +102,10 @@ pub struct QuickNodeHandle {
     /// Use this to inspect replication watermarks, ownership maps, and other
     /// runtime state without going through the network.
     pub node: Arc<QuickNode>,
+    /// Per-node disk storage (journal + heap + data) under the cluster's
+    /// temp dir.  Wired by the harness; the in-process [`QuickNode`] itself
+    /// does not yet read or write through these handles.
+    pub storage: Arc<NodeStorage>,
     abort: AbortHandle,
 }
 
@@ -136,6 +162,48 @@ pub struct TestCluster {
     pub front_door: String,
     /// Resolved configuration used to spawn this cluster.
     owned_tenant: u64,
+    /// Temp directory that holds every Quick-Node's `data_dir`.
+    ///
+    /// Kept alive for the cluster's lifetime — dropping it removes every
+    /// per-node storage subdirectory and all journal / heap / data files
+    /// inside.  Field is `_` to flag it as a lifetime-anchor, not a
+    /// read-from accessor.
+    _data_dir: TempDir,
+}
+
+impl TestCluster {
+    /// Filesystem root containing every Quick-Node's data directory.
+    pub fn data_root(&self) -> &std::path::Path {
+        self._data_dir.path()
+    }
+}
+
+/// Open (or create) the three storage files for one Quick-Node under
+/// `data_dir`.  The directory is created if missing and each file is
+/// materialised on disk so callers can `assert!(path.exists())`
+/// immediately after spawn.
+fn open_node_storage(
+    data_dir: &std::path::Path,
+) -> wavedb_storage::StorageResult<Arc<NodeStorage>> {
+    std::fs::create_dir_all(data_dir)?;
+    let data_file = DataFile::open_on_disk(
+        &data_dir.join("data.bin"),
+        wavedb_storage::file::data::DEFAULT_PAGE_SIZE,
+    )?;
+    let journal = Journal::open(&data_dir.join("journal.log"))?;
+    let heap_file = HeapFile::open(&data_dir.join("heap.bin"))?;
+    // Materialise empty files on disk so the directory layout matches what
+    // a long-running quick-node would look like.  Journal + heap use
+    // explicit flush; DataFile snapshots on its own flush().
+    data_file.flush()?;
+    journal.flush()?;
+    heap_file.flush()?;
+    Ok(Arc::new(NodeStorage {
+        data_dir: data_dir.to_path_buf(),
+        data_file: Arc::new(data_file),
+        journal: Arc::new(Mutex::new(journal)),
+        heap_file: Arc::new(Mutex::new(heap_file)),
+    }))
 }
 
 impl TestCluster {
@@ -145,6 +213,12 @@ impl TestCluster {
     /// for all servers to be ready before returning.
     pub async fn spawn(spec: ClusterSpec) -> Self {
         assert!(spec.num_quick_nodes >= 1, "need at least one Quick-Node");
+
+        // ── Cluster-wide temp dir ──────────────────────────────────────────
+        // Each Quick-Node gets its own subdirectory under this root.  The
+        // TempDir handle lives in `Self::_data_dir` so dropping the cluster
+        // removes every per-node journal / heap / data file.
+        let data_root = TempDir::new().expect("create test-cluster tempdir");
 
         // ── Slow-Node ──────────────────────────────────────────────────────
         let slow_store = HistoryStore::in_memory();
@@ -175,6 +249,10 @@ impl TestCluster {
                 .map(|(_, a)| a.to_string())
                 .collect();
 
+            // Per-node data dir under the cluster tempdir.
+            let node_dir = data_root.path().join(format!("quick-{i}"));
+            let storage = open_node_storage(&node_dir).expect("open node storage");
+
             let config = QuickConfig {
                 listen: addr.to_string(),
                 peers: peers.join(","),
@@ -185,7 +263,7 @@ impl TestCluster {
                     shard_end: 4095,
                 }],
                 bloom_interval_secs: 60,
-                data_dir: PathBuf::from("/tmp"),
+                data_dir: node_dir,
                 cluster_key: None,
             };
 
@@ -198,6 +276,7 @@ impl TestCluster {
             quick_nodes.push(QuickNodeHandle {
                 addr,
                 node,
+                storage,
                 abort: task.abort_handle(),
             });
         }
@@ -217,6 +296,7 @@ impl TestCluster {
             },
             front_door,
             owned_tenant,
+            _data_dir: data_root,
         }
     }
 
@@ -255,9 +335,14 @@ impl TestCluster {
     ///
     /// The new node owns the same tenant but starts with no in-memory state.
     /// Its address in `self.quick_nodes[idx].addr` is updated to the new port.
+    /// The previous on-disk storage at `{data_root}/quick-{idx}/` is
+    /// reopened so journal + heap + data persist across the restart.
     pub async fn restart_quick_node(&mut self, idx: usize) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let new_addr = listener.local_addr().unwrap();
+
+        let node_dir = self._data_dir.path().join(format!("quick-{idx}"));
+        let storage = open_node_storage(&node_dir).expect("reopen node storage");
 
         let config = QuickConfig {
             listen: new_addr.to_string(),
@@ -269,7 +354,7 @@ impl TestCluster {
                 shard_end: 4095,
             }],
             bloom_interval_secs: 60,
-            data_dir: PathBuf::from("/tmp"),
+            data_dir: node_dir,
             cluster_key: None,
         };
 
@@ -282,6 +367,7 @@ impl TestCluster {
         self.quick_nodes[idx] = QuickNodeHandle {
             addr: new_addr,
             node,
+            storage,
             abort: task.abort_handle(),
         };
 

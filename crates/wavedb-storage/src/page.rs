@@ -69,7 +69,7 @@ impl DirEntry {
 }
 
 /// An in-memory representation of a page.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page {
     /// The page's header.
     pub header: PageHeader,

@@ -118,19 +118,19 @@ pub async fn run_continuous(
             }
 
             // Flush: push newly committed writes to the slow-node every 10 s.
-            // _ = flush_tick.tick() => {
-            //     if quit.load(Ordering::Relaxed) { break; }
-            //     let total = counters.total_committed();
-            //     flush_write_seq = slow_node::flush_incremental(
-            //         cluster,
-            //         flushed_count,
-            //         total,
-            //         flush_write_seq,
-            //         log,
-            //     )
-            //     .await;
-            //     flushed_count = total;
-            // }
+            _ = flush_tick.tick() => {
+                if quit.load(Ordering::Relaxed) { break; }
+                let total = counters.total_committed();
+                flush_write_seq = slow_node::flush_incremental(
+                    cluster,
+                    flushed_count,
+                    total,
+                    flush_write_seq,
+                    log,
+                )
+                .await;
+                flushed_count = total;
+            }
 
             // Chaos: drain node[0] or node[1] on a staggered schedule.
             () = tokio::time::sleep_until(chaos_at) => {
@@ -251,7 +251,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
-    /// Headless smoke-test: run continuous load for 600 ms then stop.
+    /// Headless smoke-test: spin up 12 clients (4 per Quick-Node), drive a
+    /// few hundred typed writes, then shut down.
+    ///
+    /// Uses `launch_continuous_with(.., 12)` instead of the production
+    /// `NUM_CLIENTS = 3900` so the 600 ms budget actually finishes the
+    /// sequential WS-open phase.
     #[tokio::test]
     async fn test_continuous_headless() {
         let cluster = TestCluster::spawn(ClusterSpec {
@@ -261,18 +266,50 @@ mod tests {
         })
         .await;
 
-        let log = new_log();
-        let quit = Arc::new(AtomicBool::new(false));
-        let quit_timer = quit.clone();
+        // Per-node tempdir wiring: every Quick-Node opens its own
+        // journal.log + heap.bin + data.bin under the cluster's TempDir.
+        // The harness creates the three files at spawn time; assert
+        // they're present before any writes.
+        let data_root = cluster.data_root().to_path_buf();
+        assert!(data_root.exists(), "cluster data root missing: {data_root:?}");
+        for (i, qn) in cluster.quick_nodes.iter().enumerate() {
+            let node_dir = data_root.join(format!("quick-{i}"));
+            assert!(node_dir.exists(), "node-{i} dir missing: {node_dir:?}");
+            assert!(node_dir.join("journal.log").exists(), "node-{i} journal missing");
+            assert!(node_dir.join("heap.bin").exists(), "node-{i} heap missing");
+            // The data file is opened lazily on first flush, so we only
+            // assert the directory + journal + heap exist.
+            assert_eq!(qn.storage.data_dir, node_dir);
+        }
 
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            quit_timer.store(true, Ordering::Release);
-        });
+        let (client_tasks, counters) = clients::launch_continuous_with(&cluster, 12).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
 
-        let (committed, _dropped) = run_continuous(&cluster, &log, quit).await;
-        assert!(committed > 0, "must have at least one committed write");
+        for t in &client_tasks {
+            t.abort();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            counters.total_committed() > 0,
+            "must have at least one committed write"
+        );
+
+        // Flush each node's on-disk DataFile to materialise the snapshot.
+        for qn in &cluster.quick_nodes {
+            qn.storage
+                .data_file
+                .flush()
+                .expect("flush quick-node data file");
+        }
 
         cluster.shutdown().await;
+
+        // Cluster drop removes the TempDir — data_root no longer exists.
+        // (Verify after shutdown so the cluster handle is the last live ref.)
+        assert!(
+            !data_root.exists(),
+            "tempdir leaked after cluster drop: {data_root:?}"
+        );
     }
 }

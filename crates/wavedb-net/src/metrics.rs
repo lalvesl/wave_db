@@ -15,8 +15,12 @@ pub struct MetricsRequest {
     pub token: Option<NodeToken>,
 }
 
-/// Page size used by the storage engine (4 KiB).
-pub const HEAP_PAGE_SIZE: u64 = 4096;
+/// Default page size used by the storage engine (8 KiB).
+///
+/// Doubled from the historical 4 KiB so the in-page directory + payload
+/// fit larger records without immediate overflow.  Storage callers may
+/// override per-file via [`wavedb_storage::DataFile::open_with`].
+pub const HEAP_PAGE_SIZE: u64 = 4 * 1024;
 
 /// Number of hash-map slots tracked in [`QuickNodeMetrics::page_map`].
 ///

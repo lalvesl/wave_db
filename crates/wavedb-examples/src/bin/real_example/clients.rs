@@ -72,12 +72,24 @@ impl Counters {
 /// Per-client write delay: `base_ms + jitter_ms` where both factors depend
 /// on `user_id` so all clients have distinct duty cycles.
 pub async fn launch_continuous(cluster: &TestCluster) -> (Vec<JoinHandle<()>>, Counters) {
+    launch_continuous_with(cluster, NUM_CLIENTS).await
+}
+
+/// Same as [`launch_continuous`] but with an explicit client count.
+///
+/// Used by the headless smoke test which can't afford the steady-state
+/// `NUM_CLIENTS` (sequential WS opens dominate the 600 ms budget).
+pub async fn launch_continuous_with(
+    cluster: &TestCluster,
+    n_clients: usize,
+) -> (Vec<JoinHandle<()>>, Counters) {
     let counters = Counters::new();
-    let mut tasks = Vec::with_capacity(NUM_CLIENTS);
+    let mut tasks = Vec::with_capacity(n_clients);
+    let per_node = (n_clients / 3).max(1);
 
     #[allow(clippy::cast_possible_truncation)]
-    for user_id in 0u64..NUM_CLIENTS as u64 {
-        let node_idx = (user_id as usize / PER_NODE).min(2);
+    for user_id in 0u64..n_clients as u64 {
+        let node_idx = (user_id as usize / per_node).min(2);
         let db = cluster.open_user_via(user_id + 1, TENANT, node_idx).await;
         let ctr = counters.clone();
 
