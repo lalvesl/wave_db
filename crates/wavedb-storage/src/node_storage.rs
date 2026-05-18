@@ -150,9 +150,7 @@ mod tests {
         let storage = NodeStorage::open(dir.path()).unwrap();
 
         let id = wavedb_core::Id::new(7, 0, 11, 42);
-        storage
-            .commit_write(id.raw(), b"hello".to_vec())
-            .unwrap();
+        storage.commit_write(id.raw(), b"hello".to_vec()).unwrap();
 
         // Journal file grew (non-empty after fsync).
         let journal_size = std::fs::metadata(dir.path().join("journal.log"))

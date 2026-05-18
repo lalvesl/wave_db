@@ -167,7 +167,6 @@ impl TestCluster {
     }
 }
 
-
 impl TestCluster {
     /// Spawn a cluster configured by `spec`.
     ///

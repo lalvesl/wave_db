@@ -159,12 +159,7 @@ impl DataFile {
     /// No filesystem path is stored.  All state lives in RAM and is lost
     /// when the [`DataFile`] is dropped.
     pub fn open_in_memory(page_size: usize) -> StorageResult<Self> {
-        Self::open_with_mode(
-            Path::new(""),
-            page_size,
-            DEFAULT_PAGE_COUNT,
-            Mode::InMemory,
-        )
+        Self::open_with_mode(Path::new(""), page_size, DEFAULT_PAGE_COUNT, Mode::InMemory)
     }
 
     /// Open a disk-backed data file.

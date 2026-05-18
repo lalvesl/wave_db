@@ -173,8 +173,7 @@ pub const fn double_hash_step(
     if page_count <= 1 {
         return 1;
     }
-    let key = tenant_id
-        .wrapping_mul(0xc6a4_a793_5bd1_e995)
+    let key = tenant_id.wrapping_mul(0xc6a4_a793_5bd1_e995)
         ^ (struct_id as u64)
         ^ ((shard_id as u64) << 32);
     (mix64(key) % page_count) | 1

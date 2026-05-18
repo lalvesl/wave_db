@@ -493,8 +493,7 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                     d(),
                     Cell::from(m.record_count.to_string()),
                     Cell::from(format!("{}", m.flush_count)),
-                    Cell::from(human_bytes(m.index_bytes))
-                        .style(Style::default().fg(Color::Cyan)),
+                    Cell::from(human_bytes(m.index_bytes)).style(Style::default().fg(Color::Cyan)),
                     Cell::from(human_bytes(m.journal_bytes))
                         .style(Style::default().fg(Color::Yellow)),
                     Cell::from(format!("{}s", m.uptime_secs)),

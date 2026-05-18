@@ -151,12 +151,12 @@ pub use db::Db;
 /// Native-only transports (`WsClient`, `HttpClient`, `ChannelTransport`,
 /// `MockServer`, `EventBus`) are re-exported behind the `native` feature.
 pub mod net {
-    pub use wavedb_net::{
-        MockTransport, Transport, TransportRequest, TransportResponse,
-        mock::ScriptedReply, request::RequestKind,
-    };
     #[cfg(feature = "native")]
     pub use wavedb_net::{ChannelTransport, EventBus, HttpClient, MockServer, WsClient};
+    pub use wavedb_net::{
+        MockTransport, Transport, TransportRequest, TransportResponse, mock::ScriptedReply,
+        request::RequestKind,
+    };
 }
 
 /// Re-exports of the most commonly used types and traits.
