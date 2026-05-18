@@ -20,7 +20,7 @@ use wavedb_net::EventBus;
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
 use wavedb_net::metrics::{MAX_MAP_PAGES, PAGE_MAP_VISUAL_FULL, QuickNodeMetrics};
 use wavedb_net::request::{RequestKind, TransportRequest, TransportResponse};
-use wavedb_storage::tuple4_page;
+use wavedb_storage::{NodeStorage, tuple4_page};
 
 // ── QuickNode ─────────────────────────────────────────────────────────────────
 
@@ -61,6 +61,13 @@ struct QuickNodeInner {
     /// Write N goes to slot `N % MAX_MAP_PAGES`.
     page_bytes: Vec<AtomicU64>,
     start_time: Instant,
+    /// On-disk storage opened from `config.data_dir`.  `None` when the
+    /// config has an empty path (in-memory test usage).
+    ///
+    /// Every successful write goes through [`NodeStorage::commit_versioned_write`]
+    /// — journal append + fsync **before** the handler returns Ok to the
+    /// client.  This is the WAL durability contract.
+    storage: Option<Arc<NodeStorage>>,
 }
 
 impl QuickNode {
@@ -88,6 +95,23 @@ impl QuickNode {
 
         let listen_addr = config.listen.clone();
         let auth_key = config.cluster_key.clone();
+
+        // Open on-disk storage if a non-empty `data_dir` was supplied.
+        // Tests that construct `Config` with `data_dir = PathBuf::from("/tmp")`
+        // also get storage opened — they should swap to `PathBuf::new()`
+        // for the in-memory path.
+        let storage = if config.data_dir.as_os_str().is_empty() {
+            None
+        } else {
+            match NodeStorage::open(&config.data_dir) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    tracing::error!(error = %e, dir = ?config.data_dir, "node storage open failed; running without persistence");
+                    None
+                }
+            }
+        };
+
         Self {
             inner: Arc::new(QuickNodeInner {
                 node_id,
@@ -107,8 +131,15 @@ impl QuickNode {
                 write_bytes: AtomicU64::new(0),
                 page_bytes: (0..MAX_MAP_PAGES).map(|_| AtomicU64::new(0)).collect(),
                 start_time: Instant::now(),
+                storage,
             }),
         }
+    }
+
+    /// On-disk storage handle, if the node was configured with a
+    /// non-empty `data_dir`.
+    pub fn storage(&self) -> Option<&Arc<NodeStorage>> {
+        self.inner.storage.as_ref()
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────
@@ -309,25 +340,45 @@ impl QuickNode {
         if !self.inner.ownership.owns(tenant, 0) {
             return self.not_owner_resp(seq);
         }
+
         let payload_len = payload.len() as u64;
-        self.inner.write_count.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .write_bytes
-            .fetch_add(payload_len, Ordering::Relaxed);
         // Assign the per-record sequence first so the synthetic Id carries
         // distinct entropy in its low bits — that is what makes the heat
         // map spread uniformly instead of collapsing onto one slot per user.
         let write_seq = self.inner.replication.next_seq();
-        // Route the heat-map slot the same way the storage engine routes
-        // disk pages: SplitMix64 over the full Id.  Writes from one user
-        // therefore land on different slots (the `created_at` low bits
-        // change every record) instead of clustering on
-        // `hash(user, struct_id)`.  Tracks the actual on-disk distribution.
-        // Heat-map slot reflects how the storage layer would route this
-        // write as a tuple4 (NonUnique/element-style) record.  Every write
-        // varies in `write_seq` so the tuple4 hash spreads writes across
-        // the full page range instead of collapsing per-user.
-        let _ = Id::new(tenant, 0, struct_id, write_seq);
+        let id = Id::new(tenant, 0, struct_id, write_seq);
+
+        // ── Write-Ahead Logging commit ───────────────────────────────────
+        //
+        // When the node has on-disk storage attached, the write is only
+        // confirmed to the client after `NodeStorage::commit_versioned_write`
+        // returns Ok — which means:
+        //   1. journal entry appended
+        //   2. journal fsynced to disk (durability point)
+        //   3. data file updated
+        // A failure at any step rolls the response to `storage_error` so
+        // the client can retry; the counters are NOT bumped on failure.
+        if let Some(storage) = self.inner.storage.as_ref() {
+            if let Err(e) = storage.commit_write(id.raw(), payload.to_vec()) {
+                tracing::error!(error = %e, id = ?id, "WAL commit failed");
+                return TransportResponse {
+                    seq,
+                    payload: b"storage_error".to_vec(),
+                    owner_url: None,
+                    backup_url: None,
+                    notifications: Vec::new(),
+                };
+            }
+        }
+
+        // Only now bump metrics — they reflect *committed* writes, not
+        // attempted ones.
+        self.inner.write_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .write_bytes
+            .fetch_add(payload_len, Ordering::Relaxed);
+        // Heat-map slot mirrors the storage layer's tuple4 routing so the
+        // monitor's heat map reflects actual on-disk distribution.
         #[allow(clippy::cast_possible_truncation)]
         let page_idx = tuple4_page(struct_id, tenant, 0, write_seq, MAX_MAP_PAGES as u64) as usize;
         let _ = user; // user is no longer part of the slot key — preserved in payload.
@@ -335,7 +386,7 @@ impl QuickNode {
         for peer_id in self.peer_ids() {
             self.inner.replication.record_send(peer_id, write_seq);
         }
-        // Phase 14 persists the write and fans it out to peers here.
+
         TransportResponse {
             seq,
             payload: Vec::new(),
@@ -660,6 +711,9 @@ mod tests {
     use super::*;
     use crate::config::OwnershipSpec;
 
+    /// In-memory test config — uses an empty `data_dir` so `QuickNode::new`
+    /// skips opening real storage files.  Tests that need on-disk storage
+    /// should construct their own `Config` with a `tempdir().path()`.
     fn cfg(tenant: u64, start: u16, end: u16) -> Config {
         Config {
             listen: "127.0.0.1:7700".into(),
@@ -671,7 +725,10 @@ mod tests {
                 shard_end: end,
             }],
             bloom_interval_secs: 1,
-            data_dir: std::path::PathBuf::from("/tmp"),
+            // Empty path → in-memory mode (no storage files opened).
+            // Tests that need real storage build their own Config with
+            // `tempfile::tempdir()`.
+            data_dir: std::path::PathBuf::new(),
             cluster_key: None,
         }
     }

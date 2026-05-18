@@ -7,11 +7,20 @@
 //! is fanned out to surviving peers so they remove the draining node from their
 //! consistent-hash rings.
 
+use wavedb_monitor::{LogBuffer, push_log};
 use wavedb_test_cluster::TestCluster;
 
 /// Print quick-node addresses and connectivity info.
-pub fn print_topology(cluster: &TestCluster) {
+pub fn print_topology(cluster: &TestCluster, log: &LogBuffer) {
     for (i, node) in cluster.quick_nodes.iter().enumerate() {
-        println!("  quick-node[{i}]  {}", node.ws_url());
+        push_log(
+            log,
+            format!(
+                "  quick-node[{i}]  {}, data_dir: {}",
+                node.ws_url(),
+                node.storage()
+                    .map_or("<none>", |s| s.data_dir.to_str().unwrap_or_default())
+            ),
+        );
     }
 }

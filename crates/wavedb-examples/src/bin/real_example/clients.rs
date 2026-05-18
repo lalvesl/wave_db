@@ -24,6 +24,8 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
+use wavedb::Db;
+use wavedb_net::WsClient;
 use wavedb_test_cluster::TestCluster;
 
 use crate::TENANT;
@@ -87,13 +89,45 @@ pub async fn launch_continuous_with(
     let mut tasks = Vec::with_capacity(n_clients);
     let per_node = (n_clients / 3).max(1);
 
+    // Snapshot the per-node WS URLs upfront so each client task can run
+    // independently without borrowing the cluster.  This is what lets us
+    // spawn 3900 tasks immediately instead of sequentially awaiting each
+    // open — the main thread returns in ms and the TUI's 350 ms /metrics
+    // timeout never trips.
+    let ws_urls: Vec<String> = cluster
+        .quick_nodes
+        .iter()
+        .map(wavedb_test_cluster::QuickNodeHandle::ws_url)
+        .collect();
+
     #[allow(clippy::cast_possible_truncation)]
     for user_id in 0u64..n_clients as u64 {
         let node_idx = (user_id as usize / per_node).min(2);
-        let db = cluster.open_user_via(user_id + 1, TENANT, node_idx).await;
+        let ws_url = ws_urls[node_idx].clone();
         let ctr = counters.clone();
 
         tasks.push(tokio::spawn(async move {
+            // Open the WS connection inside the spawned task so 3900
+            // handshakes run in parallel on the tokio runtime.  Sequential
+            // opens on the spawn thread used to dominate startup and
+            // starve the /metrics endpoint — that bug surfaced as every
+            // node showing "ERR" in the TUI.
+            let (client, read_loop) = match WsClient::connect(ws_url).await {
+                Ok(p) => p,
+                Err(_) => {
+                    ctr.dropped.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
+            tokio::spawn(read_loop);
+            let db = match Db::open_with_transport(client, user_id + 1, TENANT).await {
+                Ok(db) => db,
+                Err(_) => {
+                    ctr.dropped.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
+            };
+
             // ── Step 1: Unique save — the merchant profile ────────────────
             //
             // One MerchantAccount per (tenant, user).  Saved once at

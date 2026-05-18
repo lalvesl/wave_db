@@ -193,12 +193,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await;
 
-    quick_node::print_topology(&cluster);
-    println!("  slow-node       {}", cluster.slow_node.http_url());
-    println!("  tenant          {TENANT}  (payment service)");
-    println!();
-    println!("  Starting live monitor TUI — press  q  to stop and see summary.");
-
     // Brief pause so HTTP servers are up before the TUI starts polling.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -217,6 +211,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let log: LogBuffer = new_log();
     let done = Arc::new(AtomicBool::new(false)); // never set — TUI lives until 'q'
     let on_quit = Arc::new(AtomicBool::new(false)); // set by TUI on 'q' → stops scenario
+
+    quick_node::print_topology(&cluster, &log);
+    println!("  slow-node       {}", cluster.slow_node.http_url());
+    println!("  tenant          {TENANT}  (payment service)");
+    println!();
+    println!("  Starting live monitor TUI — press  q  to stop and see summary.");
 
     // ── TUI takes over stdout ─────────────────────────────────────────────
     let tui_handle = run_tui_thread(monitor_cfg, log.clone(), done, on_quit.clone());
@@ -271,15 +271,21 @@ mod tests {
         // The harness creates the three files at spawn time; assert
         // they're present before any writes.
         let data_root = cluster.data_root().to_path_buf();
-        assert!(data_root.exists(), "cluster data root missing: {data_root:?}");
+        assert!(
+            data_root.exists(),
+            "cluster data root missing: {data_root:?}"
+        );
         for (i, qn) in cluster.quick_nodes.iter().enumerate() {
             let node_dir = data_root.join(format!("quick-{i}"));
             assert!(node_dir.exists(), "node-{i} dir missing: {node_dir:?}");
-            assert!(node_dir.join("journal.log").exists(), "node-{i} journal missing");
+            assert!(
+                node_dir.join("journal.log").exists(),
+                "node-{i} journal missing"
+            );
             assert!(node_dir.join("heap.bin").exists(), "node-{i} heap missing");
-            // The data file is opened lazily on first flush, so we only
-            // assert the directory + journal + heap exist.
-            assert_eq!(qn.storage.data_dir, node_dir);
+            // QuickNode owns the storage; check the data_dir matches.
+            let storage = qn.storage().expect("quick-node storage attached");
+            assert_eq!(storage.data_dir, node_dir);
         }
 
         let (client_tasks, counters) = clients::launch_continuous_with(&cluster, 12).await;
@@ -296,11 +302,21 @@ mod tests {
         );
 
         // Flush each node's on-disk DataFile to materialise the snapshot.
+        // Every write was already journalled-and-fsynced inside handle_write;
+        // this just persists the page table snapshot.  Confirms the journal
+        // file actually grew (proves the WAL is wired, not bypassed).
         for qn in &cluster.quick_nodes {
-            qn.storage
-                .data_file
-                .flush()
+            let storage = qn.storage().expect("quick-node storage attached");
+            storage
+                .flush_snapshot()
                 .expect("flush quick-node data file");
+            let journal_size = std::fs::metadata(storage.data_dir.join("journal.log"))
+                .unwrap()
+                .len();
+            assert!(
+                journal_size > 0,
+                "journal must be non-empty after committed writes"
+            );
         }
 
         cluster.shutdown().await;
