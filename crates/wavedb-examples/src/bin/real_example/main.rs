@@ -177,11 +177,38 @@ pub async fn run_continuous(
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+/// Try to raise the per-process file-descriptor soft limit to the hard
+/// limit (or `target`, whichever is smaller).  No-op if already high
+/// enough.  Logs and continues on any error — the example still works at
+/// reduced client count if it can't bump the limit.
+fn bump_nofile(target: u64) {
+    use rlimit::Resource;
+    let (soft, hard) = match Resource::NOFILE.get() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("rlimit get failed: {e}");
+            return;
+        }
+    };
+    let want = hard.min(target).max(soft);
+    if want > soft {
+        if let Err(e) = Resource::NOFILE.set(want, hard) {
+            eprintln!("rlimit set {want} failed: {e}");
+        } else {
+            eprintln!("Bumped RLIMIT_NOFILE: {soft} → {want} (hard {hard})");
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║     WaveDB — Payment Gateway Continuous Load Test        ║");
     println!("╚══════════════════════════════════════════════════════════╝");
+
+    // 3900 clients × (1 client-side WS + 1 server-side WS) + monitor
+    // polls + per-node storage files = comfortably under 16 384.
+    bump_nofile(65_536);
 
     // ── Cluster spawn ─────────────────────────────────────────────────────
     sep("Spawning cluster");

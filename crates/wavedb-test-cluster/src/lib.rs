@@ -146,6 +146,10 @@ pub struct TestCluster {
     pub front_door: String,
     /// Resolved configuration used to spawn this cluster.
     owned_tenant: u64,
+    /// Shared HTTP client for slow-node flushes.  Reused across every
+    /// `flush_batch` call so connections are pooled — otherwise each
+    /// flush opens a fresh TCP socket and we hit `EMFILE` under load.
+    flush_client: reqwest::Client,
     /// Temp directory that holds every Quick-Node's `data_dir`.
     ///
     /// Kept alive for the cluster's lifetime — dropping it removes every
@@ -245,6 +249,15 @@ impl TestCluster {
         let front_door = quick_nodes[0].ws_url();
         let owned_tenant = spec.owned_tenant;
 
+        // One pooled HTTP client shared by every `flush_batch` call.
+        // Connection-pool keeps a few idle sockets warm and bounds the
+        // total fd count regardless of flush frequency.
+        let flush_client = reqwest::Client::builder()
+            .pool_max_idle_per_host(8)
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build()
+            .expect("build flush client");
+
         Self {
             quick_nodes,
             slow_node: SlowNodeHandle {
@@ -254,6 +267,7 @@ impl TestCluster {
             },
             front_door,
             owned_tenant,
+            flush_client,
             _data_dir: data_root,
         }
     }
@@ -340,13 +354,17 @@ impl TestCluster {
     /// replication path to be implemented.
     pub async fn flush_batch(&self, batch: FlushBatch) {
         let body = wavedb_net::frame::encode_payload(&batch).expect("FlushBatch encode failed");
-        reqwest::Client::new()
+        // Reuse the pooled client — never create a fresh one per call.
+        if let Err(e) = self
+            .flush_client
             .post(format!("{}/flush", self.slow_node.http_url()))
             .header("Content-Type", "application/octet-stream")
             .body(body.to_vec())
             .send()
             .await
-            .expect("flush HTTP request failed");
+        {
+            eprintln!("flush_batch: HTTP send failed: {e}");
+        }
     }
 
     // ── Synchronisation helpers ───────────────────────────────────────────
