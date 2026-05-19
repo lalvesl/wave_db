@@ -117,6 +117,20 @@ impl NodeStorage {
         self.data_file.flush()
     }
 
+    /// Compact the journal by writing a checkpoint and dropping all entries
+    /// before it.
+    ///
+    /// Safe to call at any time: every entry in the journal has already been
+    /// applied to the data file by `commit_versioned_write`, so the
+    /// pre-checkpoint portion is redundant for crash recovery.  Compaction
+    /// rewrites surviving entries via atomic rename — the file is never
+    /// empty during the operation.
+    pub fn compact_journal(&self) -> StorageResult<()> {
+        let mut j = self.journal.lock();
+        let seq = j.checkpoint()?;
+        j.truncate_through(seq)
+    }
+
     /// Validate that the three files exist on disk.  Useful as an
     /// invariant assertion in tests.
     pub fn assert_files_exist(&self) -> StorageResult<()> {

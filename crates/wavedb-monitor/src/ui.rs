@@ -1,6 +1,6 @@
 //! Ratatui TUI: unified node table, sparklines, page-map, vim-motion navigation.
 //!
-//! # Layout
+//! # Layout (normal mode)
 //!
 //! ```text
 //! ┌─ Nodes ───────────────────────────────────────────────────────────────────────┐
@@ -20,7 +20,7 @@
 //! ┌─ System ────────────────────────────────────────────────────────────────────────┐
 //! │  Process RSS: 42 MB  │  CPU: 1.2 %  │  Node est. mem: 64 KB                   │
 //! └─────────────────────────────────────────────────────────────────────────────────┘
-//! [j/k] move  [g/G] top/bottom  [/] search  [n/N] next/prev  [q] quit
+//! [j/k] move  [g/G] top/bot  [Enter] detail  [[] []] scroll log  [/] search  [q] quit
 //! ```
 
 use std::collections::VecDeque;
@@ -39,6 +39,7 @@ use crate::poll::{ClusterSnapshot, NodeEntry};
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const SPARKLINE_LEN: usize = 60;
+const EVENT_SCROLL_STEP: usize = 5;
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
@@ -56,12 +57,19 @@ pub struct AppState {
     pub process_rss: u64,
     pub process_cpu: f32,
     pub event_log: VecDeque<String>,
+    /// Lines from the bottom of the event log currently scrolled past.
+    /// 0 = latest messages visible; N = scrolled N lines up.
+    pub event_log_offset: usize,
+    /// Node index currently shown in detail view (set when entering NodeDetail mode).
+    pub detail_node_idx: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
     Search,
+    /// Full-screen detail panel for the selected node.
+    NodeDetail,
 }
 
 impl AppState {
@@ -82,6 +90,8 @@ impl AppState {
             process_rss: 0,
             process_cpu: 0.0,
             event_log: VecDeque::new(),
+            event_log_offset: 0,
+            detail_node_idx: 0,
         }
     }
 
@@ -91,12 +101,12 @@ impl AppState {
             self.event_log.pop_front();
         }
         self.event_log.push_back(msg.into());
+        // Auto-scroll to bottom on new messages (only when offset is 0).
     }
 
     pub fn update(&mut self, snapshot: ClusterSnapshot) {
         self.snapshot = snapshot;
 
-        // Sparklines: sum writes/reads from Quick nodes only.
         let total_writes: u64 = self
             .snapshot
             .nodes
@@ -189,6 +199,17 @@ impl AppState {
         }
     }
 
+    // ── Event log scroll ──────────────────────────────────────────────────────
+
+    pub fn scroll_events_up(&mut self, visible_rows: usize) {
+        let max_offset = self.event_log.len().saturating_sub(visible_rows);
+        self.event_log_offset = (self.event_log_offset + EVENT_SCROLL_STEP).min(max_offset);
+    }
+
+    pub fn scroll_events_down(&mut self) {
+        self.event_log_offset = self.event_log_offset.saturating_sub(EVENT_SCROLL_STEP);
+    }
+
     // ── Search ────────────────────────────────────────────────────────────────
 
     pub fn search_push(&mut self, c: char) {
@@ -279,6 +300,7 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> bool {
     match state.mode {
         InputMode::Normal => handle_normal(state, key),
         InputMode::Search => handle_search(state, key),
+        InputMode::NodeDetail => handle_detail(state, key),
     }
 }
 
@@ -296,6 +318,16 @@ fn handle_normal(state: &mut AppState, key: KeyEvent) -> bool {
             state.mode = InputMode::Search;
             state.clear_search();
         }
+        // Enter opens full-screen detail for the selected node.
+        KeyCode::Enter => {
+            if let Some(idx) = state.table.selected() {
+                state.detail_node_idx = idx;
+                state.mode = InputMode::NodeDetail;
+            }
+        }
+        // [ / ] scroll the event log up / down.
+        KeyCode::Char('[') | KeyCode::PageUp => state.scroll_events_up(4),
+        KeyCode::Char(']') | KeyCode::PageDown => state.scroll_events_down(),
         _ => {}
     }
     true
@@ -317,9 +349,26 @@ fn handle_search(state: &mut AppState, key: KeyEvent) -> bool {
     true
 }
 
+fn handle_detail(state: &mut AppState, key: KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+            state.mode = InputMode::Normal;
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
+        _ => {}
+    }
+    true
+}
+
 // ── Render ────────────────────────────────────────────────────────────────────
 
 pub fn render(f: &mut Frame, state: &mut AppState) {
+    if state.mode == InputMode::NodeDetail {
+        let idx = state.detail_node_idx;
+        render_node_detail(f, state, idx, f.area());
+        return;
+    }
+
     let area = f.area();
 
     let chunks = Layout::default()
@@ -327,7 +376,7 @@ pub fn render(f: &mut Frame, state: &mut AppState) {
         .constraints([
             Constraint::Min(5),    // unified node table
             Constraint::Length(3), // sparklines
-            Constraint::Length(4), // events log
+            Constraint::Length(6), // events log (taller for scroll)
             Constraint::Length(8), // page map
             Constraint::Length(3), // system
             Constraint::Length(1), // status bar
@@ -392,7 +441,11 @@ fn render_nodes_table(f: &mut Frame, state: &mut AppState, area: Rect) {
 
     let table = Table::new(rows, widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(" Nodes "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Nodes  [Enter] detail "),
+        )
         .row_highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
@@ -440,6 +493,12 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                     } else {
                         Cell::from("OK").style(Style::default().fg(Color::Green))
                     };
+                    let disk = if m.has_storage {
+                        let total = m.journal_bytes + m.heap_bytes + m.data_file_bytes;
+                        Cell::from(human_bytes(total)).style(Style::default().fg(Color::Yellow))
+                    } else {
+                        Cell::from("RAM").style(Style::default().fg(Color::DarkGray))
+                    };
                     Row::new(vec![
                         Cell::from(format!(" {idx} ")).style(match_style),
                         type_cell,
@@ -453,7 +512,7 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                         d(),
                         Cell::from(human_bytes(m.estimated_memory_bytes))
                             .style(Style::default().fg(Color::Cyan)),
-                        d(),
+                        disk,
                         Cell::from(format!("{}s", m.uptime_secs)),
                     ])
                 }
@@ -663,17 +722,271 @@ fn render_system(f: &mut Frame, state: &AppState, area: Rect) {
 fn render_event_log(f: &mut Frame, state: &AppState, area: Rect) {
     let inner_height = area.height.saturating_sub(2) as usize;
     let total = state.event_log.len();
-    let skip = total.saturating_sub(inner_height);
+
+    // event_log_offset > 0 means scrolled up: show older entries.
+    let end = total.saturating_sub(state.event_log_offset);
+    let start = end.saturating_sub(inner_height);
 
     let lines: Vec<Line> = state
         .event_log
         .iter()
-        .skip(skip)
+        .skip(start)
+        .take(end.saturating_sub(start))
         .map(|msg| Line::from(Span::raw(format!("  {msg}"))))
         .collect();
 
-    let p = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Events "));
+    let scroll_hint = if state.event_log_offset > 0 {
+        format!(
+            " Events  ↑ scrolled {} lines  []] down ",
+            state.event_log_offset
+        )
+    } else {
+        " Events  [[/]] scroll ".to_string()
+    };
+
+    let p = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(scroll_hint));
     f.render_widget(p, area);
+}
+
+// ── Node detail (full-screen) ─────────────────────────────────────────────────
+
+fn render_node_detail(f: &mut Frame, state: &AppState, idx: usize, area: Rect) {
+    let node = state.snapshot.nodes.get(idx);
+
+    match node {
+        Some(NodeEntry::Quick { url, metrics, error }) => {
+            render_quick_detail(f, idx, url, metrics.as_ref(), *error, area);
+        }
+        Some(NodeEntry::Slow { url, metrics, error }) => {
+            render_slow_detail(f, idx, url, metrics.as_ref(), *error, area);
+        }
+        None => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Node Detail — (no data) ");
+            f.render_widget(
+                Paragraph::new("  No node data. Press Esc to go back.")
+                    .block(block),
+                area,
+            );
+        }
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn render_quick_detail(
+    f: &mut Frame,
+    idx: usize,
+    url: &str,
+    metrics: Option<&wavedb_net::metrics::QuickNodeMetrics>,
+    error: bool,
+    area: Rect,
+) {
+    let title = format!(" Quick Node [{idx}] — {url} ");
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    let Some(m) = metrics else {
+        let status = if error { "ERR — no metrics available" } else { "— no data" };
+        lines.push(Line::from(vec![
+            Span::raw("  Status:    "),
+            Span::styled(status, Style::default().fg(Color::Red)),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  [Esc] back",
+            Style::default().fg(Color::DarkGray),
+        )));
+        f.render_widget(Paragraph::new(lines), inner);
+        return;
+    };
+
+    let status_span = if m.is_draining {
+        Span::styled("DRAINING", Style::default().fg(Color::Red))
+    } else {
+        Span::styled("OK", Style::default().fg(Color::Green))
+    };
+
+    // Two-column info rows.
+    let kv = |label: &'static str, val: String| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(format!("  {label:<18}"), Style::default().fg(Color::Yellow)),
+            Span::raw(val),
+        ])
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled("  Status:           ", Style::default().fg(Color::Yellow)),
+        status_span,
+        Span::styled(
+            format!("      Uptime: {}s", m.uptime_secs),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    lines.push(kv("Ring size:", m.ring_size.to_string()));
+    lines.push(kv("Owned partitions:", m.owned_partitions.to_string()));
+    lines.push(kv("Writes:", format!("{}", m.write_count)));
+    lines.push(kv("Reads:", format!("{}", m.read_count)));
+    lines.push(kv("Write bytes:", human_bytes(m.write_bytes)));
+    lines.push(kv("Est. memory:", human_bytes(m.estimated_memory_bytes)));
+    lines.push(Line::from(""));
+
+    // Storage section.
+    lines.push(Line::from(Span::styled(
+        "  ── Storage ──────────────────────────────────────────────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
+    if m.has_storage {
+        let total = m.journal_bytes + m.heap_bytes + m.data_file_bytes;
+        lines.push(kv("Mode:", "On-Disk".to_string()));
+        lines.push(Line::from(vec![
+            Span::styled("  journal.log        ", Style::default().fg(Color::Yellow)),
+            Span::styled(human_bytes(m.journal_bytes), Style::default().fg(Color::White)),
+            Span::styled(
+                "   WAL — crash-safe durability point",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  data.bin           ", Style::default().fg(Color::Yellow)),
+            Span::styled(human_bytes(m.data_file_bytes), Style::default().fg(Color::White)),
+            Span::styled(
+                "   Page table — hash-mapped 8 KiB pages",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  heap.bin           ", Style::default().fg(Color::Yellow)),
+            Span::styled(human_bytes(m.heap_bytes), Style::default().fg(Color::White)),
+            Span::styled(
+                "   Variable-length blob overflow",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        lines.push(kv("Total disk:", human_bytes(total)));
+    } else {
+        lines.push(kv("Mode:", "In-Memory (no journal / no disk files)".to_string()));
+    }
+    lines.push(Line::from(""));
+
+    // Page map inline (full width).
+    lines.push(Line::from(Span::styled(
+        "  ── Page Map ─────────────────────────────────────────────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
+    if m.page_map.is_empty() {
+        lines.push(Line::from("  (no data yet)"));
+    } else {
+        let cols = inner.width.saturating_sub(2) as usize;
+        for chunk in m.page_map.chunks(cols.max(1)) {
+            let spans: Vec<Span> = std::iter::once(Span::raw("  "))
+                .chain(chunk.iter().map(|&occ| {
+                    let (ch, color) = match occ {
+                        0 => ('·', Color::DarkGray),
+                        1..=63 => ('░', Color::Green),
+                        64..=127 => ('▒', Color::Yellow),
+                        128..=191 => ('▓', Color::LightYellow),
+                        _ => ('█', Color::Red),
+                    };
+                    Span::styled(ch.to_string(), Style::default().fg(color))
+                }))
+                .collect();
+            lines.push(Line::from(spans));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  [Esc] / [Enter] — back to cluster view",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_slow_detail(
+    f: &mut Frame,
+    idx: usize,
+    url: &str,
+    metrics: Option<&wavedb_net::metrics::SlowNodeMetrics>,
+    error: bool,
+    area: Rect,
+) {
+    let title = format!(" Slow Node [{idx}] — {url} ");
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    let Some(m) = metrics else {
+        let status = if error { "ERR — no metrics available" } else { "— no data" };
+        lines.push(Line::from(vec![
+            Span::raw("  Status:    "),
+            Span::styled(status, Style::default().fg(Color::Red)),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  [Esc] back",
+            Style::default().fg(Color::DarkGray),
+        )));
+        f.render_widget(Paragraph::new(lines), inner);
+        return;
+    };
+
+    let kv = |label: &'static str, val: String| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(format!("  {label:<18}"), Style::default().fg(Color::Yellow)),
+            Span::raw(val),
+        ])
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled("  Status:           ", Style::default().fg(Color::Yellow)),
+        Span::styled("OK", Style::default().fg(Color::Green)),
+        Span::styled(
+            format!("      Uptime: {}s", m.uptime_secs),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    lines.push(kv("Records:", m.record_count.to_string()));
+    lines.push(kv("Tenants:", m.tenant_count.to_string()));
+    lines.push(kv("Flush count:", m.flush_count.to_string()));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled(
+        "  ── Storage ──────────────────────────────────────────────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(kv("Mode:", "In-Memory (audit store)".to_string()));
+    lines.push(Line::from(vec![
+        Span::styled("  Audit journal      ", Style::default().fg(Color::Yellow)),
+        Span::styled(human_bytes(m.journal_bytes), Style::default().fg(Color::White)),
+        Span::styled(
+            "   Append-only versioned history",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  Index              ", Style::default().fg(Color::Yellow)),
+        Span::styled(human_bytes(m.index_bytes), Style::default().fg(Color::White)),
+        Span::styled(
+            "   In-memory record index",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  [Esc] / [Enter] — back to cluster view",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 // ── Status bar ────────────────────────────────────────────────────────────────
@@ -691,7 +1004,7 @@ fn render_statusbar(f: &mut Frame, state: &AppState, area: Rect) {
                     state.search_matches.len()
                 )
             } else {
-                "  [j/k] move  [g/G] top/bot  [/] search  [n/N] next/prev  [q] quit".to_string()
+                "  [j/k] move  [g/G] top/bot  [Enter] detail  [[] []] scroll log  [/] search  [q] quit".to_string()
             };
             Line::from(Span::styled(hint, Style::default().fg(Color::DarkGray)))
         }
@@ -703,6 +1016,10 @@ fn render_statusbar(f: &mut Frame, state: &AppState, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ),
         ]),
+        InputMode::NodeDetail => Line::from(Span::styled(
+            "  [Esc] / [Enter] — back to cluster view",
+            Style::default().fg(Color::DarkGray),
+        )),
     };
     f.render_widget(Paragraph::new(text), area);
 }

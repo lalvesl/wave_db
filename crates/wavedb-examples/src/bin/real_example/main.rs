@@ -117,20 +117,29 @@ pub async fn run_continuous(
                 );
             }
 
-            // Flush: push newly committed writes to the slow-node every 10 s.
-            _ = flush_tick.tick() => {
-                if quit.load(Ordering::Relaxed) { break; }
-                let total = counters.total_committed();
-                flush_write_seq = slow_node::flush_incremental(
-                    cluster,
-                    flushed_count,
-                    total,
-                    flush_write_seq,
-                    log,
-                )
-                .await;
-                flushed_count = total;
-            }
+            // DISABLED FOR TESTING
+            // Flush: push newly committed writes to the slow-node every 10 s,
+            // then compact each quick-node journal to free in-memory WAL entries.
+            // _ = flush_tick.tick() => {
+            //     if quit.load(Ordering::Relaxed) { break; }
+            //     let total = counters.total_committed();
+            //     flush_write_seq = slow_node::flush_incremental(
+            //         cluster,
+            //         flushed_count,
+            //         total,
+            //         flush_write_seq,
+            //         log,
+            //     )
+            //     .await;
+            //     flushed_count = total;
+            //     // Compact each journal: all pre-flush entries are already in
+            //     // the data file, so dropping them is safe.
+            //     for qn in &cluster.quick_nodes {
+            //         if let Some(storage) = qn.storage() {
+            //             let _ = storage.compact_journal();
+            //         }
+            //     }
+            // }
 
             // Chaos: drain node[0] or node[1] on a staggered schedule.
             () = tokio::time::sleep_until(chaos_at) => {

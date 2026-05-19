@@ -208,6 +208,21 @@ impl QuickNode {
             .collect();
         // Count only slots that have received at least one write.
         let page_count = page_map.iter().filter(|&&o| o > 0).count() as u64;
+        let (has_storage, journal_bytes, heap_bytes, data_file_bytes) =
+            if let Some(storage) = self.inner.storage.as_ref() {
+                let j = std::fs::metadata(storage.data_dir.join("journal.log"))
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                let h = std::fs::metadata(storage.data_dir.join("heap.bin"))
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                let d = std::fs::metadata(storage.data_dir.join("data.bin"))
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                (true, j, h, d)
+            } else {
+                (false, 0u64, 0u64, 0u64)
+            };
         QuickNodeMetrics {
             node_id: self.inner.node_id,
             listen_addr: self.inner.listen_addr.clone(),
@@ -221,6 +236,10 @@ impl QuickNode {
             page_count,
             page_map,
             estimated_memory_bytes: write_bytes + 65536,
+            has_storage,
+            journal_bytes,
+            heap_bytes,
+            data_file_bytes,
         }
     }
 

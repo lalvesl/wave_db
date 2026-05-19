@@ -3,10 +3,20 @@
 //! Every mutation is appended here before the client receives confirmation.
 //! On startup, the journal is replayed to reconcile in-memory state with
 //! what was durable.
+//!
+//! # Durability guarantee
+//!
+//! Each `append()` call writes the entry bytes and calls `sync_all()` before
+//! returning.  The file is always opened in `O_APPEND` mode — the kernel
+//! never truncates it implicitly.  Compaction (via `truncate_through`) writes
+//! surviving entries to a sibling `.tmp` file, syncs it, then atomically
+//! renames it over the original — the live journal is never truncated.
 
 use crate::anchor::{AnchorKey, AnchorSlot};
 use crate::versioned::VersionedRecord;
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// A single journal entry.
@@ -68,8 +78,14 @@ pub enum FileKind {
 }
 
 /// The append-only journal.
+///
+/// On-disk invariant: the file grows monotonically.  It is only rewritten
+/// during `truncate_through`, which uses an atomic rename so the live file
+/// is never empty.
 pub struct Journal {
     path: PathBuf,
+    /// Open append-mode handle; `None` for in-memory journals.
+    file: Option<File>,
     entries: Vec<JournalEntry>,
     /// Monotonic sequence number for checkpoint ordering.
     sequence: u64,
@@ -87,7 +103,6 @@ impl Journal {
             if data.is_empty() {
                 Vec::new()
             } else {
-                // Each entry is length-prefixed: [u32 len][postcard bytes]
                 Self::decode_entries(&data)?
             }
         } else {
@@ -106,8 +121,16 @@ impl Journal {
             .max()
             .unwrap_or(0);
 
+        // O_APPEND: kernel never implicitly seeks back — safe concurrent writes
+        // are a bonus; the real guarantee is we can never truncate by accident.
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+
         Ok(Self {
             path: path.to_path_buf(),
+            file: Some(file),
             entries,
             sequence,
         })
@@ -117,13 +140,24 @@ impl Journal {
     pub fn in_memory() -> Self {
         Self {
             path: PathBuf::new(),
+            file: None,
             entries: Vec::new(),
             sequence: 0,
         }
     }
 
     /// Append an entry to the journal.
+    ///
+    /// For file-backed journals this writes the entry bytes immediately and
+    /// calls `sync_all()` before returning — the entry is durable on `Ok(())`.
     pub fn append(&mut self, entry: JournalEntry) -> crate::StorageResult<()> {
+        if let Some(file) = &mut self.file {
+            let entry_bytes = postcard::to_allocvec(&entry)?;
+            let len = u32::try_from(entry_bytes.len()).expect("journal entry too large");
+            file.write_all(&len.to_le_bytes())?;
+            file.write_all(&entry_bytes)?;
+            file.sync_all()?;
+        }
         self.entries.push(entry);
         Ok(())
     }
@@ -173,31 +207,62 @@ impl Journal {
         std::fs::metadata(&self.path).map_or(0, |m| m.len())
     }
 
-    /// Truncate the journal, removing all entries up to and including
-    /// the given checkpoint sequence.
-    pub fn truncate_through(&mut self, through_sequence: u64) {
-        self.entries.retain(|e| match e {
-            JournalEntry::Checkpoint { sequence } => *sequence > through_sequence,
-            _ => true,
+    /// Compact the journal, discarding all entries up to and including
+    /// `through_sequence`.
+    ///
+    /// Surviving entries are written to a `.tmp` sibling, fsynced, then
+    /// atomically renamed over the live file — the journal is **never empty**
+    /// during the operation.  The in-memory `file` handle is reopened after
+    /// the rename.
+    pub fn truncate_through(&mut self, through_sequence: u64) -> crate::StorageResult<()> {
+        // Drop everything up to and including the last checkpoint whose
+        // sequence is <= through_sequence.  Entries after that point survive.
+        let cp_pos = self.entries.iter().rposition(|e| {
+            matches!(e, JournalEntry::Checkpoint { sequence } if *sequence <= through_sequence)
         });
-        // For simplicity, remove all entries before the first remaining checkpoint
-        if let Some(first_cp) = self
-            .entries
-            .iter()
-            .position(|e| matches!(e, JournalEntry::Checkpoint { .. }))
-        {
-            // Keep entries from the first checkpoint onward
-            self.entries = self.entries.split_off(first_cp);
+        if let Some(pos) = cp_pos {
+            self.entries = self.entries.split_off(pos + 1);
         }
-    }
 
-    /// Flush the journal to disk.
-    pub fn flush(&self) -> crate::StorageResult<()> {
         if self.path.as_os_str().is_empty() {
             return Ok(());
         }
-        let encoded = Self::encode_entries(&self.entries)?;
-        std::fs::write(&self.path, encoded)?;
+
+        // Write surviving entries to a temp file, fsync, then atomic rename.
+        let tmp = self.path.with_extension("tmp");
+        {
+            let mut tmp_file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&tmp)?;
+            let encoded = Self::encode_entries(&self.entries)?;
+            tmp_file.write_all(&encoded)?;
+            tmp_file.sync_all()?;
+        }
+        std::fs::rename(&tmp, &self.path)?;
+
+        // Reopen in append mode after rename so the handle points at the new inode.
+        self.file = Some(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)?,
+        );
+
+        Ok(())
+    }
+
+    /// Ensure any OS-buffered writes are on stable storage.
+    ///
+    /// Each `append()` already calls `sync_all()`, so this is a no-op in the
+    /// normal write path.  Callers that hold this as an extra safety barrier
+    /// (e.g. after a batch of appends without intervening syncs) may keep
+    /// calling it.
+    pub fn flush(&self) -> crate::StorageResult<()> {
+        if let Some(file) = &self.file {
+            file.sync_all()?;
+        }
         Ok(())
     }
 
@@ -221,7 +286,7 @@ impl Journal {
             let len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
             if pos + len > data.len() {
-                break; // truncated entry — journal was mid-write
+                break; // truncated entry — journal was mid-write at crash
             }
             let entry: JournalEntry = postcard::from_bytes(&data[pos..pos + len])?;
             entries.push(entry);
@@ -301,8 +366,86 @@ mod tests {
             j.flush().unwrap();
         }
 
-        // Reopen and verify
         let j2 = Journal::open(&path).unwrap();
         assert_eq!(j2.len(), 2); // 1 write + 1 checkpoint
+    }
+
+    #[test]
+    fn journal_grows_monotonically() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.log");
+        let mut j = Journal::open(&path).unwrap();
+
+        let size_before = j.file_bytes();
+        j.append(JournalEntry::WriteAnchor {
+            key: AnchorKey::from_raw(1),
+            slot: AnchorSlot::inline(b"x", 1),
+        })
+        .unwrap();
+        let size_after = j.file_bytes();
+
+        assert!(
+            size_after > size_before,
+            "journal must grow on every append"
+        );
+    }
+
+    #[test]
+    fn truncate_through_uses_atomic_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.log");
+        let mut j = Journal::open(&path).unwrap();
+
+        j.append(JournalEntry::WriteAnchor {
+            key: AnchorKey::from_raw(1),
+            slot: AnchorSlot::inline(b"a", 1),
+        })
+        .unwrap();
+        let seq = j.checkpoint().unwrap();
+        j.append(JournalEntry::WriteAnchor {
+            key: AnchorKey::from_raw(2),
+            slot: AnchorSlot::inline(b"b", 2),
+        })
+        .unwrap();
+
+        // Compact — removes everything up through the checkpoint.
+        j.truncate_through(seq).unwrap();
+
+        // The .tmp file must be gone (renamed away).
+        assert!(
+            !dir.path().join("journal.tmp").exists(),
+            ".tmp must not remain after compaction"
+        );
+
+        // The live file must still exist (never empty).
+        assert!(path.exists(), "journal.log must exist after compaction");
+
+        // Reopen and verify only the post-checkpoint entry survived.
+        let j2 = Journal::open(&path).unwrap();
+        assert_eq!(
+            j2.len(),
+            1,
+            "only post-checkpoint entries survive compaction"
+        );
+    }
+
+    #[test]
+    fn append_after_truncate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.log");
+        let mut j = Journal::open(&path).unwrap();
+
+        j.append(JournalEntry::Checkpoint { sequence: 1 }).unwrap();
+        j.truncate_through(1).unwrap();
+
+        // Must still be able to append after compaction.
+        j.append(JournalEntry::WriteAnchor {
+            key: AnchorKey::from_raw(99),
+            slot: AnchorSlot::inline(b"post", 99),
+        })
+        .unwrap();
+
+        let j2 = Journal::open(&path).unwrap();
+        assert_eq!(j2.len(), 1);
     }
 }

@@ -63,6 +63,15 @@ pub struct QuickNodeMetrics {
     pub page_map: Vec<u8>,
     /// Rough in-memory footprint estimate (write_bytes + structural overhead).
     pub estimated_memory_bytes: u64,
+    /// `true` when the node has on-disk storage attached.  `false` means
+    /// everything lives in RAM (no journal / heap / data files on disk).
+    pub has_storage: bool,
+    /// Size of the WAL journal file in bytes (0 when in-memory).
+    pub journal_bytes: u64,
+    /// Size of the heap blob file in bytes (0 when in-memory).
+    pub heap_bytes: u64,
+    /// Size of the data page file in bytes (0 when in-memory).
+    pub data_file_bytes: u64,
 }
 
 /// Snapshot of a Slow-Node's operational state.
