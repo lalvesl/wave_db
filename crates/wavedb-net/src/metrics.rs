@@ -72,6 +72,13 @@ pub struct QuickNodeMetrics {
     pub heap_bytes: u64,
     /// Size of the data page file in bytes (0 when in-memory).
     pub data_file_bytes: u64,
+    /// Total number of pages in the DataFile hash table (allocated, not all
+    /// necessarily occupied).  0 when in-memory.
+    pub data_file_page_count: u64,
+    /// Pages in the DataFile hash table that contain at least one entry.
+    /// `data_file_used_pages / data_file_page_count` gives the fill ratio.
+    /// 0 when in-memory.
+    pub data_file_used_pages: u64,
 }
 
 /// Snapshot of a Slow-Node's operational state.

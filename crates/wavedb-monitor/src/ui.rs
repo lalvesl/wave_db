@@ -619,11 +619,19 @@ fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {
         }) => {
             let i = state.table.selected().unwrap_or(0);
             let mb = m.write_bytes / (1024 * 1024);
-            format!(
-                " Page Map — node[{i}] Quick — {mb} MB written — {} active slots / {} ",
-                m.page_count,
-                wavedb_net::metrics::MAX_MAP_PAGES,
-            )
+            if m.data_file_page_count > 0 {
+                format!(
+                    " Page Map — node[{i}] Quick — {mb} MB written — data.bin {}/{} pages used ({:.0}%) ",
+                    m.data_file_used_pages,
+                    m.data_file_page_count,
+                    m.data_file_used_pages as f64 / m.data_file_page_count as f64 * 100.0,
+                )
+            } else {
+                format!(
+                    " Page Map — node[{i}] Quick — {mb} MB written — {} write-buf slots ",
+                    m.page_count,
+                )
+            }
         }
         Some(NodeEntry::Quick { .. }) => {
             let i = state.table.selected().unwrap_or(0);
@@ -852,14 +860,23 @@ fn render_quick_detail(
                 Style::default().fg(Color::DarkGray),
             ),
         ]));
-        lines.push(Line::from(vec![
-            Span::styled("  data.bin           ", Style::default().fg(Color::Yellow)),
-            Span::styled(human_bytes(m.data_file_bytes), Style::default().fg(Color::White)),
-            Span::styled(
-                "   Page table — hash-mapped 8 KiB pages",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
+        {
+            let page_detail = if m.data_file_page_count > 0 {
+                format!(
+                    "   {}/{} pages used ({:.0}%)",
+                    m.data_file_used_pages,
+                    m.data_file_page_count,
+                    m.data_file_used_pages as f64 / m.data_file_page_count as f64 * 100.0,
+                )
+            } else {
+                "   Page table — hash-mapped 8 KiB pages".to_string()
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  data.bin           ", Style::default().fg(Color::Yellow)),
+                Span::styled(human_bytes(m.data_file_bytes), Style::default().fg(Color::White)),
+                Span::styled(page_detail, Style::default().fg(Color::DarkGray)),
+            ]));
+        }
         lines.push(Line::from(vec![
             Span::styled("  heap.bin           ", Style::default().fg(Color::Yellow)),
             Span::styled(human_bytes(m.heap_bytes), Style::default().fg(Color::White)),
