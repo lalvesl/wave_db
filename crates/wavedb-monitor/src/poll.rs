@@ -1,5 +1,6 @@
 //! Metrics polling: POST /metrics to each node and decode the response.
 
+use futures_util::future;
 use wavedb_net::auth::TokenPurpose;
 use wavedb_net::frame::{decode_payload, encode_payload};
 use wavedb_net::metrics::{MetricsRequest, QuickNodeMetrics, SlowNodeMetrics};
@@ -46,16 +47,25 @@ pub struct ClusterSnapshot {
 }
 
 /// Poll all nodes once and return a fresh snapshot.
+///
+/// All quick-node and slow-node polls run concurrently so the total wall
+/// time is one round-trip, not `N × round-trip`.
 pub async fn poll_all(cfg: &Config, client: &reqwest::Client) -> ClusterSnapshot {
-    let mut nodes = Vec::with_capacity(cfg.quick_node_urls.len() + cfg.slow_node_urls.len());
+    let quick_futs = cfg
+        .quick_node_urls
+        .iter()
+        .map(|url| poll_quick(url, cfg, client));
+    let slow_futs = cfg
+        .slow_node_urls
+        .iter()
+        .map(|url| poll_slow(url, cfg, client));
 
-    for url in &cfg.quick_node_urls {
-        nodes.push(poll_quick(url, cfg, client).await);
-    }
-    for url in &cfg.slow_node_urls {
-        nodes.push(poll_slow(url, cfg, client).await);
-    }
+    let (quick_results, slow_results) = tokio::join!(
+        future::join_all(quick_futs),
+        future::join_all(slow_futs),
+    );
 
+    let nodes = quick_results.into_iter().chain(slow_results).collect();
     ClusterSnapshot { nodes }
 }
 
@@ -85,11 +95,28 @@ async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEn
                 error: false,
             }
         }
-        _ => NodeEntry::Quick {
-            url: url.to_string(),
-            metrics: None,
-            error: true,
-        },
+        Ok(resp) => {
+            eprintln!("[monitor] metrics {url}: HTTP {}", resp.status());
+            NodeEntry::Quick {
+                url: url.to_string(),
+                metrics: None,
+                error: true,
+            }
+        }
+        Err(e) => {
+            let mut msg = format!("[monitor] quick {url}: {e}");
+            let mut src = std::error::Error::source(&e);
+            while let Some(s) = src {
+                msg.push_str(&format!(" | {s}"));
+                src = std::error::Error::source(s);
+            }
+            eprintln!("{msg}");
+            NodeEntry::Quick {
+                url: url.to_string(),
+                metrics: None,
+                error: true,
+            }
+        }
     }
 }
 
@@ -119,11 +146,28 @@ async fn poll_slow(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEnt
                 error: false,
             }
         }
-        _ => NodeEntry::Slow {
-            url: url.to_string(),
-            metrics: None,
-            error: true,
-        },
+        Ok(resp) => {
+            eprintln!("[monitor] metrics {url}: HTTP {}", resp.status());
+            NodeEntry::Slow {
+                url: url.to_string(),
+                metrics: None,
+                error: true,
+            }
+        }
+        Err(e) => {
+            let mut msg = format!("[monitor] slow {url}: {e}");
+            let mut src = std::error::Error::source(&e);
+            while let Some(s) = src {
+                msg.push_str(&format!(" | {s}"));
+                src = std::error::Error::source(s);
+            }
+            eprintln!("{msg}");
+            NodeEntry::Slow {
+                url: url.to_string(),
+                metrics: None,
+                error: true,
+            }
+        }
     }
 }
 

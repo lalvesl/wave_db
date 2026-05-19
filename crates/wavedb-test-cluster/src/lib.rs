@@ -254,6 +254,8 @@ impl TestCluster {
         let flush_client = reqwest::Client::builder()
             .pool_max_idle_per_host(8)
             .pool_idle_timeout(Duration::from_secs(30))
+            // Slow-node flush is always loopback — never route via system proxy.
+            .no_proxy()
             .build()
             .expect("build flush client");
 

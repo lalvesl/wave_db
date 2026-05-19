@@ -26,3 +26,4 @@ crossterm.workspace = true
 sysinfo.workspace = true
 clap.workspace = true
 reqwest.workspace = true
+futures-util.workspace = true

@@ -252,12 +252,29 @@ impl QuickNode {
                 tenant,
                 filter,
             } => self.handle_query(req.seq, struct_id, user, tenant, filter),
+            // Write dispatches via spawn_blocking so the journal fsync doesn't
+            // pin a Tokio worker thread.  Without this, 3900 concurrent clients
+            // block all workers and the /metrics HTTP handler never gets CPU.
             RequestKind::Write {
                 struct_id,
                 user,
                 tenant,
                 payload,
-            } => self.handle_write(req.seq, struct_id, user, tenant, &payload),
+            } => {
+                let node = self.clone();
+                let seq = req.seq;
+                tokio::task::spawn_blocking(move || {
+                    node.handle_write(seq, struct_id, user, tenant, &payload)
+                })
+                .await
+                .unwrap_or_else(|_| TransportResponse {
+                    seq,
+                    payload: b"storage_error".to_vec(),
+                    owner_url: None,
+                    backup_url: None,
+                    notifications: Vec::new(),
+                })
+            }
             RequestKind::Delete { id, user, tenant } => {
                 self.handle_delete(req.seq, id, user, tenant)
             }

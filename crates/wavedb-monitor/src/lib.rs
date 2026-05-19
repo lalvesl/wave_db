@@ -95,6 +95,9 @@ async fn run_tui(
         .timeout(Duration::from_millis(
             cfg.refresh_ms.saturating_sub(50).max(200),
         ))
+        // All monitor polls are loopback — never route through a system proxy.
+        // Without this, HTTP_PROXY env vars silently break every metrics poll.
+        .no_proxy()
         .build()?;
 
     enable_raw_mode()?;
