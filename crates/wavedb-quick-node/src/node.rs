@@ -142,6 +142,46 @@ impl QuickNode {
         self.inner.storage.as_ref()
     }
 
+    /// Spawn a background tokio task that periodically compacts the journal.
+    ///
+    /// Every `interval_secs` seconds the task:
+    /// 1. Flushes `data.bin` (page-table snapshot to disk).
+    /// 2. Writes a checkpoint entry to the journal.
+    /// 3. Truncates journal entries before that checkpoint (atomic rename).
+    ///
+    /// This keeps the journal file and the in-memory entry Vec bounded
+    /// regardless of write volume.  The task stops automatically when
+    /// the node is draining or when its `Arc<QuickNodeInner>` is dropped
+    /// (weak-reference check).
+    ///
+    /// Returns `None` when `interval_secs == 0` or when the node has no
+    /// on-disk storage.
+    pub fn start_compaction_loop(
+        &self,
+        interval_secs: u64,
+    ) -> Option<tokio::task::AbortHandle> {
+        if interval_secs == 0 {
+            return None;
+        }
+        let storage = self.inner.storage.as_ref()?.clone();
+        let inner = Arc::downgrade(&self.inner);
+        let interval = std::time::Duration::from_secs(interval_secs);
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(inner) = inner.upgrade() else { break };
+                if inner.draining.load(Ordering::Relaxed) {
+                    break;
+                }
+                if let Err(e) = storage.compact_journal() {
+                    tracing::warn!(error = %e, "journal compaction failed");
+                }
+            }
+        })
+        .abort_handle();
+        Some(handle)
+    }
+
     // ── Accessors ─────────────────────────────────────────────────────────
 
     /// This node's stable identifier.
@@ -761,6 +801,7 @@ mod tests {
                 shard_end: end,
             }],
             bloom_interval_secs: 1,
+            journal_compact_secs: 30,
             // Empty path → in-memory mode (no storage files opened).
             // Tests that need real storage build their own Config with
             // `tempfile::tempdir()`.

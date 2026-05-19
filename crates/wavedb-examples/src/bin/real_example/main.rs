@@ -83,8 +83,8 @@ pub async fn run_continuous(
 
     // ── Loop state ────────────────────────────────────────────────────────
     let t_start = Instant::now();
-    let mut flushed_count: u64 = 0;
-    let mut flush_write_seq: u64 = 1;
+    let mut _flushed_count: u64 = 0;
+    let mut _flush_write_seq: u64 = 1;
     let mut chaos_step: usize = 0;
 
     let mut checkpoint = tokio::time::interval(Duration::from_secs(4));

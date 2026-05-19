@@ -82,6 +82,8 @@ pub struct QuickNodeHandle {
     /// runtime state without going through the network.
     pub node: Arc<QuickNode>,
     abort: AbortHandle,
+    #[allow(dead_code)]
+    _compact_task: Option<AbortHandle>,
 }
 
 impl QuickNodeHandle {
@@ -225,11 +227,13 @@ impl TestCluster {
                     shard_end: 4095,
                 }],
                 bloom_interval_secs: 60,
+                journal_compact_secs: 30,
                 data_dir: node_dir,
                 cluster_key: None,
             };
 
-            let node = Arc::new(QuickNode::new(config));
+            let node = Arc::new(QuickNode::new(config.clone()));
+            let compact_handle = node.start_compaction_loop(config.journal_compact_secs);
             let app = quick_server::router((*node).clone());
             let task = tokio::spawn(async move {
                 axum::serve(listener, app).await.unwrap();
@@ -239,6 +243,7 @@ impl TestCluster {
                 addr,
                 node,
                 abort: task.abort_handle(),
+                _compact_task: compact_handle,
             });
         }
 
@@ -327,11 +332,13 @@ impl TestCluster {
                 shard_end: 4095,
             }],
             bloom_interval_secs: 60,
+            journal_compact_secs: 30,
             data_dir: node_dir,
             cluster_key: None,
         };
 
-        let node = Arc::new(QuickNode::new(config));
+        let node = Arc::new(QuickNode::new(config.clone()));
+        let compact_handle = node.start_compaction_loop(config.journal_compact_secs);
         let app = quick_server::router((*node).clone());
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -341,6 +348,7 @@ impl TestCluster {
             addr: new_addr,
             node,
             abort: task.abort_handle(),
+            _compact_task: compact_handle,
         };
 
         tokio::time::sleep(Duration::from_millis(25)).await;

@@ -119,6 +119,10 @@ pub struct Config {
     pub owns: Vec<OwnershipSpec>,
     /// Bloom-filter tick interval (seconds).
     pub bloom_interval_secs: u64,
+    /// Journal compaction interval (seconds).  Every tick: flush data.bin,
+    /// checkpoint the journal, truncate pre-checkpoint entries from memory
+    /// and disk.  0 disables background compaction.
+    pub journal_compact_secs: u64,
     /// Data directory.
     pub data_dir: PathBuf,
     /// Parsed cluster key for HMAC-SHA256 node-to-node auth, or `None` for open mode.
@@ -134,6 +138,7 @@ impl Config {
             slow_node: args.slow_node,
             owns: args.owns,
             bloom_interval_secs: args.bloom_interval_secs,
+            journal_compact_secs: 30,
             data_dir: args.data_dir,
             cluster_key: args.cluster_key.as_deref().map(|hex| {
                 ClusterKey::from_hex(hex)
@@ -205,6 +210,7 @@ mod tests {
             slow_node: None,
             owns: Vec::new(),
             bloom_interval_secs: 1,
+            journal_compact_secs: 30,
             data_dir: std::path::PathBuf::from("/tmp"),
             cluster_key: None,
         };
@@ -220,6 +226,7 @@ mod tests {
             slow_node: None,
             owns: Vec::new(),
             bloom_interval_secs: 1,
+            journal_compact_secs: 30,
             data_dir: std::path::PathBuf::from("/tmp"),
             cluster_key: None,
         };
@@ -234,6 +241,7 @@ mod tests {
             slow_node: None,
             owns: Vec::new(),
             bloom_interval_secs: 1,
+            journal_compact_secs: 30,
             data_dir: std::path::PathBuf::from("/tmp"),
             cluster_key: None,
         };

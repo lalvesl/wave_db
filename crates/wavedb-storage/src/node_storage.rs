@@ -117,15 +117,21 @@ impl NodeStorage {
         self.data_file.flush()
     }
 
-    /// Compact the journal by writing a checkpoint and dropping all entries
-    /// before it.
+    /// Compact the journal: flush data.bin, checkpoint, then truncate.
     ///
-    /// Safe to call at any time: every entry in the journal has already been
-    /// applied to the data file by `commit_versioned_write`, so the
-    /// pre-checkpoint portion is redundant for crash recovery.  Compaction
-    /// rewrites surviving entries via atomic rename — the file is never
-    /// empty during the operation.
+    /// Order matters for crash safety:
+    /// 1. `data_file.flush()` — write the current page-table snapshot to
+    ///    `data.bin`.  After this, every committed write is recoverable from
+    ///    `data.bin` alone.
+    /// 2. Checkpoint the journal — mark the current head as durable.
+    /// 3. Truncate the journal — drop in-memory entries and rewrite the
+    ///    on-disk file via atomic rename so the file is never empty.
+    ///
+    /// Skipping step 1 would be unsafe: if we removed journal entries whose
+    /// corresponding `data.bin` pages were not yet flushed, a crash would
+    /// lose those writes.
     pub fn compact_journal(&self) -> StorageResult<()> {
+        self.data_file.flush()?;
         let mut j = self.journal.lock();
         let seq = j.checkpoint()?;
         j.truncate_through(seq)

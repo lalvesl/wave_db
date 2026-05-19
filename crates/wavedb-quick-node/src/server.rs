@@ -187,6 +187,7 @@ mod tests {
                 shard_end: 4095,
             }],
             bloom_interval_secs: 1,
+            journal_compact_secs: 0,
             // Empty path → in-memory storage; tests don't assert disk state.
             data_dir: std::path::PathBuf::new(),
             cluster_key: None,

@@ -9,9 +9,11 @@ use wavedb_test_cluster::{FlushBatch, TestCluster, VersionedRecord};
 
 use crate::TENANT;
 
+#[allow(dead_code)]
 const BATCH_SIZE: usize = 100;
 
 /// Flush records with IDs `(from_id + 1)..=to_id` to the slow-node.
+#[allow(dead_code)]
 ///
 /// Returns the next write-sequence number to use on the following call.
 /// Pass the returned value back in as `write_seq` on the next call.
