@@ -2649,6 +2649,7 @@ dependencies = [
 name = "wavedb-examples"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "postcard",
  "rlimit",
  "serde",
@@ -2657,6 +2658,8 @@ dependencies = [
  "wavedb-core",
  "wavedb-monitor",
  "wavedb-net",
+ "wavedb-quick-node",
+ "wavedb-slow-node",
  "wavedb-test-cluster",
 ]
 
