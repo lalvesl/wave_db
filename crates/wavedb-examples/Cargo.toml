@@ -44,9 +44,27 @@ path = "src/bin/anchors.rs"
 name = "cross_references"
 path = "src/bin/cross_references.rs"
 
+# ── real_example multi-process suite ─────────────────────────────────────────
+
 [[bin]]
 name = "real_example"
 path = "src/bin/real_example/main.rs"
+
+[[bin]]
+name = "re_slow_node"
+path = "src/bin/re_slow_node.rs"
+
+[[bin]]
+name = "re_quick_node"
+path = "src/bin/re_quick_node.rs"
+
+[[bin]]
+name = "re_client"
+path = "src/bin/re_client.rs"
+
+[[bin]]
+name = "re_monitor"
+path = "src/bin/re_monitor.rs"
 
 [dependencies]
 wavedb = { path = "../wavedb" }
@@ -54,9 +72,13 @@ wavedb-net = { path = "../wavedb-net" }
 wavedb-core = { path = "../wavedb-core" }
 wavedb-test-cluster = { path = "../wavedb-test-cluster" }
 wavedb-monitor = { path = "../wavedb-monitor" }
+wavedb-quick-node = { path = "../wavedb-quick-node" }
+wavedb-slow-node = { path = "../wavedb-slow-node" }
 tokio.workspace = true
 postcard.workspace = true
 serde.workspace = true
-# Real_example opens thousands of WS connections + storage files; bump
+axum = { workspace = true, features = ["ws"] }
+# real_example opens thousands of WS connections + storage files; bump
 # RLIMIT_NOFILE at startup so we don't hit the default 1024 cap.
 rlimit = "0.10"
+

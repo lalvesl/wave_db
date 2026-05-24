@@ -131,6 +131,11 @@
           }/bin/wavedb-monitor";
         };
 
+        # ── real_example: multi-process orchestrated load test ──────────────────
+        #
+        # Builds all five binaries first, then runs the orchestrator which
+        # spawns subprocesses pointing at the sibling binaries in the same
+        # release output directory.
         apps.real_example = {
           type = "app";
           program = "${
@@ -138,7 +143,21 @@
               name = "real_example";
               runtimeInputs = [ rustToolchain ];
               text = ''
-                cargo run --release --bin real_example "$@"
+                set -euo pipefail
+
+                echo "── Building all real_example binaries ──────────────────────────"
+                cargo build --release \
+                  --bin real_example \
+                  --bin re_slow_node \
+                  --bin re_quick_node \
+                  --bin re_client \
+                  --bin re_monitor
+
+                echo "── Launching orchestrator ──────────────────────────────────────"
+                # The orchestrator discovers its sibling binaries via
+                # std::env::current_exe() — all five binaries live in the same
+                # target/release/ directory after the cargo build above.
+                exec ./target/release/real_example "$@"
               '';
             }
           }/bin/real_example";
