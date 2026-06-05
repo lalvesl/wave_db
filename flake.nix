@@ -184,7 +184,7 @@
                 prettier --write "**/*.md"
                 while IFS= read -r -d "" f; do
                   tmp="$(mktemp)"
-                  jq -c . "$f" > "$tmp" && mv "$tmp" "$f"
+                  jq . "$f" > "$tmp" && mv "$tmp" "$f"
                 done < <(find . -name "*.jsonl" -not -path "./.git/*" -not -path "./target/*" -print0)
               '';
             }

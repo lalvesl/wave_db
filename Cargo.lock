@@ -2635,6 +2635,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wavedb-bench"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "wavedb-core",
+ "wavedb-storage",
+]
+
+[[package]]
 name = "wavedb-core"
 version = "0.1.0"
 dependencies = [
