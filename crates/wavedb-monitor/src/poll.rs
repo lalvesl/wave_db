@@ -60,10 +60,8 @@ pub async fn poll_all(cfg: &Config, client: &reqwest::Client) -> ClusterSnapshot
         .iter()
         .map(|url| poll_slow(url, cfg, client));
 
-    let (quick_results, slow_results) = tokio::join!(
-        future::join_all(quick_futs),
-        future::join_all(slow_futs),
-    );
+    let (quick_results, slow_results) =
+        tokio::join!(future::join_all(quick_futs), future::join_all(slow_futs),);
 
     let nodes = quick_results.into_iter().chain(slow_results).collect();
     ClusterSnapshot { nodes }

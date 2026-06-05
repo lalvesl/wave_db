@@ -301,13 +301,11 @@ impl DataFile {
         if bytes.starts_with(&DISK_FORMAT_MAGIC) {
             // Sparse format: (page_count, Vec<(page_idx, Page)>)
             let payload = &bytes[DISK_FORMAT_MAGIC.len()..];
-            let (page_count, entries): (u64, Vec<(u64, Page)>) =
-                postcard::from_bytes(payload)?;
+            let (page_count, entries): (u64, Vec<(u64, Page)>) = postcard::from_bytes(payload)?;
             if page_count == 0 {
                 return Ok(());
             }
-            let mut pages: Vec<Page> =
-                (0..page_count).map(|_| Page::new(self.page_size)).collect();
+            let mut pages: Vec<Page> = (0..page_count).map(|_| Page::new(self.page_size)).collect();
             let mut page_bytes: Vec<AtomicU64> =
                 (0..page_count).map(|_| AtomicU64::new(0)).collect();
             for (idx, page) in entries {
@@ -749,9 +747,13 @@ impl DataFile {
         let result = (|| -> StorageResult<()> {
             let old_count = self.page_count.load(Ordering::Acquire);
             // Grow by growth_factor (default 1.75×), always at least +1.
-            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let new_count = ((old_count as f64 * self.growth_factor).ceil() as u64)
-                .max(old_count + 1);
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
+            let new_count =
+                ((old_count as f64 * self.growth_factor).ceil() as u64).max(old_count + 1);
             if new_count < old_count {
                 return Err(crate::StorageError::Other(
                     "rebalance overflow: cannot grow beyond u64::MAX pages".into(),
@@ -937,7 +939,10 @@ mod tests {
         let f2 = DataFile::open_on_disk(&path, 4096).unwrap();
         for i in 1u64..=10 {
             let id = wavedb_core::Id::new(7, 0, 11, i);
-            assert!(f2.read_versioned(id).unwrap().is_some(), "id {i} missing after reload");
+            assert!(
+                f2.read_versioned(id).unwrap().is_some(),
+                "id {i} missing after reload"
+            );
         }
     }
 

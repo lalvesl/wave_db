@@ -24,22 +24,17 @@ use wavedb_quick_node::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listen = std::env::var("WAVE_QN_LISTEN")
-        .unwrap_or_else(|_| "127.0.0.1:0".to_string());
+    let listen = std::env::var("WAVE_QN_LISTEN").unwrap_or_else(|_| "127.0.0.1:0".to_string());
     let peers = std::env::var("WAVE_QN_PEERS").unwrap_or_default();
     let slow_node = std::env::var("WAVE_SLOW_ADDR").ok();
     let tenant: u64 = std::env::var("WAVE_TENANT")
         .unwrap_or_else(|_| "100".to_string())
         .parse()
         .unwrap_or(100);
-    let data_dir = std::env::var("WAVE_QN_DATA_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::temp_dir().join(format!(
-                "wavedb-re-qn-{}",
-                std::process::id()
-            ))
-        });
+    let data_dir = std::env::var("WAVE_QN_DATA_DIR").map_or_else(
+        |_| std::env::temp_dir().join(format!("wavedb-re-qn-{}", std::process::id())),
+        std::path::PathBuf::from,
+    );
 
     std::fs::create_dir_all(&data_dir)?;
 

@@ -93,6 +93,39 @@ impl QuickNodeHandle {
     pub fn storage(&self) -> Option<&Arc<NodeStorage>> {
         self.node.storage()
     }
+
+    /// Count how many versioned records with write-sequences `1..=max_seq`
+    /// (for `tenant` + `struct_id`) are currently readable from this node's
+    /// data file.
+    ///
+    /// Quick-Node writes mint their Id as `Id::new(tenant, 0, struct_id, seq)`
+    /// where `seq` is the per-node replication sequence (1-based, one per
+    /// committed write).  So when every write in a test uses the same
+    /// `(tenant, struct_id)`, the set of record Ids is exactly
+    /// `{ Id::new(tenant, 0, struct_id, k) : k ∈ 1..=current_seq }` — making
+    /// the recoverable record count directly comparable to the committed-write
+    /// count regardless of how the writes were interleaved.
+    ///
+    /// Returns 0 when the node has no on-disk storage.
+    pub fn recoverable_versioned(&self, tenant: u64, struct_id: u32, max_seq: u64) -> u64 {
+        let Some(storage) = self.node.storage() else {
+            return 0;
+        };
+        let mut found = 0;
+        for seq in 1..=max_seq {
+            let id = wavedb_core::Id::new(tenant, 0, struct_id, seq);
+            if storage
+                .data_file
+                .read_versioned(id)
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                found += 1;
+            }
+        }
+        found
+    }
 }
 
 impl QuickNodeHandle {

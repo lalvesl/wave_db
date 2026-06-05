@@ -165,8 +165,11 @@ async fn main() {
         // using a non-blocking approach. On real termination the OS kills the
         // process and the summary line may not be printed — that's acceptable.
 
-        let note_len =
-            64 + ((client_id.wrapping_mul(31).wrapping_add(seq.wrapping_mul(17))) % 384) as usize;
+        let note_len = 64
+            + ((client_id
+                .wrapping_mul(31)
+                .wrapping_add(seq.wrapping_mul(17)))
+                % 384) as usize;
         let note = make_padded_note(client_id, seq, note_len);
 
         let payment = Payment {

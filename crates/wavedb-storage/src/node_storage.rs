@@ -52,20 +52,80 @@ impl NodeStorage {
     ///
     /// Directory is created if missing.  Empty files are materialised so
     /// callers can `assert!(path.exists())` right after open.
+    ///
+    /// # Crash recovery
+    ///
+    /// `data.bin` holds the last *snapshot* (written by [`Self::compact_journal`]
+    /// or [`Self::flush_snapshot`]); `journal.log` holds every committed write
+    /// **after** that snapshot.  On open the journal is replayed into the data
+    /// file so writes made since the last snapshot are visible again — this is
+    /// what makes a write durable across a process crash, not just across a
+    /// clean shutdown.  After replay the recovered state is snapshotted and the
+    /// journal is truncated so a subsequent restart never re-applies (and
+    /// duplicates) the same entries.
     pub fn open(data_dir: &Path) -> StorageResult<Arc<Self>> {
         std::fs::create_dir_all(data_dir)?;
         let data_file = DataFile::open_on_disk(&data_dir.join("data.bin"), DEFAULT_PAGE_SIZE)?;
         let journal = Journal::open(&data_dir.join("journal.log"))?;
         let heap_file = HeapFile::open(&data_dir.join("heap.bin"))?;
-        data_file.flush()?;
-        journal.flush()?;
-        heap_file.flush()?;
-        Ok(Arc::new(Self {
+
+        let storage = Arc::new(Self {
             data_dir: data_dir.to_path_buf(),
             data_file: Arc::new(data_file),
             journal: Arc::new(Mutex::new(journal)),
             heap_file: Arc::new(Mutex::new(heap_file)),
-        }))
+        });
+
+        // Replay journalled writes that never made it into `data.bin` before
+        // the previous process exited.  No-op for a fresh or already-compacted
+        // journal.
+        storage.recover_from_journal()?;
+
+        storage.data_file.flush()?;
+        storage.journal.lock().flush()?;
+        storage.heap_file.lock().flush()?;
+        Ok(storage)
+    }
+
+    /// Replay journalled mutations into the in-memory data file, then snapshot
+    /// and truncate so the recovered state is durable in `data.bin` and the
+    /// journal is reset.
+    ///
+    /// Only [`JournalEntry::WriteVersioned`] is produced by any live write path
+    /// (request commit, rebalance relocation, drain), so that is the only
+    /// variant that must be re-applied to reconstruct queryable state.  The
+    /// remaining variants describe free-space / dictionary bookkeeping and need
+    /// no data-file mutation on recovery.
+    fn recover_from_journal(&self) -> StorageResult<()> {
+        use crate::pipeline::journal::JournalEntry;
+
+        // Snapshot the entries under the lock, then release it before touching
+        // the data file (whose writes may rebalance and take their own locks).
+        let entries = {
+            let j = self.journal.lock();
+            if j.is_empty() {
+                return Ok(());
+            }
+            j.all_entries().to_vec()
+        };
+
+        let mut replayed = 0usize;
+        for entry in &entries {
+            if let JournalEntry::WriteVersioned { record } = entry {
+                self.data_file.write_versioned(record)?;
+                replayed += 1;
+            }
+        }
+
+        if replayed > 0 {
+            // Persist the reconstructed state, then checkpoint + truncate so the
+            // next open starts from a clean snapshot with an empty journal.
+            self.data_file.flush()?;
+            let mut j = self.journal.lock();
+            let seq = j.checkpoint()?;
+            j.truncate_through(seq)?;
+        }
+        Ok(())
     }
 
     /// **Write-Ahead Logging commit point.**
@@ -183,5 +243,66 @@ mod tests {
 
         // Record present in the data-file in-memory state.
         assert!(storage.data_file.read_versioned(id).unwrap().is_some());
+    }
+
+    #[test]
+    fn journal_replays_unsnapshotted_writes_on_reopen() {
+        // The WAL durability contract: a write that returned Ok survives a
+        // crash even when no snapshot ran between the write and the crash.
+        let dir = tempfile::tempdir().unwrap();
+
+        let ids: Vec<wavedb_core::Id> = (1..=128)
+            .map(|seq| wavedb_core::Id::new(7, 0, 11, seq))
+            .collect();
+
+        {
+            let storage = NodeStorage::open(dir.path()).unwrap();
+            for id in &ids {
+                storage
+                    .commit_write(
+                        id.raw(),
+                        format!("payload-{}", id.created_at()).into_bytes(),
+                    )
+                    .unwrap();
+            }
+            // NB: deliberately NO flush_snapshot()/compact_journal() — this is
+            // the "crash before the next snapshot" window.  Drop the handle to
+            // simulate the process exiting.
+        }
+
+        // Reopen the same directory — recovery must rebuild every committed
+        // record from the journal.
+        let reopened = NodeStorage::open(dir.path()).unwrap();
+        for id in &ids {
+            let rec = reopened.data_file.read_versioned(*id).unwrap();
+            assert!(
+                rec.is_some(),
+                "id created_at={} lost after reopen",
+                id.created_at()
+            );
+            assert_eq!(
+                rec.unwrap().data,
+                format!("payload-{}", id.created_at()).into_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn double_reopen_does_not_duplicate_or_lose_records() {
+        // Recovery truncates the journal after replay, so a second restart
+        // must neither replay stale entries nor drop the recovered state.
+        let dir = tempfile::tempdir().unwrap();
+        let id = wavedb_core::Id::new(3, 0, 9, 99);
+
+        {
+            let storage = NodeStorage::open(dir.path()).unwrap();
+            storage.commit_write(id.raw(), b"once".to_vec()).unwrap();
+        }
+        // First reopen recovers from the journal and re-snapshots.
+        let _ = NodeStorage::open(dir.path()).unwrap();
+        // Second reopen reads the snapshot with an empty journal.
+        let again = NodeStorage::open(dir.path()).unwrap();
+        let rec = again.data_file.read_versioned(id).unwrap();
+        assert_eq!(rec.unwrap().data, b"once");
     }
 }

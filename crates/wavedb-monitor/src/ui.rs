@@ -752,8 +752,7 @@ fn render_event_log(f: &mut Frame, state: &AppState, area: Rect) {
         " Events  [[/]] scroll ".to_string()
     };
 
-    let p = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(scroll_hint));
+    let p = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(scroll_hint));
     f.render_widget(p, area);
 }
 
@@ -763,10 +762,18 @@ fn render_node_detail(f: &mut Frame, state: &AppState, idx: usize, area: Rect) {
     let node = state.snapshot.nodes.get(idx);
 
     match node {
-        Some(NodeEntry::Quick { url, metrics, error }) => {
+        Some(NodeEntry::Quick {
+            url,
+            metrics,
+            error,
+        }) => {
             render_quick_detail(f, idx, url, metrics.as_ref(), *error, area);
         }
-        Some(NodeEntry::Slow { url, metrics, error }) => {
+        Some(NodeEntry::Slow {
+            url,
+            metrics,
+            error,
+        }) => {
             render_slow_detail(f, idx, url, metrics.as_ref(), *error, area);
         }
         None => {
@@ -774,8 +781,7 @@ fn render_node_detail(f: &mut Frame, state: &AppState, idx: usize, area: Rect) {
                 .borders(Borders::ALL)
                 .title(" Node Detail — (no data) ");
             f.render_widget(
-                Paragraph::new("  No node data. Press Esc to go back.")
-                    .block(block),
+                Paragraph::new("  No node data. Press Esc to go back.").block(block),
                 area,
             );
         }
@@ -800,7 +806,11 @@ fn render_quick_detail(
     lines.push(Line::from(""));
 
     let Some(m) = metrics else {
-        let status = if error { "ERR — no metrics available" } else { "— no data" };
+        let status = if error {
+            "ERR — no metrics available"
+        } else {
+            "— no data"
+        };
         lines.push(Line::from(vec![
             Span::raw("  Status:    "),
             Span::styled(status, Style::default().fg(Color::Red)),
@@ -854,7 +864,10 @@ fn render_quick_detail(
         lines.push(kv("Mode:", "On-Disk".to_string()));
         lines.push(Line::from(vec![
             Span::styled("  journal.log        ", Style::default().fg(Color::Yellow)),
-            Span::styled(human_bytes(m.journal_bytes), Style::default().fg(Color::White)),
+            Span::styled(
+                human_bytes(m.journal_bytes),
+                Style::default().fg(Color::White),
+            ),
             Span::styled(
                 "   WAL — crash-safe durability point",
                 Style::default().fg(Color::DarkGray),
@@ -873,7 +886,10 @@ fn render_quick_detail(
             };
             lines.push(Line::from(vec![
                 Span::styled("  data.bin           ", Style::default().fg(Color::Yellow)),
-                Span::styled(human_bytes(m.data_file_bytes), Style::default().fg(Color::White)),
+                Span::styled(
+                    human_bytes(m.data_file_bytes),
+                    Style::default().fg(Color::White),
+                ),
                 Span::styled(page_detail, Style::default().fg(Color::DarkGray)),
             ]));
         }
@@ -887,7 +903,10 @@ fn render_quick_detail(
         ]));
         lines.push(kv("Total disk:", human_bytes(total)));
     } else {
-        lines.push(kv("Mode:", "In-Memory (no journal / no disk files)".to_string()));
+        lines.push(kv(
+            "Mode:",
+            "In-Memory (no journal / no disk files)".to_string(),
+        ));
     }
     lines.push(Line::from(""));
 
@@ -942,7 +961,11 @@ fn render_slow_detail(
     lines.push(Line::from(""));
 
     let Some(m) = metrics else {
-        let status = if error { "ERR — no metrics available" } else { "— no data" };
+        let status = if error {
+            "ERR — no metrics available"
+        } else {
+            "— no data"
+        };
         lines.push(Line::from(vec![
             Span::raw("  Status:    "),
             Span::styled(status, Style::default().fg(Color::Red)),
@@ -983,7 +1006,10 @@ fn render_slow_detail(
     lines.push(kv("Mode:", "In-Memory (audit store)".to_string()));
     lines.push(Line::from(vec![
         Span::styled("  Audit journal      ", Style::default().fg(Color::Yellow)),
-        Span::styled(human_bytes(m.journal_bytes), Style::default().fg(Color::White)),
+        Span::styled(
+            human_bytes(m.journal_bytes),
+            Style::default().fg(Color::White),
+        ),
         Span::styled(
             "   Append-only versioned history",
             Style::default().fg(Color::DarkGray),
@@ -991,7 +1017,10 @@ fn render_slow_detail(
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Index              ", Style::default().fg(Color::Yellow)),
-        Span::styled(human_bytes(m.index_bytes), Style::default().fg(Color::White)),
+        Span::styled(
+            human_bytes(m.index_bytes),
+            Style::default().fg(Color::White),
+        ),
         Span::styled(
             "   In-memory record index",
             Style::default().fg(Color::DarkGray),

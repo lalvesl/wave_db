@@ -123,10 +123,7 @@ impl Journal {
 
         // O_APPEND: kernel never implicitly seeks back — safe concurrent writes
         // are a bonus; the real guarantee is we can never truncate by accident.
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -217,9 +214,9 @@ impl Journal {
     pub fn truncate_through(&mut self, through_sequence: u64) -> crate::StorageResult<()> {
         // Drop everything up to and including the last checkpoint whose
         // sequence is <= through_sequence.  Entries after that point survive.
-        let cp_pos = self.entries.iter().rposition(|e| {
-            matches!(e, JournalEntry::Checkpoint { sequence } if *sequence <= through_sequence)
-        });
+        let cp_pos = self.entries.iter().rposition(
+            |e| matches!(e, JournalEntry::Checkpoint { sequence } if *sequence <= through_sequence),
+        );
         if let Some(pos) = cp_pos {
             self.entries = self.entries.split_off(pos + 1);
         }
