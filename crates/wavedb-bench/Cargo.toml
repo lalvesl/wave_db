@@ -1,0 +1,31 @@
+[package]
+name = "wavedb-bench"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+wavedb-core = { path = "../wavedb-core" }
+wavedb-storage = { path = "../wavedb-storage" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+# Statistical micro-benchmarks (writes to target/criterion, git-ignored).
+[[bench]]
+name = "throughput"
+harness = false
+
+# Git-tracked performance recorder.  `cargo run -p wavedb-bench --release
+# --bin record-perf` appends a sample row to results/history.jsonl and
+# regenerates results/latest.md.
+[[bin]]
+name = "record-perf"
+path = "src/bin/record_perf.rs"

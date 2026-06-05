@@ -1,0 +1,59 @@
+{
+  "ts_unix": 1780628277,
+  "timestamp_utc": "2026-06-05T02:57:57Z",
+  "git_commit": "6b4650b",
+  "arch": "x86_64",
+  "release": true,
+  "samples": [
+    {
+      "scenario": "in_memory_write",
+      "records": 50000,
+      "payload_len": 128,
+      "elapsed_secs": 1.385187275,
+      "throughput_per_sec": 36096.20222651843,
+      "mib_per_sec": 4.4062746858543,
+      "disk_bytes": 0,
+      "disk_bytes_per_record": 0.0
+    },
+    {
+      "scenario": "in_memory_write",
+      "records": 200000,
+      "payload_len": 128,
+      "elapsed_secs": 45.338305258,
+      "throughput_per_sec": 4411.280899493035,
+      "mib_per_sec": 0.5384864379263958,
+      "disk_bytes": 0,
+      "disk_bytes_per_record": 0.0
+    },
+    {
+      "scenario": "in_memory_read",
+      "records": 200000,
+      "payload_len": 128,
+      "elapsed_secs": 0.037208351,
+      "throughput_per_sec": 5375137.425466665,
+      "mib_per_sec": 656.1447052571613,
+      "disk_bytes": 0,
+      "disk_bytes_per_record": 0.0
+    },
+    {
+      "scenario": "durable_write_wal",
+      "records": 5000,
+      "payload_len": 128,
+      "elapsed_secs": 8.460002482,
+      "throughput_per_sec": 591.0163750706096,
+      "mib_per_sec": 0.07214555359748652,
+      "disk_bytes": 750007,
+      "disk_bytes_per_record": 150.0014
+    },
+    {
+      "scenario": "journal_recovery",
+      "records": 5000,
+      "payload_len": 128,
+      "elapsed_secs": 0.119506452,
+      "throughput_per_sec": 41838.74524197238,
+      "mib_per_sec": 5.107268706295456,
+      "disk_bytes": 750007,
+      "disk_bytes_per_record": 150.0014
+    }
+  ]
+}
