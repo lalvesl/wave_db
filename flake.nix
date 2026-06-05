@@ -47,8 +47,10 @@
           cargoHash = "sha256-DPdCDPTAPBrbqLUqnCwQu1dePs9lGg85JCJOCIr9qjU=";
 
           nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.openssl ]
-            ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+          buildInputs = [
+            pkgs.openssl
+          ]
+          ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.darwin.apple_sdk.frameworks.Security
           ];
         };
@@ -173,12 +175,17 @@
                 nixpkgs-fmt
                 taplo
                 prettier
+                jq
               ];
               text = ''
                 cargo fmt --all
                 nixpkgs-fmt .
                 taplo fmt
                 prettier --write "**/*.md"
+                while IFS= read -r -d "" f; do
+                  tmp="$(mktemp)"
+                  jq -c . "$f" > "$tmp" && mv "$tmp" "$f"
+                done < <(find . -name "*.jsonl" -not -path "./.git/*" -not -path "./target/*" -print0)
               '';
             }
           }/bin/fmt";
