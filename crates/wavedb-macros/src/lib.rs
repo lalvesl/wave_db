@@ -94,7 +94,8 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        let id_field: syn::Field = syn::parse_quote! { pub id: ::wavedb_core::Id };
+        let id_field: syn::Field =
+            syn::parse_quote! { pub id: ::wavedb_core::Id };
         let metadata_field: syn::Field =
             syn::parse_quote! { pub metadata: ::wavedb_core::Metadata };
 
@@ -130,7 +131,8 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     let typed_wrappers = build_typed_wrappers(name, &args, &input.vis);
     let anchors_impl = build_anchors_impl(name, &args);
     let auto_derives = build_auto_derives(&input.attrs);
-    let fields_accessor = build_fields_accessor(name, &input.vis, &user_field_idents);
+    let fields_accessor =
+        build_fields_accessor(name, &input.vis, &user_field_idents);
     let fields_name = format_ident!("{}Fields", name);
     let fields_const = quote! {
         /// Typed field handles for the query DSL — see [`::wavedb::query::Field`].

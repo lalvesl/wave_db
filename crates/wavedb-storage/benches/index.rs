@@ -17,9 +17,13 @@ fn bench_array_lookup(c: &mut Criterion) {
         }
         let target = IndexKey((n / 2) as u64);
 
-        group.bench_with_input(BenchmarkId::from_parameter(n), &target, |b, &key| {
-            b.iter(|| std::hint::black_box(idx.lookup(&key)));
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(n),
+            &target,
+            |b, &key| {
+                b.iter(|| std::hint::black_box(idx.lookup(&key)));
+            },
+        );
     }
 
     group.finish();
@@ -35,9 +39,13 @@ fn bench_btree_lookup(c: &mut Criterion) {
         let idx = BTreeIndex::from_sorted(&entries);
         let target = IndexKey((n / 2) as u64);
 
-        group.bench_with_input(BenchmarkId::from_parameter(n), &target, |b, &key| {
-            b.iter(|| std::hint::black_box(idx.lookup(&key)));
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(n),
+            &target,
+            |b, &key| {
+                b.iter(|| std::hint::black_box(idx.lookup(&key)));
+            },
+        );
     }
 
     group.finish();
@@ -52,15 +60,21 @@ fn bench_array_insert(c: &mut Criterion) {
                 || {
                     let mut idx = ArrayIndex::new();
                     for i in 0..n {
-                        idx.insert(IndexKey(i as u64 * 2), AnchorKey::from_raw(i as u128))
-                            .unwrap();
+                        idx.insert(
+                            IndexKey(i as u64 * 2),
+                            AnchorKey::from_raw(i as u128),
+                        )
+                        .unwrap();
                     }
                     idx
                 },
                 |mut idx| {
                     // Insert one new key into an already-populated index.
-                    idx.insert(IndexKey(n as u64 * 2 + 1), AnchorKey::from_raw(0))
-                        .unwrap();
+                    idx.insert(
+                        IndexKey(n as u64 * 2 + 1),
+                        AnchorKey::from_raw(0),
+                    )
+                    .unwrap();
                     std::hint::black_box(idx);
                 },
                 criterion::BatchSize::SmallInput,
@@ -79,13 +93,21 @@ fn bench_btree_insert(c: &mut Criterion) {
             b.iter_batched(
                 || {
                     let entries: Vec<_> = (0..n)
-                        .map(|i| (IndexKey(i as u64 * 2), AnchorKey::from_raw(i as u128)))
+                        .map(|i| {
+                            (
+                                IndexKey(i as u64 * 2),
+                                AnchorKey::from_raw(i as u128),
+                            )
+                        })
                         .collect();
                     BTreeIndex::from_sorted(&entries)
                 },
                 |mut idx| {
-                    idx.insert(IndexKey(n as u64 * 2 + 1), AnchorKey::from_raw(0))
-                        .unwrap();
+                    idx.insert(
+                        IndexKey(n as u64 * 2 + 1),
+                        AnchorKey::from_raw(0),
+                    )
+                    .unwrap();
                     std::hint::black_box(idx);
                 },
                 criterion::BatchSize::SmallInput,

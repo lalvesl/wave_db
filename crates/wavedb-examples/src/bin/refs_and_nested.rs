@@ -147,7 +147,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let all_books = Book::query(&db, Expr::all()).await?;
     let books_for_author: Vec<&Book> = all_books
         .iter()
-        .filter(|b| b.author == live_author.anchor() || b.anchor() == live_author.featured_book)
+        .filter(|b| {
+            b.author == live_author.anchor()
+                || b.anchor() == live_author.featured_book
+        })
         .collect();
     assert_eq!(books_for_author.len(), 1);
     let live_book = books_for_author[0];

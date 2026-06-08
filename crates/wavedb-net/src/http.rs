@@ -149,7 +149,9 @@ impl HttpClient {
                 {
                     if let Ok(bytes) = resp.bytes().await {
                         if !bytes.is_empty() {
-                            if let Ok(tr) = decode_payload::<TransportResponse>(&bytes) {
+                            if let Ok(tr) =
+                                decode_payload::<TransportResponse>(&bytes)
+                            {
                                 self.dispatch_notifications(&tr.notifications);
                             }
                         }
@@ -160,7 +162,10 @@ impl HttpClient {
     }
 
     /// Serialise and POST a single request; deserialise and return the response.
-    async fn post_request(&self, req: &TransportRequest) -> Result<TransportResponse> {
+    async fn post_request(
+        &self,
+        req: &TransportRequest,
+    ) -> Result<TransportResponse> {
         let body = encode_payload(req)?;
         let resp = self
             .inner
@@ -190,7 +195,10 @@ impl HttpClient {
     }
 
     /// Publish notifications to the local event bus.
-    fn dispatch_notifications(&self, notifications: &[crate::request::Notification]) {
+    fn dispatch_notifications(
+        &self,
+        notifications: &[crate::request::Notification],
+    ) {
         for n in notifications {
             let event = if n.deleted {
                 AnchorEvent::deleted(n.anchor_id)
@@ -213,8 +221,9 @@ impl Transport for HttpClient {
             });
         }
         self.inner.notify.notify_one();
-        rx.await
-            .map_err(|_| wavedb_core::Error::Transport("http worker dropped".into()))?
+        rx.await.map_err(|_| {
+            wavedb_core::Error::Transport("http worker dropped".into())
+        })?
     }
 
     fn disconnect(&self, user: u64, tenant: u64) {
@@ -265,7 +274,10 @@ impl Default for TestServerState {
 
 /// Handle a POST to `/` — deserialise the body as a [`TransportRequest`] and
 /// return a scripted [`TransportResponse`].
-async fn handle_post(State(state): State<TestServerState>, body: Bytes) -> impl IntoResponse {
+async fn handle_post(
+    State(state): State<TestServerState>,
+    body: Bytes,
+) -> impl IntoResponse {
     if body.is_empty() {
         // Idle keep-alive tick — return empty 200.
         return (StatusCode::OK, Bytes::new());
@@ -362,7 +374,8 @@ mod tests {
         let server = HttpTestServer::start().await;
         server.state.push_response(default_connect_resp(1));
 
-        let client = HttpClient::new(server.base_url(), Duration::from_millis(100));
+        let client =
+            HttpClient::new(server.base_url(), Duration::from_millis(100));
         let client2 = client.clone();
         let _worker = tokio::spawn(async move { client2.run().await });
 
@@ -392,7 +405,8 @@ mod tests {
             });
         }
 
-        let client = HttpClient::new(server.base_url(), Duration::from_millis(10));
+        let client =
+            HttpClient::new(server.base_url(), Duration::from_millis(10));
         let client2 = client.clone();
         let _worker = tokio::spawn(async move { client2.run().await });
 
@@ -401,7 +415,10 @@ mod tests {
         for i in 1u64..=3 {
             let c = client.clone();
             handles.push(tokio::spawn(async move {
-                let req = TransportRequest::new(i, RequestKind::Disconnect { user: 0, tenant: 0 });
+                let req = TransportRequest::new(
+                    i,
+                    RequestKind::Disconnect { user: 0, tenant: 0 },
+                );
                 c.send(req).await.unwrap()
             }));
         }
@@ -418,7 +435,8 @@ mod tests {
     async fn idle_tick_hits_server() {
         let server = HttpTestServer::start().await;
 
-        let client = HttpClient::new(server.base_url(), Duration::from_millis(50));
+        let client =
+            HttpClient::new(server.base_url(), Duration::from_millis(50));
         let client2 = client.clone();
         let _worker = tokio::spawn(async move { client2.run().await });
 
@@ -448,13 +466,17 @@ mod tests {
         };
         server.state.push_response(resp_with_notification);
 
-        let client = HttpClient::new(server.base_url(), Duration::from_millis(100));
+        let client =
+            HttpClient::new(server.base_url(), Duration::from_millis(100));
         let mut rx = client.event_bus().subscribe();
 
         let client2 = client.clone();
         let _worker = tokio::spawn(async move { client2.run().await });
 
-        let req = TransportRequest::new(1, RequestKind::Disconnect { user: 0, tenant: 0 });
+        let req = TransportRequest::new(
+            1,
+            RequestKind::Disconnect { user: 0, tenant: 0 },
+        );
         client.send(req).await.unwrap();
 
         let event = rx.try_recv().unwrap();

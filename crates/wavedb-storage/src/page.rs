@@ -84,7 +84,9 @@ pub struct Page {
 impl Page {
     /// Create a new empty page.
     pub fn new(page_size: usize) -> Self {
-        let header = PageHeader::new(u32::try_from(page_size).expect("page size overflow"));
+        let header = PageHeader::new(
+            u32::try_from(page_size).expect("page size overflow"),
+        );
         Self {
             header,
             directory: Vec::new(),
@@ -104,8 +106,10 @@ impl Page {
 
     /// Insert an object into the page. Returns `false` if there isn't enough space.
     pub fn insert(&mut self, id: u128, bytes: &[u8]) -> bool {
-        let dir_entry_cost = u32::try_from(DirEntry::SIZE).expect("dir entry size overflow");
-        let needed = dir_entry_cost + u32::try_from(bytes.len()).expect("object too large");
+        let dir_entry_cost =
+            u32::try_from(DirEntry::SIZE).expect("dir entry size overflow");
+        let needed = dir_entry_cost
+            + u32::try_from(bytes.len()).expect("object too large");
 
         if self.header.free_space() < needed {
             return false;
@@ -121,7 +125,8 @@ impl Page {
             size: u32::try_from(bytes.len()).expect("object too large for u32"),
         });
 
-        self.header.stack_offset = u32::try_from(end).expect("stack offset overflow");
+        self.header.stack_offset =
+            u32::try_from(end).expect("stack offset overflow");
         self.header.entry_count += 1;
         true
     }
@@ -135,8 +140,8 @@ impl Page {
         self.directory.retain(|e| e.id != id);
         let removed = self.directory.len() < before;
         if removed {
-            self.header.entry_count =
-                u32::try_from(self.directory.len()).expect("entry count overflow");
+            self.header.entry_count = u32::try_from(self.directory.len())
+                .expect("entry count overflow");
         }
         removed
     }

@@ -32,7 +32,9 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::bar::NINE_LEVELS;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Sparkline, Table, TableState};
+use ratatui::widgets::{
+    Block, Borders, Cell, Paragraph, Row, Sparkline, Table, TableState,
+};
 
 use crate::poll::{ClusterSnapshot, NodeEntry};
 
@@ -203,11 +205,13 @@ impl AppState {
 
     pub fn scroll_events_up(&mut self, visible_rows: usize) {
         let max_offset = self.event_log.len().saturating_sub(visible_rows);
-        self.event_log_offset = (self.event_log_offset + EVENT_SCROLL_STEP).min(max_offset);
+        self.event_log_offset =
+            (self.event_log_offset + EVENT_SCROLL_STEP).min(max_offset);
     }
 
     pub fn scroll_events_down(&mut self) {
-        self.event_log_offset = self.event_log_offset.saturating_sub(EVENT_SCROLL_STEP);
+        self.event_log_offset =
+            self.event_log_offset.saturating_sub(EVENT_SCROLL_STEP);
     }
 
     // ── Search ────────────────────────────────────────────────────────────────
@@ -228,7 +232,8 @@ impl AppState {
         if self.search_matches.is_empty() {
             return;
         }
-        self.search_cursor = (self.search_cursor + 1) % self.search_matches.len();
+        self.search_cursor =
+            (self.search_cursor + 1) % self.search_matches.len();
         let idx = self.search_matches[self.search_cursor];
         self.table.select(Some(idx));
     }
@@ -307,7 +312,9 @@ pub fn handle_key(state: &mut AppState, key: KeyEvent) -> bool {
 fn handle_normal(state: &mut AppState, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => return false,
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return false;
+        }
         KeyCode::Char('j') | KeyCode::Down => state.move_down(),
         KeyCode::Char('k') | KeyCode::Up => state.move_up(),
         KeyCode::Char('g') => state.go_top(),
@@ -354,7 +361,9 @@ fn handle_detail(state: &mut AppState, key: KeyEvent) -> bool {
         KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
             state.mode = InputMode::Normal;
         }
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return false;
+        }
         _ => {}
     }
     true
@@ -485,19 +494,25 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
             metrics,
             error,
         } => {
-            let type_cell = Cell::from("Quick").style(Style::default().fg(Color::LightGreen));
+            let type_cell = Cell::from("Quick")
+                .style(Style::default().fg(Color::LightGreen));
             match metrics {
                 Some(m) => {
                     let status = if m.is_draining {
-                        Cell::from("DRAIN").style(Style::default().fg(Color::Red))
+                        Cell::from("DRAIN")
+                            .style(Style::default().fg(Color::Red))
                     } else {
-                        Cell::from("OK").style(Style::default().fg(Color::Green))
+                        Cell::from("OK")
+                            .style(Style::default().fg(Color::Green))
                     };
                     let disk = if m.has_storage {
-                        let total = m.journal_bytes + m.heap_bytes + m.data_file_bytes;
-                        Cell::from(human_bytes(total)).style(Style::default().fg(Color::Yellow))
+                        let total =
+                            m.journal_bytes + m.heap_bytes + m.data_file_bytes;
+                        Cell::from(human_bytes(total))
+                            .style(Style::default().fg(Color::Yellow))
                     } else {
-                        Cell::from("RAM").style(Style::default().fg(Color::DarkGray))
+                        Cell::from("RAM")
+                            .style(Style::default().fg(Color::DarkGray))
                     };
                     Row::new(vec![
                         Cell::from(format!(" {idx} ")).style(match_style),
@@ -519,7 +534,8 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                 None => Row::new(vec![
                     Cell::from(format!(" {idx} ")).style(match_style),
                     type_cell,
-                    Cell::from(url.clone()).style(Style::default().fg(Color::Red)),
+                    Cell::from(url.clone())
+                        .style(Style::default().fg(Color::Red)),
                     Cell::from(if *error { "ERR" } else { "—" })
                         .style(Style::default().fg(Color::Red)),
                     d(),
@@ -539,7 +555,8 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
             metrics,
             error,
         } => {
-            let type_cell = Cell::from("Slow").style(Style::default().fg(Color::LightBlue));
+            let type_cell =
+                Cell::from("Slow").style(Style::default().fg(Color::LightBlue));
             match metrics {
                 Some(m) => Row::new(vec![
                     Cell::from(format!(" {idx} ")).style(match_style),
@@ -552,7 +569,8 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                     d(),
                     Cell::from(m.record_count.to_string()),
                     Cell::from(format!("{}", m.flush_count)),
-                    Cell::from(human_bytes(m.index_bytes)).style(Style::default().fg(Color::Cyan)),
+                    Cell::from(human_bytes(m.index_bytes))
+                        .style(Style::default().fg(Color::Cyan)),
                     Cell::from(human_bytes(m.journal_bytes))
                         .style(Style::default().fg(Color::Yellow)),
                     Cell::from(format!("{}s", m.uptime_secs)),
@@ -560,7 +578,8 @@ fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
                 None => Row::new(vec![
                     Cell::from(format!(" {idx} ")).style(match_style),
                     type_cell,
-                    Cell::from(url.clone()).style(Style::default().fg(Color::Red)),
+                    Cell::from(url.clone())
+                        .style(Style::default().fg(Color::Red)),
                     Cell::from(if *error { "ERR" } else { "—" })
                         .style(Style::default().fg(Color::Red)),
                     d(),
@@ -624,7 +643,9 @@ fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {
                     " Page Map — node[{i}] Quick — {mb} MB written — data.bin {}/{} pages used ({:.0}%) ",
                     m.data_file_used_pages,
                     m.data_file_page_count,
-                    m.data_file_used_pages as f64 / m.data_file_page_count as f64 * 100.0,
+                    m.data_file_used_pages as f64
+                        / m.data_file_page_count as f64
+                        * 100.0,
                 )
             } else {
                 format!(
@@ -637,7 +658,9 @@ fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {
             let i = state.table.selected().unwrap_or(0);
             format!(" Page Map — node[{i}] Quick — no data ")
         }
-        Some(NodeEntry::Slow { .. }) => " Page Map — Slow nodes have no page map ".to_string(),
+        Some(NodeEntry::Slow { .. }) => {
+            " Page Map — Slow nodes have no page map ".to_string()
+        }
         None => " Page Map — (no node selected) ".to_string(),
     };
 
@@ -704,14 +727,20 @@ fn render_system(f: &mut Frame, state: &AppState, area: Rect) {
         .map(|kb| {
             vec![
                 Span::raw("  │  Node est. mem: "),
-                Span::styled(format!("{kb} KB"), Style::default().fg(Color::Magenta)),
+                Span::styled(
+                    format!("{kb} KB"),
+                    Style::default().fg(Color::Magenta),
+                ),
             ]
         })
         .unwrap_or_default();
 
     let mut spans = vec![
         Span::raw("  Process RSS: "),
-        Span::styled(format!("{rss_mb} MB"), Style::default().fg(Color::Magenta)),
+        Span::styled(
+            format!("{rss_mb} MB"),
+            Style::default().fg(Color::Magenta),
+        ),
         Span::raw("  CPU: "),
         Span::styled(
             format!("{:.1} %", state.process_cpu),
@@ -752,7 +781,8 @@ fn render_event_log(f: &mut Frame, state: &AppState, area: Rect) {
         " Events  [[/]] scroll ".to_string()
     };
 
-    let p = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(scroll_hint));
+    let p = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(scroll_hint));
     f.render_widget(p, area);
 }
 
@@ -781,7 +811,8 @@ fn render_node_detail(f: &mut Frame, state: &AppState, idx: usize, area: Rect) {
                 .borders(Borders::ALL)
                 .title(" Node Detail — (no data) ");
             f.render_widget(
-                Paragraph::new("  No node data. Press Esc to go back.").block(block),
+                Paragraph::new("  No node data. Press Esc to go back.")
+                    .block(block),
                 area,
             );
         }
@@ -833,13 +864,19 @@ fn render_quick_detail(
     // Two-column info rows.
     let kv = |label: &'static str, val: String| -> Line<'static> {
         Line::from(vec![
-            Span::styled(format!("  {label:<18}"), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("  {label:<18}"),
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw(val),
         ])
     };
 
     lines.push(Line::from(vec![
-        Span::styled("  Status:           ", Style::default().fg(Color::Yellow)),
+        Span::styled(
+            "  Status:           ",
+            Style::default().fg(Color::Yellow),
+        ),
         status_span,
         Span::styled(
             format!("      Uptime: {}s", m.uptime_secs),
@@ -863,7 +900,10 @@ fn render_quick_detail(
         let total = m.journal_bytes + m.heap_bytes + m.data_file_bytes;
         lines.push(kv("Mode:", "On-Disk".to_string()));
         lines.push(Line::from(vec![
-            Span::styled("  journal.log        ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "  journal.log        ",
+                Style::default().fg(Color::Yellow),
+            ),
             Span::styled(
                 human_bytes(m.journal_bytes),
                 Style::default().fg(Color::White),
@@ -879,13 +919,18 @@ fn render_quick_detail(
                     "   {}/{} pages used ({:.0}%)",
                     m.data_file_used_pages,
                     m.data_file_page_count,
-                    m.data_file_used_pages as f64 / m.data_file_page_count as f64 * 100.0,
+                    m.data_file_used_pages as f64
+                        / m.data_file_page_count as f64
+                        * 100.0,
                 )
             } else {
                 "   Page table — hash-mapped 8 KiB pages".to_string()
             };
             lines.push(Line::from(vec![
-                Span::styled("  data.bin           ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    "  data.bin           ",
+                    Style::default().fg(Color::Yellow),
+                ),
                 Span::styled(
                     human_bytes(m.data_file_bytes),
                     Style::default().fg(Color::White),
@@ -894,8 +939,14 @@ fn render_quick_detail(
             ]));
         }
         lines.push(Line::from(vec![
-            Span::styled("  heap.bin           ", Style::default().fg(Color::Yellow)),
-            Span::styled(human_bytes(m.heap_bytes), Style::default().fg(Color::White)),
+            Span::styled(
+                "  heap.bin           ",
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                human_bytes(m.heap_bytes),
+                Style::default().fg(Color::White),
+            ),
             Span::styled(
                 "   Variable-length blob overflow",
                 Style::default().fg(Color::DarkGray),
@@ -981,13 +1032,19 @@ fn render_slow_detail(
 
     let kv = |label: &'static str, val: String| -> Line<'static> {
         Line::from(vec![
-            Span::styled(format!("  {label:<18}"), Style::default().fg(Color::Yellow)),
+            Span::styled(
+                format!("  {label:<18}"),
+                Style::default().fg(Color::Yellow),
+            ),
             Span::raw(val),
         ])
     };
 
     lines.push(Line::from(vec![
-        Span::styled("  Status:           ", Style::default().fg(Color::Yellow)),
+        Span::styled(
+            "  Status:           ",
+            Style::default().fg(Color::Yellow),
+        ),
         Span::styled("OK", Style::default().fg(Color::Green)),
         Span::styled(
             format!("      Uptime: {}s", m.uptime_secs),
@@ -1005,7 +1062,10 @@ fn render_slow_detail(
     )));
     lines.push(kv("Mode:", "In-Memory (audit store)".to_string()));
     lines.push(Line::from(vec![
-        Span::styled("  Audit journal      ", Style::default().fg(Color::Yellow)),
+        Span::styled(
+            "  Audit journal      ",
+            Style::default().fg(Color::Yellow),
+        ),
         Span::styled(
             human_bytes(m.journal_bytes),
             Style::default().fg(Color::White),
@@ -1016,7 +1076,10 @@ fn render_slow_detail(
         ),
     ]));
     lines.push(Line::from(vec![
-        Span::styled("  Index              ", Style::default().fg(Color::Yellow)),
+        Span::styled(
+            "  Index              ",
+            Style::default().fg(Color::Yellow),
+        ),
         Span::styled(
             human_bytes(m.index_bytes),
             Style::default().fg(Color::White),
@@ -1040,7 +1103,9 @@ fn render_slow_detail(
 fn render_statusbar(f: &mut Frame, state: &AppState, area: Rect) {
     let text = match state.mode {
         InputMode::Normal => {
-            let hint = if state.search_matches.is_empty() && !state.search_query.is_empty() {
+            let hint = if state.search_matches.is_empty()
+                && !state.search_query.is_empty()
+            {
                 format!("  /{} (no match)", state.search_query)
             } else if !state.search_query.is_empty() {
                 format!(
@@ -1056,7 +1121,10 @@ fn render_statusbar(f: &mut Frame, state: &AppState, area: Rect) {
         }
         InputMode::Search => Line::from(vec![
             Span::styled("SEARCH: /", Style::default().fg(Color::Yellow)),
-            Span::styled(&state.search_query, Style::default().fg(Color::White)),
+            Span::styled(
+                &state.search_query,
+                Style::default().fg(Color::White),
+            ),
             Span::styled(
                 "  [Enter] confirm  [Esc] cancel",
                 Style::default().fg(Color::DarkGray),

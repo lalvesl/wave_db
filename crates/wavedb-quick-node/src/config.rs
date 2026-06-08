@@ -37,9 +37,9 @@ impl std::str::FromStr for OwnershipSpec {
                         .map_err(|e| format!("invalid tenant value: {e}"))?,
                 );
             } else if let Some(v) = part.strip_prefix("shards=") {
-                let (a, b) = v
-                    .split_once("..")
-                    .ok_or_else(|| "shards must be formatted as N..M".to_string())?;
+                let (a, b) = v.split_once("..").ok_or_else(|| {
+                    "shards must be formatted as N..M".to_string()
+                })?;
                 let start = a
                     .parse::<u16>()
                     .map_err(|e| format!("invalid shard start: {e}"))?;

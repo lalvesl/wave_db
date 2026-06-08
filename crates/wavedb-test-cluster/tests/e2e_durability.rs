@@ -70,7 +70,10 @@ async fn drive_concurrent_writes(
                     .await
                     .expect("write transport failed");
                 assert_ne!(resp, b"not_owner", "owned write was rejected");
-                assert_ne!(resp, b"storage_error", "owned write hit a storage error");
+                assert_ne!(
+                    resp, b"storage_error",
+                    "owned write hit a storage error"
+                );
             }
         }));
     }
@@ -100,7 +103,8 @@ async fn concurrent_load_has_no_in_memory_loss() {
         "every committed write must bump the sequence"
     );
 
-    let recoverable = cluster.quick_nodes[0].recoverable_versioned(tenant, STRUCT_ID, seq);
+    let recoverable =
+        cluster.quick_nodes[0].recoverable_versioned(tenant, STRUCT_ID, seq);
     assert_eq!(
         recoverable,
         expected,
@@ -133,7 +137,8 @@ async fn sudden_death_under_load_loses_no_acknowledged_write() {
     // Restart on the same data_dir — recovery replays the journal.
     cluster.restart_quick_node(0).await;
 
-    let recoverable = cluster.quick_nodes[0].recoverable_versioned(tenant, STRUCT_ID, seq);
+    let recoverable =
+        cluster.quick_nodes[0].recoverable_versioned(tenant, STRUCT_ID, seq);
     assert_eq!(
         recoverable,
         expected,
@@ -169,7 +174,8 @@ async fn snapshot_before_crash_recovers_all() {
     cluster.kill_quick_node(0).await;
     cluster.restart_quick_node(0).await;
 
-    let recoverable = cluster.quick_nodes[0].recoverable_versioned(tenant, STRUCT_ID, seq);
+    let recoverable =
+        cluster.quick_nodes[0].recoverable_versioned(tenant, STRUCT_ID, seq);
     assert_eq!(
         recoverable,
         expected,
@@ -200,7 +206,8 @@ async fn repeated_crashes_keep_recovering_the_same_data() {
     for round in 1..=2 {
         cluster.kill_quick_node(0).await;
         cluster.restart_quick_node(0).await;
-        let recoverable = cluster.quick_nodes[0].recoverable_versioned(tenant, STRUCT_ID, seq);
+        let recoverable = cluster.quick_nodes[0]
+            .recoverable_versioned(tenant, STRUCT_ID, seq);
         assert_eq!(
             recoverable, expected,
             "round {round}: recovered {recoverable}, expected {expected}"
@@ -246,7 +253,11 @@ async fn surviving_node_keeps_data_after_peer_dies() {
     drop(db);
 
     // …and none of its previously-committed records vanished.
-    let recoverable = cluster.quick_nodes[1].recoverable_versioned(tenant, STRUCT_ID, survivor_seq);
+    let recoverable = cluster.quick_nodes[1].recoverable_versioned(
+        tenant,
+        STRUCT_ID,
+        survivor_seq,
+    );
     assert_eq!(
         recoverable,
         expected,
@@ -280,7 +291,8 @@ async fn bursty_load_then_crash_recovers_all() {
     cluster.kill_quick_node(0).await;
     cluster.restart_quick_node(0).await;
 
-    let recoverable = cluster.quick_nodes[0].recoverable_versioned(tenant, STRUCT_ID, seq);
+    let recoverable =
+        cluster.quick_nodes[0].recoverable_versioned(tenant, STRUCT_ID, seq);
     assert_eq!(
         recoverable,
         expected,

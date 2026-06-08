@@ -63,7 +63,11 @@ impl DiscreteIndex {
     }
 
     /// Point lookup: find a specific sort key within a bucket.
-    pub fn lookup(&self, bucket_key: u64, sort_key: &IndexKey) -> Option<AnchorKey> {
+    pub fn lookup(
+        &self,
+        bucket_key: u64,
+        sort_key: &IndexKey,
+    ) -> Option<AnchorKey> {
         self.buckets
             .get(&bucket_key)
             .and_then(|b| b.lookup(sort_key))

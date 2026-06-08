@@ -1,5 +1,7 @@
 use bytes::BytesMut;
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{
+    BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
+};
 use serde::{Deserialize, Serialize};
 use wavedb_net::{frame, notify::SeenFilter};
 
@@ -30,9 +32,13 @@ fn bench_frame_encode(c: &mut Criterion) {
         let msg = BenchPayload::new(size);
         group.throughput(Throughput::Bytes(size as u64));
 
-        group.bench_with_input(BenchmarkId::from_parameter(size), &msg, |b, msg| {
-            b.iter(|| std::hint::black_box(frame::encode(msg).unwrap()));
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size),
+            &msg,
+            |b, msg| {
+                b.iter(|| std::hint::black_box(frame::encode(msg).unwrap()));
+            },
+        );
     }
 
     group.finish();
@@ -46,12 +52,18 @@ fn bench_frame_decode(c: &mut Criterion) {
         let encoded = frame::encode(&msg).unwrap();
         group.throughput(Throughput::Bytes(size as u64));
 
-        group.bench_with_input(BenchmarkId::from_parameter(size), &encoded, |b, data| {
-            b.iter(|| {
-                let mut buf = BytesMut::from(data.as_ref());
-                std::hint::black_box(frame::decode::<BenchPayload>(&mut buf).unwrap())
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size),
+            &encoded,
+            |b, data| {
+                b.iter(|| {
+                    let mut buf = BytesMut::from(data.as_ref());
+                    std::hint::black_box(
+                        frame::decode::<BenchPayload>(&mut buf).unwrap(),
+                    )
+                });
+            },
+        );
     }
 
     group.finish();

@@ -128,7 +128,8 @@ async fn main() {
     };
     tokio::spawn(read_loop);
 
-    let db = match Db::open_with_transport(client, client_id + 1, tenant).await {
+    let db = match Db::open_with_transport(client, client_id + 1, tenant).await
+    {
         Ok(db) => db,
         Err(e) => {
             eprintln!("[client-{client_id}] Db::open failed: {e}");

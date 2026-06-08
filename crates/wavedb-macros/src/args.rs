@@ -65,7 +65,9 @@ impl WaveDbArgs {
             let lit: LitStr = value.parse()?;
             let s = lit.value();
             if s.is_empty() {
-                return Err(meta.error("secondary_anchor requires at least one field"));
+                return Err(
+                    meta.error("secondary_anchor requires at least one field")
+                );
             }
             self.secondary_anchors.push(s);
         } else if meta.path.is_ident("btree_threshold") {

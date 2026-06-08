@@ -6,7 +6,16 @@
 //! ```
 
 /// The three data shapes recognised by `WaveDB`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum Shape {
     /// Exactly one live record per `(STRUCT_ID, TENANT_ID)`.
     Unique,
@@ -25,7 +34,9 @@ pub enum Shape {
 /// Pack/unpack accessors are `const` so macro-generated code can build
 /// IDs at compile time when needed.
 #[repr(transparent)]
-#[derive(Copy, Clone, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Id(u128);
 
 // Bit-field masks
@@ -69,7 +80,12 @@ impl Id {
     /// assert_eq!(id.created_at(), 1_000_000);
     /// ```
     #[must_use]
-    pub const fn new(tenant: u64, shard: u16, struct_id: u32, created_at: u64) -> Self {
+    pub const fn new(
+        tenant: u64,
+        shard: u16,
+        struct_id: u32,
+        created_at: u64,
+    ) -> Self {
         let v = ((tenant as u128 & TENANT_MASK) << TENANT_SHIFT)
             | ((shard as u128 & SHARD_MASK) << SHARD_SHIFT)
             | ((struct_id as u128 & STRUCT_MASK) << STRUCT_SHIFT)

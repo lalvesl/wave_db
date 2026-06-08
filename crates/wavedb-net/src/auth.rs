@@ -57,7 +57,9 @@ impl ClusterKey {
     /// Decode a 64-hex-character string into a `ClusterKey`.
     pub fn from_hex(hex: &str) -> Result<Self, &'static str> {
         if hex.len() != 64 {
-            return Err("cluster key must be exactly 64 hex characters (32 bytes)");
+            return Err(
+                "cluster key must be exactly 64 hex characters (32 bytes)",
+            );
         }
         let mut bytes = [0u8; 32];
         for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
@@ -67,7 +69,12 @@ impl ClusterKey {
     }
 
     /// Mint a token valid at the given Unix `timestamp_secs`.
-    pub fn mint_at(&self, node_id: u64, purpose: TokenPurpose, timestamp_secs: u64) -> NodeToken {
+    pub fn mint_at(
+        &self,
+        node_id: u64,
+        purpose: TokenPurpose,
+        timestamp_secs: u64,
+    ) -> NodeToken {
         let tag = compute_tag(&self.0, node_id, timestamp_secs, purpose);
         NodeToken {
             node_id,
@@ -90,7 +97,12 @@ impl ClusterKey {
     }
 
     /// Verify a token against an explicit `now_secs` (useful in tests).
-    pub fn verify_at(&self, token: &NodeToken, purpose: TokenPurpose, now_secs: u64) -> bool {
+    pub fn verify_at(
+        &self,
+        token: &NodeToken,
+        purpose: TokenPurpose,
+        now_secs: u64,
+    ) -> bool {
         let ts = token.timestamp_secs;
         let skew = now_secs.max(ts) - now_secs.min(ts);
         if skew > WINDOW_SECS {
@@ -112,7 +124,8 @@ fn compute_tag(
     timestamp_secs: u64,
     purpose: TokenPurpose,
 ) -> [u8; 32] {
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(&node_id.to_le_bytes());
     mac.update(&timestamp_secs.to_le_bytes());
     mac.update(&[purpose as u8]);
@@ -144,7 +157,8 @@ fn now_secs() -> u64 {
 mod tests {
     use super::*;
 
-    const HEX_KEY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    const HEX_KEY: &str =
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
     fn key() -> ClusterKey {
         ClusterKey::from_hex(HEX_KEY).unwrap()
@@ -163,7 +177,8 @@ mod tests {
     #[test]
     fn from_hex_invalid_char_errors() {
         // First byte is 'zz' — not valid hex but correct length.
-        let bad = "zz0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let bad =
+            "zz0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
         assert!(ClusterKey::from_hex(bad).is_err());
     }
 

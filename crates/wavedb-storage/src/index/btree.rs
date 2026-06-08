@@ -91,7 +91,8 @@ impl BTreeIndex {
                     children.push(child_idx);
                     if i > 0 {
                         // Separator key = first key of this child
-                        let first_key = Self::first_key_of(&node_arena, child_idx);
+                        let first_key =
+                            Self::first_key_of(&node_arena, child_idx);
                         keys.push(first_key);
                     }
                 }
@@ -113,7 +114,9 @@ impl BTreeIndex {
     fn first_key_of(nodes: &[BTreeNode], idx: usize) -> IndexKey {
         match &nodes[idx] {
             BTreeNode::Leaf { entries } => entries[0].0,
-            BTreeNode::Internal { children, .. } => Self::first_key_of(nodes, children[0]),
+            BTreeNode::Internal { children, .. } => {
+                Self::first_key_of(nodes, children[0])
+            }
         }
     }
 
@@ -157,7 +160,11 @@ impl Default for BTreeIndex {
 }
 
 impl IndexBackend for BTreeIndex {
-    fn insert(&mut self, key: IndexKey, anchor: AnchorKey) -> crate::StorageResult<()> {
+    fn insert(
+        &mut self,
+        key: IndexKey,
+        anchor: AnchorKey,
+    ) -> crate::StorageResult<()> {
         let leaf_idx = self.find_leaf(&key);
         match &mut self.nodes[leaf_idx] {
             BTreeNode::Leaf { entries } => {
@@ -193,7 +200,8 @@ impl IndexBackend for BTreeIndex {
         let leaf_idx = self.find_leaf(key);
         match &mut self.nodes[leaf_idx] {
             BTreeNode::Leaf { entries } => {
-                if let Ok(idx) = entries.binary_search_by_key(key, |(k, _)| *k) {
+                if let Ok(idx) = entries.binary_search_by_key(key, |(k, _)| *k)
+                {
                     entries.remove(idx);
                     self.count -= 1;
                     true

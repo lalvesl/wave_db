@@ -72,7 +72,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server.reply_data(serialized_updated).await; // search → updated_profile
     });
 
-    let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;
+    let db = Db::open_with_transport(
+        transport, /* user= */ 1, /* tenant= */ 42,
+    )
+    .await?;
 
     // Client role: search → absent → create
     let profile = if let Some(existing) = UserProfile::search(&db).await? {

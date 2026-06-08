@@ -29,7 +29,10 @@ pub fn build_migrate_from_with(
         })
 }
 
-pub fn build_rollback_with(name: &Ident, args: &WaveDbArgs) -> Option<proc_macro2::TokenStream> {
+pub fn build_rollback_with(
+    name: &Ident,
+    args: &WaveDbArgs,
+) -> Option<proc_macro2::TokenStream> {
     args.migrate_rollback_with
         .as_ref()
         .zip(args.migrate_rollback.as_ref())
@@ -53,7 +56,10 @@ pub fn build_rollback_with(name: &Ident, args: &WaveDbArgs) -> Option<proc_macro
         })
 }
 
-pub fn build_first_try(name: &Ident, args: &WaveDbArgs) -> Option<proc_macro2::TokenStream> {
+pub fn build_first_try(
+    name: &Ident,
+    args: &WaveDbArgs,
+) -> Option<proc_macro2::TokenStream> {
     args.first_try
         .as_ref()
         .zip(args.migrate_from.as_ref())
@@ -83,7 +89,10 @@ pub fn build_first_try(name: &Ident, args: &WaveDbArgs) -> Option<proc_macro2::T
         })
 }
 
-pub fn build_fallback(name: &Ident, args: &WaveDbArgs) -> Option<proc_macro2::TokenStream> {
+pub fn build_fallback(
+    name: &Ident,
+    args: &WaveDbArgs,
+) -> Option<proc_macro2::TokenStream> {
     args.fallback_not_found.as_ref().map(|fn_path| {
         quote! {
             impl #name {

@@ -76,12 +76,17 @@ const fn reduce(h: u64, page_count: u64) -> u64 {
 ///
 /// O(1): two mixes + a mask.
 #[inline]
-pub const fn tuple2_page(struct_id: u32, tenant_id: u64, page_count: u64) -> u64 {
+pub const fn tuple2_page(
+    struct_id: u32,
+    tenant_id: u64,
+    page_count: u64,
+) -> u64 {
     // XOR the struct_id (shifted into the high half) with the tenant_id so
     // both inputs contribute to the entire 64-bit pre-mix word.  Without
     // the shift the struct_id (typically < 1 M) would only affect the low
     // 20 bits before mixing.
-    let key = tenant_id ^ ((struct_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let key =
+        tenant_id ^ ((struct_id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
     reduce(mix64(key), page_count)
 }
 
@@ -146,7 +151,9 @@ impl PageKey {
     #[inline]
     pub const fn page(self, page_count: u64) -> u64 {
         match self {
-            Self::Tuple2 { struct_id, tenant } => tuple2_page(struct_id, tenant, page_count),
+            Self::Tuple2 { struct_id, tenant } => {
+                tuple2_page(struct_id, tenant, page_count)
+            }
             Self::Tuple4 {
                 struct_id,
                 tenant,

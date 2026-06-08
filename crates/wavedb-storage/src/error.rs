@@ -33,7 +33,9 @@ pub enum StorageError {
     NotFound,
 
     /// The data file needs to grow (rebalance trigger).
-    #[error("data file approaching capacity ({fill_ratio:.1}%), rebalance needed")]
+    #[error(
+        "data file approaching capacity ({fill_ratio:.1}%), rebalance needed"
+    )]
     RebalanceNeeded {
         /// Current fill ratio as a percentage.
         fill_ratio: f64,

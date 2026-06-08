@@ -140,18 +140,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server.reply_data(enc_everyone).await; // query all
     });
 
-    let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;
+    let db = Db::open_with_transport(
+        transport, /* user= */ 1, /* tenant= */ 42,
+    )
+    .await?;
 
     alice.clone().save(&db).await?;
     bob.clone().save(&db).await?;
     println!();
     println!("Wrote 2 employees");
 
-    let by_username = Employee::query(&db, Expr::eq("username", "alice")).await?;
+    let by_username =
+        Employee::query(&db, Expr::eq("username", "alice")).await?;
     assert_eq!(by_username.len(), 1);
     println!("by username 'alice'      → {}", by_username[0].display_name);
 
-    let by_email = Employee::query(&db, Expr::eq("email", "alice@corp.example")).await?;
+    let by_email =
+        Employee::query(&db, Expr::eq("email", "alice@corp.example")).await?;
     assert_eq!(by_email.len(), 1);
     assert_eq!(by_email[0].username, by_username[0].username);
     println!("by email                 → {}", by_email[0].display_name);

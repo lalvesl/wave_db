@@ -15,7 +15,10 @@ use std::time::{Duration, Instant};
 
 use crossterm::{
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -145,7 +148,8 @@ async fn run_tui(
         if done.load(Ordering::Acquire) && !done_announced {
             done_announced = true;
             state.push_log(
-                "══ Stress test complete — press q to exit and see summary ══".to_string(),
+                "══ Stress test complete — press q to exit and see summary ══"
+                    .to_string(),
             );
         }
 

@@ -34,7 +34,10 @@ use wavedb_net::ChannelTransport;
 
 // ── Migration fns (async, generic over Db) ────────────────────────────────────
 #[allow(clippy::unused_async)]
-async fn migrate_v41_v42<Db>(_db: &Db, old: Message41) -> wavedb_core::Result<Message42> {
+async fn migrate_v41_v42<Db>(
+    _db: &Db,
+    old: Message41,
+) -> wavedb_core::Result<Message42> {
     Ok(Message42 {
         id: old.id,
         metadata: old.metadata,
@@ -45,7 +48,10 @@ async fn migrate_v41_v42<Db>(_db: &Db, old: Message41) -> wavedb_core::Result<Me
 }
 
 #[allow(clippy::unused_async)]
-async fn rollback_v42_to_v41<Db>(_db: &Db, future: Message42) -> wavedb_core::Result<Message41> {
+async fn rollback_v42_to_v41<Db>(
+    _db: &Db,
+    future: Message42,
+) -> wavedb_core::Result<Message41> {
     Ok(Message41 {
         id: future.id,
         metadata: future.metadata,
@@ -109,12 +115,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let v42 = VersionRef::new(SID, 42);
 
     #[allow(clippy::items_after_statements)]
-    const fn assert_backward<T: wavedb_core::MigratesFrom<Source = Message41>>() {}
+    const fn assert_backward<
+        T: wavedb_core::MigratesFrom<Source = Message41>,
+    >() {
+    }
     assert_backward::<Message42>();
     println!("MigratesFrom: Message42::Source = Message41 ✓");
 
     #[allow(clippy::items_after_statements)]
-    const fn assert_forward<T: wavedb_core::RollbackFrom<Future = Message42>>() {}
+    const fn assert_forward<
+        T: wavedb_core::RollbackFrom<Future = Message42>,
+    >() {
+    }
     assert_forward::<Message41>();
     println!("RollbackFrom:  Message41::Future = Message42 ✓");
 

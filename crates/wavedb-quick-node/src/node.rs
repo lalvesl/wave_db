@@ -11,14 +11,18 @@ use std::time::Instant;
 use parking_lot::RwLock;
 
 use crate::config::Config;
-use crate::gossip::{GossipClient, GossipKind, GossipMessage, GossipResponse, GossipState};
+use crate::gossip::{
+    GossipClient, GossipKind, GossipMessage, GossipResponse, GossipState,
+};
 use crate::ownership::{OwnershipMap, ShardRange, TransferTracker};
 use crate::replication::ReplicationWatermark;
 use crate::ring::{ConsistentRing, NodeId};
 use wavedb_core::Id;
 use wavedb_net::EventBus;
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
-use wavedb_net::metrics::{MAX_MAP_PAGES, PAGE_MAP_VISUAL_FULL, QuickNodeMetrics};
+use wavedb_net::metrics::{
+    MAX_MAP_PAGES, PAGE_MAP_VISUAL_FULL, QuickNodeMetrics,
+};
 use wavedb_net::request::{RequestKind, TransportRequest, TransportResponse};
 use wavedb_storage::{NodeStorage, tuple4_page};
 
@@ -129,7 +133,9 @@ impl QuickNode {
                 write_count: AtomicU64::new(0),
                 read_count: AtomicU64::new(0),
                 write_bytes: AtomicU64::new(0),
-                page_bytes: (0..MAX_MAP_PAGES).map(|_| AtomicU64::new(0)).collect(),
+                page_bytes: (0..MAX_MAP_PAGES)
+                    .map(|_| AtomicU64::new(0))
+                    .collect(),
                 start_time: Instant::now(),
                 storage,
             }),
@@ -156,7 +162,10 @@ impl QuickNode {
     ///
     /// Returns `None` when `interval_secs == 0` or when the node has no
     /// on-disk storage.
-    pub fn start_compaction_loop(&self, interval_secs: u64) -> Option<tokio::task::AbortHandle> {
+    pub fn start_compaction_loop(
+        &self,
+        interval_secs: u64,
+    ) -> Option<tokio::task::AbortHandle> {
         if interval_secs == 0 {
             return None;
         }
@@ -306,7 +315,9 @@ impl QuickNode {
     #[allow(clippy::unused_async)]
     pub async fn handle(&self, req: TransportRequest) -> TransportResponse {
         match req.kind {
-            RequestKind::Connect { user, tenant } => self.handle_connect(req.seq, user, tenant),
+            RequestKind::Connect { user, tenant } => {
+                self.handle_connect(req.seq, user, tenant)
+            }
             RequestKind::SearchUnique {
                 struct_id,
                 user,
@@ -352,7 +363,12 @@ impl QuickNode {
 
     // ── Individual handlers ───────────────────────────────────────────────
 
-    fn handle_connect(&self, seq: u64, _user: u64, _tenant: u64) -> TransportResponse {
+    fn handle_connect(
+        &self,
+        seq: u64,
+        _user: u64,
+        _tenant: u64,
+    ) -> TransportResponse {
         TransportResponse {
             seq,
             payload: Vec::new(),
@@ -463,9 +479,12 @@ impl QuickNode {
         // Heat-map slot mirrors the storage layer's tuple4 routing so the
         // monitor's heat map reflects actual on-disk distribution.
         #[allow(clippy::cast_possible_truncation)]
-        let page_idx = tuple4_page(struct_id, tenant, 0, write_seq, MAX_MAP_PAGES as u64) as usize;
+        let page_idx =
+            tuple4_page(struct_id, tenant, 0, write_seq, MAX_MAP_PAGES as u64)
+                as usize;
         let _ = user; // user is no longer part of the slot key — preserved in payload.
-        self.inner.page_bytes[page_idx].fetch_add(payload_len, Ordering::Relaxed);
+        self.inner.page_bytes[page_idx]
+            .fetch_add(payload_len, Ordering::Relaxed);
         for peer_id in self.peer_ids() {
             self.inner.replication.record_send(peer_id, write_seq);
         }
@@ -479,7 +498,13 @@ impl QuickNode {
         }
     }
 
-    fn handle_delete(&self, seq: u64, _id: u128, _user: u64, tenant: u64) -> TransportResponse {
+    fn handle_delete(
+        &self,
+        seq: u64,
+        _id: u128,
+        _user: u64,
+        tenant: u64,
+    ) -> TransportResponse {
         if self.inner.draining.load(Ordering::Acquire) {
             return self.draining_resp(seq);
         }
@@ -496,7 +521,12 @@ impl QuickNode {
     }
 
     #[allow(clippy::unused_self)]
-    const fn handle_disconnect(&self, seq: u64, _user: u64, _tenant: u64) -> TransportResponse {
+    const fn handle_disconnect(
+        &self,
+        seq: u64,
+        _user: u64,
+        _tenant: u64,
+    ) -> TransportResponse {
         TransportResponse {
             seq,
             payload: Vec::new(),
@@ -829,7 +859,10 @@ mod tests {
     #[tokio::test]
     async fn connect_returns_owner_url() {
         let node = QuickNode::new(cfg(1, 0, 4095));
-        let req = TransportRequest::new(1, RequestKind::Connect { user: 7, tenant: 1 });
+        let req = TransportRequest::new(
+            1,
+            RequestKind::Connect { user: 7, tenant: 1 },
+        );
         let resp = node.handle(req).await;
         assert!(resp.owner_url.is_some());
         assert_eq!(resp.seq, 1);
@@ -886,7 +919,10 @@ mod tests {
     #[tokio::test]
     async fn disconnect_always_succeeds() {
         let node = QuickNode::new(cfg(1, 0, 4095));
-        let req = TransportRequest::new(1, RequestKind::Disconnect { user: 1, tenant: 1 });
+        let req = TransportRequest::new(
+            1,
+            RequestKind::Disconnect { user: 1, tenant: 1 },
+        );
         let resp = node.handle(req).await;
         assert_eq!(resp.seq, 1);
     }
@@ -975,7 +1011,10 @@ mod tests {
 
         // Connect is not affected by draining — clients use it to discover
         // the redirect target.
-        let req = TransportRequest::new(1, RequestKind::Connect { user: 1, tenant: 1 });
+        let req = TransportRequest::new(
+            1,
+            RequestKind::Connect { user: 1, tenant: 1 },
+        );
         let resp = node.handle(req).await;
         assert_eq!(resp.seq, 1);
         assert_ne!(resp.payload, b"draining" as &[u8]);

@@ -39,10 +39,10 @@ pub struct Config {
 
 impl Config {
     pub fn from_args(args: &Args) -> Self {
-        let cluster_key = args
-            .cluster_key
-            .as_deref()
-            .map(|hex| ClusterKey::from_hex(hex).expect("--cluster-key must be 64 hex characters"));
+        let cluster_key = args.cluster_key.as_deref().map(|hex| {
+            ClusterKey::from_hex(hex)
+                .expect("--cluster-key must be 64 hex characters")
+        });
         let parse_urls = |s: &str| {
             s.split(',')
                 .map(|u| u.trim().to_string())

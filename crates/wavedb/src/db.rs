@@ -14,7 +14,9 @@ use wavedb_core::{Id, MigrationChain, Result, WaveDbStruct};
 use wavedb_net::TransportResponse;
 use wavedb_net::request::{RequestKind, TransportRequest};
 
-use crate::object::{do_delete, do_query_non_unique, do_search_unique, do_write};
+use crate::object::{
+    do_delete, do_query_non_unique, do_search_unique, do_write,
+};
 use crate::query::Expr;
 
 // ── Disconnect sink ─────────────────────────────────────────────────────────
@@ -38,9 +40,12 @@ type DisconnectHook = Box<dyn Fn(u64, u64) + Send + Sync + 'static>;
 type SendFn = Arc<
     dyn Fn(
             TransportRequest,
-        )
-            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TransportResponse>> + Send>>
-        + Send
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<TransportResponse>>
+                    + Send,
+            >,
+        > + Send
         + Sync
         + 'static,
 >;
@@ -129,11 +134,16 @@ impl Db {
     ///     Ok(())
     /// }
     /// ```
-    pub async fn open_with_transport<T>(transport: T, user: u64, tenant: u64) -> Result<Self>
+    pub async fn open_with_transport<T>(
+        transport: T,
+        user: u64,
+        tenant: u64,
+    ) -> Result<Self>
     where
         T: wavedb_net::Transport + Clone,
     {
-        let connect_req = TransportRequest::new(0, RequestKind::Connect { user, tenant });
+        let connect_req =
+            TransportRequest::new(0, RequestKind::Connect { user, tenant });
         let resp = transport.send(connect_req).await?;
 
         let owner_url = resp
@@ -210,7 +220,10 @@ impl Db {
 
     // ── Low-level send ───────────────────────────────────────────────────
 
-    async fn raw_send(&self, req: TransportRequest) -> Result<TransportResponse> {
+    async fn raw_send(
+        &self,
+        req: TransportRequest,
+    ) -> Result<TransportResponse> {
         (self.send_fn)(req).await
     }
 
@@ -322,12 +335,16 @@ impl Db {
     pub async fn connect(url: &str, user: u64, tenant: u64) -> Result<Self> {
         let lower = url.to_ascii_lowercase();
         if lower.starts_with("ws://") || lower.starts_with("wss://") {
-            let (client, pump) = wavedb_net::WsClient::connect(url.to_string()).await?;
+            let (client, pump) =
+                wavedb_net::WsClient::connect(url.to_string()).await?;
             tokio::spawn(pump);
             Self::open_with_transport(client, user, tenant).await
-        } else if lower.starts_with("http://") || lower.starts_with("https://") {
-            let client =
-                wavedb_net::HttpClient::new(url.to_string(), std::time::Duration::from_millis(50));
+        } else if lower.starts_with("http://") || lower.starts_with("https://")
+        {
+            let client = wavedb_net::HttpClient::new(
+                url.to_string(),
+                std::time::Duration::from_millis(50),
+            );
             let runner = client.clone();
             tokio::spawn(async move { runner.run().await });
             Self::open_with_transport(client, user, tenant).await
@@ -393,7 +410,10 @@ impl Drop for Db {
                 }
             };
             if should_disconnect {
-                (self.inner.disconnect_hook)(self.inner.user, self.inner.tenant);
+                (self.inner.disconnect_hook)(
+                    self.inner.user,
+                    self.inner.tenant,
+                );
             }
         }
     }
@@ -427,8 +447,11 @@ mod tests {
         let counter = StdArc::new(AtomicUsize::new(0));
         let c = StdArc::clone(&counter);
 
-        let send_fn: SendFn =
-            Arc::new(|_req| Box::pin(async { Err(wavedb_core::Error::Transport("noop".into())) }));
+        let send_fn: SendFn = Arc::new(|_req| {
+            Box::pin(async {
+                Err(wavedb_core::Error::Transport("noop".into()))
+            })
+        });
 
         let db = Db {
             inner: Arc::new(DbInner {

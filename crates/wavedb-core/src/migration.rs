@@ -51,8 +51,11 @@ pub struct MigrationEntry {
 ///
 /// Generated erased wrappers call this; it is also available for hand-written
 /// Type 2 migration glue code.
-pub fn serialize_for_migration<T: serde::Serialize>(val: &T) -> crate::Result<Vec<u8>> {
-    postcard::to_allocvec(val).map_err(|e| crate::Error::MigrationSer(e.to_string()))
+pub fn serialize_for_migration<T: serde::Serialize>(
+    val: &T,
+) -> crate::Result<Vec<u8>> {
+    postcard::to_allocvec(val)
+        .map_err(|e| crate::Error::MigrationSer(e.to_string()))
 }
 
 /// Deserialize a value with postcard for use inside type-erased migration fns.
@@ -62,7 +65,8 @@ pub fn serialize_for_migration<T: serde::Serialize>(val: &T) -> crate::Result<Ve
 pub fn deserialize_for_migration<T: for<'de> serde::Deserialize<'de>>(
     bytes: &[u8],
 ) -> crate::Result<T> {
-    postcard::from_bytes(bytes).map_err(|e| crate::Error::MigrationDe(e.to_string()))
+    postcard::from_bytes(bytes)
+        .map_err(|e| crate::Error::MigrationDe(e.to_string()))
 }
 
 /// A reference to a specific struct version: `(STRUCT_ID, version)`.
@@ -155,7 +159,11 @@ impl MigrationRegistry {
     /// struct registers its own rollback edge during its `register_migration`
     /// call.  The forward edge is registered separately by the newer struct
     /// via `register_forward`.
-    pub fn register_rollback(&mut self, future: VersionRef, target: VersionRef) {
+    pub fn register_rollback(
+        &mut self,
+        future: VersionRef,
+        target: VersionRef,
+    ) {
         self.backward
             .entry(future)
             .or_default()
@@ -239,10 +247,11 @@ impl MigrationRegistry {
         let mut current = bytes.to_vec();
         for step in forward_plan.steps.iter().rev() {
             let entry = self.find_entry(step.from, step.to)?;
-            let rollback = entry.rollback_fn.ok_or(crate::Error::NoMigrationPath {
-                from: step.to.version,
-                to: step.from.version,
-            })?;
+            let rollback =
+                entry.rollback_fn.ok_or(crate::Error::NoMigrationPath {
+                    from: step.to.version,
+                    to: step.from.version,
+                })?;
             current = rollback(&current)?;
         }
         Ok(current)
@@ -251,7 +260,11 @@ impl MigrationRegistry {
     /// Resolve a migration plan from `from` to `to`.
     ///
     /// Uses BFS on the forward graph. Returns `Err` if no path exists.
-    pub fn resolve(&self, from: VersionRef, to: VersionRef) -> crate::Result<MigrationPlan> {
+    pub fn resolve(
+        &self,
+        from: VersionRef,
+        to: VersionRef,
+    ) -> crate::Result<MigrationPlan> {
         if from == to {
             return Ok(MigrationPlan { steps: Vec::new() });
         }
@@ -282,7 +295,9 @@ impl MigrationRegistry {
 
             if let Some(neighbors) = self.forward.get(&current) {
                 for &(next, _has_rollback) in neighbors {
-                    if let std::collections::hash_map::Entry::Vacant(e) = visited.entry(next) {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        visited.entry(next)
+                    {
                         e.insert(current);
                         queue.push_back(next);
                     }
@@ -302,7 +317,8 @@ impl MigrationRegistry {
             return true;
         }
 
-        let mut visited: std::collections::HashSet<VersionRef> = std::collections::HashSet::new();
+        let mut visited: std::collections::HashSet<VersionRef> =
+            std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
         queue.push_back(from);
         visited.insert(from);
@@ -327,7 +343,11 @@ impl MigrationRegistry {
         self.forward.values().map(Vec::len).sum()
     }
 
-    fn find_entry(&self, from: VersionRef, to: VersionRef) -> crate::Result<&MigrationEntry> {
+    fn find_entry(
+        &self,
+        from: VersionRef,
+        to: VersionRef,
+    ) -> crate::Result<&MigrationEntry> {
         self.entries
             .iter()
             .find(|e| e.from == from && e.to == to)

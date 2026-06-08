@@ -145,7 +145,8 @@ impl AnchorSlot {
     pub const fn is_tombstone(&self) -> bool {
         matches!(
             self.kind,
-            AnchorKind::PrimaryTombstone { .. } | AnchorKind::SecondaryTombstone
+            AnchorKind::PrimaryTombstone { .. }
+                | AnchorKind::SecondaryTombstone
         )
     }
 

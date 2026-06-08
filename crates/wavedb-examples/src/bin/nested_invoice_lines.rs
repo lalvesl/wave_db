@@ -89,7 +89,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server.reply_data(encode_query(&lines)).await; // query lines through parent
     });
 
-    let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;
+    let db = Db::open_with_transport(
+        transport, /* user= */ 1, /* tenant= */ 42,
+    )
+    .await?;
 
     invoice.save(&db).await?;
     line_a.save(&db).await?;
@@ -99,7 +102,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(found_invoices.len(), 1);
     println!("Invoices: {}", found_invoices.len());
 
-    let found_lines = InvoiceLine::query(&db, Expr::eq("product", 101u64)).await?;
+    let found_lines =
+        InvoiceLine::query(&db, Expr::eq("product", 101u64)).await?;
     assert_eq!(found_lines.len(), 2);
     println!(
         "Invoice lines for customer {}: {}",

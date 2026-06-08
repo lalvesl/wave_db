@@ -150,7 +150,8 @@ impl Journal {
     pub fn append(&mut self, entry: JournalEntry) -> crate::StorageResult<()> {
         if let Some(file) = &mut self.file {
             let entry_bytes = postcard::to_allocvec(&entry)?;
-            let len = u32::try_from(entry_bytes.len()).expect("journal entry too large");
+            let len = u32::try_from(entry_bytes.len())
+                .expect("journal entry too large");
             file.write_all(&len.to_le_bytes())?;
             file.write_all(&entry_bytes)?;
             file.sync_all()?;
@@ -211,7 +212,10 @@ impl Journal {
     /// atomically renamed over the live file — the journal is **never empty**
     /// during the operation.  The in-memory `file` handle is reopened after
     /// the rename.
-    pub fn truncate_through(&mut self, through_sequence: u64) -> crate::StorageResult<()> {
+    pub fn truncate_through(
+        &mut self,
+        through_sequence: u64,
+    ) -> crate::StorageResult<()> {
         // Drop everything up to and including the last checkpoint whose
         // sequence is <= through_sequence.  Entries after that point survive.
         let cp_pos = self.entries.iter().rposition(
@@ -264,11 +268,14 @@ impl Journal {
     }
 
     /// Encode entries to bytes (length-prefixed postcard).
-    fn encode_entries(entries: &[JournalEntry]) -> crate::StorageResult<Vec<u8>> {
+    fn encode_entries(
+        entries: &[JournalEntry],
+    ) -> crate::StorageResult<Vec<u8>> {
         let mut buf = Vec::new();
         for entry in entries {
             let entry_bytes = postcard::to_allocvec(entry)?;
-            let len = u32::try_from(entry_bytes.len()).expect("journal entry too large");
+            let len = u32::try_from(entry_bytes.len())
+                .expect("journal entry too large");
             buf.extend_from_slice(&len.to_le_bytes());
             buf.extend_from_slice(&entry_bytes);
         }
@@ -280,12 +287,14 @@ impl Journal {
         let mut entries = Vec::new();
         let mut pos = 0;
         while pos + 4 <= data.len() {
-            let len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap())
+                as usize;
             pos += 4;
             if pos + len > data.len() {
                 break; // truncated entry — journal was mid-write at crash
             }
-            let entry: JournalEntry = postcard::from_bytes(&data[pos..pos + len])?;
+            let entry: JournalEntry =
+                postcard::from_bytes(&data[pos..pos + len])?;
             entries.push(entry);
             pos += len;
         }

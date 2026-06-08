@@ -164,7 +164,12 @@ impl TransferTracker {
     }
 
     /// Register a new transfer and return its monotonic ID.
-    pub fn begin(&self, ownership: PartitionOwnership, from_node: NodeId, to_node: NodeId) -> u64 {
+    pub fn begin(
+        &self,
+        ownership: PartitionOwnership,
+        from_node: NodeId,
+        to_node: NodeId,
+    ) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.transfers.write().insert(
             id,
@@ -337,7 +342,13 @@ mod tests {
         let tracker = TransferTracker::new();
         let range = ShardRange::new(0, 63);
         let ids: Vec<u64> = (0..5u64)
-            .map(|i| tracker.begin(PartitionOwnership { tenant: i, range }, i, i + 10))
+            .map(|i| {
+                tracker.begin(
+                    PartitionOwnership { tenant: i, range },
+                    i,
+                    i + 10,
+                )
+            })
             .collect();
 
         assert_eq!(tracker.active().len(), 5);

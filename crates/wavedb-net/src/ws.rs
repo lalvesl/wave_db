@@ -47,7 +47,9 @@ struct WsClientInner {
     /// Outbound message sender (the write half of the WS connection).
     tx: tokio::sync::Mutex<
         futures_util::stream::SplitSink<
-            tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<TcpStream>,
+            >,
             Message,
         >,
     >,
@@ -79,7 +81,8 @@ impl WsClient {
     /// the read-loop future to drive inbound messages.
     pub async fn connect(
         url: impl Into<String>,
-    ) -> Result<(Self, impl std::future::Future<Output = ()> + Send + 'static)> {
+    ) -> Result<(Self, impl std::future::Future<Output = ()> + Send + 'static)>
+    {
         let (ws_stream, _) = connect_async(url.into())
             .await
             .map_err(|e| wavedb_core::Error::Transport(e.to_string()))?;
@@ -109,8 +112,12 @@ impl WsClient {
 /// Internal read-loop: drives inbound messages from the server.
 async fn ws_read_loop<R>(mut read: R, inner: Arc<WsClientInner>)
 where
-    R: StreamExt<Item = std::result::Result<Message, tokio_tungstenite::tungstenite::Error>>
-        + Unpin
+    R: StreamExt<
+            Item = std::result::Result<
+                Message,
+                tokio_tungstenite::tungstenite::Error,
+            >,
+        > + Unpin
         + Send,
 {
     while let Some(msg) = read.next().await {
@@ -175,15 +182,19 @@ impl Transport for WsClient {
             .await
             .map_err(|e| wavedb_core::Error::Transport(e.to_string()))?;
 
-        rx.await
-            .map_err(|_| wavedb_core::Error::Transport("ws read loop dropped".into()))?
+        rx.await.map_err(|_| {
+            wavedb_core::Error::Transport("ws read loop dropped".into())
+        })?
     }
 
     fn disconnect(&self, user: u64, tenant: u64) {
         use crate::request::RequestKind;
         let client = self.clone();
         tokio::spawn(async move {
-            let req = TransportRequest::new(u64::MAX, RequestKind::Disconnect { user, tenant });
+            let req = TransportRequest::new(
+                u64::MAX,
+                RequestKind::Disconnect { user, tenant },
+            );
             let _ = client.send(req).await;
         });
     }
@@ -288,17 +299,18 @@ async fn handle_ws_connection(stream: TcpStream, state: WsTestServerState) {
         let seq = req.seq;
         state.received.lock().push(req);
 
-        let resp = state
-            .script
-            .lock()
-            .pop_front()
-            .unwrap_or(TransportResponse {
-                seq,
-                payload: Vec::new(),
-                owner_url: None,
-                backup_url: None,
-                notifications: Vec::new(),
-            });
+        let resp =
+            state
+                .script
+                .lock()
+                .pop_front()
+                .unwrap_or(TransportResponse {
+                    seq,
+                    payload: Vec::new(),
+                    owner_url: None,
+                    backup_url: None,
+                    notifications: Vec::new(),
+                });
 
         let Ok(resp_bytes) = encode_payload(&resp) else {
             break;
@@ -331,7 +343,8 @@ mod tests {
             notifications: Vec::new(),
         });
 
-        let (client, read_loop) = WsClient::connect(&server.ws_url()).await.unwrap();
+        let (client, read_loop) =
+            WsClient::connect(&server.ws_url()).await.unwrap();
         let _rl = tokio::spawn(read_loop);
 
         let req = TransportRequest::new(
@@ -361,17 +374,22 @@ mod tests {
             });
         }
 
-        let (client, read_loop) = WsClient::connect(&server.ws_url()).await.unwrap();
+        let (client, read_loop) =
+            WsClient::connect(&server.ws_url()).await.unwrap();
         let _rl = tokio::spawn(read_loop);
 
         for i in 1u64..=5 {
-            let req = TransportRequest::new(i, RequestKind::Disconnect { user: 0, tenant: 0 });
+            let req = TransportRequest::new(
+                i,
+                RequestKind::Disconnect { user: 0, tenant: 0 },
+            );
             let resp = client.send(req).await.unwrap();
             assert_eq!(resp.seq, i);
         }
 
         // The server must have received them in order.
-        let seqs: Vec<u64> = server.state.received.lock().iter().map(|r| r.seq).collect();
+        let seqs: Vec<u64> =
+            server.state.received.lock().iter().map(|r| r.seq).collect();
         assert_eq!(seqs, [1, 2, 3, 4, 5]);
     }
 
@@ -390,11 +408,15 @@ mod tests {
             }],
         });
 
-        let (client, read_loop) = WsClient::connect(&server.ws_url()).await.unwrap();
+        let (client, read_loop) =
+            WsClient::connect(&server.ws_url()).await.unwrap();
         let _rl = tokio::spawn(read_loop);
         let mut rx = client.event_bus().subscribe();
 
-        let req = TransportRequest::new(1, RequestKind::Disconnect { user: 0, tenant: 0 });
+        let req = TransportRequest::new(
+            1,
+            RequestKind::Disconnect { user: 0, tenant: 0 },
+        );
         client.send(req).await.unwrap();
 
         let event = rx.try_recv().unwrap();

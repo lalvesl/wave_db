@@ -79,7 +79,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server.reply_data(enc_after).await; // query after delete
     });
 
-    let db = Db::open_with_transport(transport, /* user= */ 1, /* tenant= */ 42).await?;
+    let db = Db::open_with_transport(
+        transport, /* user= */ 1, /* tenant= */ 42,
+    )
+    .await?;
 
     // Write three orders — `db.save(&order)` keeps ownership at the call site
     // (no `.clone().save(&db)` boilerplate).

@@ -140,7 +140,8 @@ impl PromotablePermissionList {
                     let old_users = std::mem::take(users);
                     let mut tree = AdaptiveIndex::with_threshold(0);
                     for &u in &old_users {
-                        let _ = tree.insert(IndexKey(u), AnchorKey::from_raw(1));
+                        let _ =
+                            tree.insert(IndexKey(u), AnchorKey::from_raw(1));
                     }
                     *self = Self::Tree(tree);
                     return true;

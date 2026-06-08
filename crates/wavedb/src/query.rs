@@ -438,7 +438,10 @@ mod tests {
 
     #[test]
     fn compound_and_or_roundtrip() {
-        let expr = Expr::and(Expr::gt("amount", 100u64), Expr::eq("status", "shipped"));
+        let expr = Expr::and(
+            Expr::gt("amount", 100u64),
+            Expr::eq("status", "shipped"),
+        );
         let bytes = expr.to_bytes().unwrap();
         let decoded = Expr::from_bytes(&bytes).unwrap();
         assert_eq!(expr, decoded);

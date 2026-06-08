@@ -152,10 +152,12 @@ pub use db::Db;
 /// `MockServer`, `EventBus`) are re-exported behind the `native` feature.
 pub mod net {
     #[cfg(feature = "native")]
-    pub use wavedb_net::{ChannelTransport, EventBus, HttpClient, MockServer, WsClient};
     pub use wavedb_net::{
-        MockTransport, Transport, TransportRequest, TransportResponse, mock::ScriptedReply,
-        request::RequestKind,
+        ChannelTransport, EventBus, HttpClient, MockServer, WsClient,
+    };
+    pub use wavedb_net::{
+        MockTransport, Transport, TransportRequest, TransportResponse,
+        mock::ScriptedReply, request::RequestKind,
     };
 }
 

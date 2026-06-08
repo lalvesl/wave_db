@@ -32,7 +32,9 @@ pub enum Error {
     OrphanSecondary,
 
     /// Page checksum mismatch.
-    #[error("page checksum mismatch: expected {expected:#010x}, got {actual:#010x}")]
+    #[error(
+        "page checksum mismatch: expected {expected:#010x}, got {actual:#010x}"
+    )]
     ChecksumMismatch {
         /// The checksum stored in the page header.
         expected: u32,

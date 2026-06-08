@@ -50,7 +50,10 @@ pub struct ClusterSnapshot {
 ///
 /// All quick-node and slow-node polls run concurrently so the total wall
 /// time is one round-trip, not `N × round-trip`.
-pub async fn poll_all(cfg: &Config, client: &reqwest::Client) -> ClusterSnapshot {
+pub async fn poll_all(
+    cfg: &Config,
+    client: &reqwest::Client,
+) -> ClusterSnapshot {
     let quick_futs = cfg
         .quick_node_urls
         .iter()
@@ -60,14 +63,20 @@ pub async fn poll_all(cfg: &Config, client: &reqwest::Client) -> ClusterSnapshot
         .iter()
         .map(|url| poll_slow(url, cfg, client));
 
-    let (quick_results, slow_results) =
-        tokio::join!(future::join_all(quick_futs), future::join_all(slow_futs),);
+    let (quick_results, slow_results) = tokio::join!(
+        future::join_all(quick_futs),
+        future::join_all(slow_futs),
+    );
 
     let nodes = quick_results.into_iter().chain(slow_results).collect();
     ClusterSnapshot { nodes }
 }
 
-async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEntry {
+async fn poll_quick(
+    url: &str,
+    cfg: &Config,
+    client: &reqwest::Client,
+) -> NodeEntry {
     let req = build_request(cfg, TokenPurpose::Monitor);
     let Ok(body) = encode_payload(&req) else {
         return NodeEntry::Quick {
@@ -118,7 +127,11 @@ async fn poll_quick(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEn
     }
 }
 
-async fn poll_slow(url: &str, cfg: &Config, client: &reqwest::Client) -> NodeEntry {
+async fn poll_slow(
+    url: &str,
+    cfg: &Config,
+    client: &reqwest::Client,
+) -> NodeEntry {
     let req = build_request(cfg, TokenPurpose::Monitor);
     let Ok(body) = encode_payload(&req) else {
         return NodeEntry::Slow {

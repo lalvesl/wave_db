@@ -40,7 +40,11 @@ impl Default for ArrayIndex {
 }
 
 impl IndexBackend for ArrayIndex {
-    fn insert(&mut self, key: IndexKey, anchor: AnchorKey) -> crate::StorageResult<()> {
+    fn insert(
+        &mut self,
+        key: IndexKey,
+        anchor: AnchorKey,
+    ) -> crate::StorageResult<()> {
         // Binary search for insertion point to keep sorted order.
         let pos = self
             .entries

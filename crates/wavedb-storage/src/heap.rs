@@ -83,7 +83,10 @@ impl HeapFile {
     /// Store a value using the three-step strategy.
     ///
     /// Returns the number of IO operations used (for testing).
-    pub fn store(&mut self, data: &[u8]) -> crate::StorageResult<(HeapStorageResult, u32)> {
+    pub fn store(
+        &mut self,
+        data: &[u8],
+    ) -> crate::StorageResult<(HeapStorageResult, u32)> {
         // Step 1: try inline compression
         let compressed = heap_zstd::compress(data)?;
         if compressed.len() <= self.max_inline {
@@ -99,9 +102,14 @@ impl HeapFile {
     /// Read a value from the heap file given its anchor.
     ///
     /// Returns the decompressed data and the number of IO operations used.
-    pub fn read(&self, anchor: &HeapAnchor) -> crate::StorageResult<(Vec<u8>, u32)> {
-        let start = usize::try_from(anchor.offset).expect("heap offset overflow");
-        let end = start + usize::try_from(anchor.size).expect("heap size overflow");
+    pub fn read(
+        &self,
+        anchor: &HeapAnchor,
+    ) -> crate::StorageResult<(Vec<u8>, u32)> {
+        let start =
+            usize::try_from(anchor.offset).expect("heap offset overflow");
+        let end =
+            start + usize::try_from(anchor.size).expect("heap size overflow");
 
         if end > self.buffer.len() {
             return Err(crate::StorageError::Other(format!(
@@ -126,7 +134,8 @@ impl HeapFile {
         // Pad buffer to aligned offset
         if aligned_offset > self.buffer.len() as u64 {
             self.buffer.resize(
-                usize::try_from(aligned_offset).expect("aligned offset overflow"),
+                usize::try_from(aligned_offset)
+                    .expect("aligned offset overflow"),
                 0,
             );
         }
@@ -202,7 +211,11 @@ mod tests {
         let (r1, _) = heap.store(&data1).unwrap();
         match r1 {
             HeapStorageResult::HeapStored(a) => {
-                assert_eq!(a.offset % HEAP_ALIGNMENT, 0, "first entry must be aligned");
+                assert_eq!(
+                    a.offset % HEAP_ALIGNMENT,
+                    0,
+                    "first entry must be aligned"
+                );
             }
             HeapStorageResult::Inline(_) => panic!("expected heap"),
         }

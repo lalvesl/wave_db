@@ -9,7 +9,10 @@ pub fn compress(data: &[u8]) -> crate::StorageResult<Vec<u8>> {
 }
 
 /// Compress with a custom level.
-pub fn compress_level(data: &[u8], level: i32) -> crate::StorageResult<Vec<u8>> {
+pub fn compress_level(
+    data: &[u8],
+    level: i32,
+) -> crate::StorageResult<Vec<u8>> {
     Ok(zstd::encode_all(data, level)?)
 }
 

@@ -22,7 +22,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await;
 
-    println!("── Topology ─────────────────────────────────────────────────────");
+    println!(
+        "── Topology ─────────────────────────────────────────────────────"
+    );
     for (i, node) in cluster.quick_nodes.iter().enumerate() {
         println!(
             "  node[{i}]  ws={}  alive={}",

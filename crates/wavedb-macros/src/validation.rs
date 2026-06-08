@@ -21,7 +21,10 @@ pub fn validate_struct_id(ident: &Ident, struct_id: u32) -> syn::Result<()> {
     Ok(())
 }
 
-pub fn validate_migration_attributes(ident: &Ident, args: &WaveDbArgs) -> syn::Result<()> {
+pub fn validate_migration_attributes(
+    ident: &Ident,
+    args: &WaveDbArgs,
+) -> syn::Result<()> {
     let from_required = [
         ("migrate_from_with", args.migrate_from_with.is_some()),
         ("first_try", args.first_try.is_some()),
@@ -30,7 +33,9 @@ pub fn validate_migration_attributes(ident: &Ident, args: &WaveDbArgs) -> syn::R
         if present && args.migrate_from.is_none() {
             return Err(syn::Error::new_spanned(
                 ident,
-                format!("`{attr_name}` requires `migrate_from = OldType` to also be set"),
+                format!(
+                    "`{attr_name}` requires `migrate_from = OldType` to also be set"
+                ),
             ));
         }
     }

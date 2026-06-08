@@ -87,7 +87,8 @@ impl PerfSample {
             0.0
         };
         #[allow(clippy::cast_precision_loss)]
-        let payload_total_mib = (records_f * payload_len as f64) / (1024.0 * 1024.0);
+        let payload_total_mib =
+            (records_f * payload_len as f64) / (1024.0 * 1024.0);
         let mib_per_sec = if elapsed_secs > 0.0 {
             payload_total_mib / elapsed_secs
         } else {
@@ -256,7 +257,8 @@ pub fn evaluate_tiers(
 /// (routing + page packing + rebalances), which is the engine's hot write loop.
 #[must_use]
 pub fn fill_in_memory(n: u64, payload_len: usize) -> DataFile {
-    let df = DataFile::open_in_memory(DEFAULT_PAGE_SIZE).expect("open in-memory data file");
+    let df = DataFile::open_in_memory(DEFAULT_PAGE_SIZE)
+        .expect("open in-memory data file");
     for seq in 1..=n {
         df.write_versioned(&make_record(seq, payload_len))
             .expect("in-memory write");
@@ -267,7 +269,8 @@ pub fn fill_in_memory(n: u64, payload_len: usize) -> DataFile {
 /// Measure raw in-memory insert throughput for `n` records.
 #[must_use]
 pub fn measure_in_memory_write(n: u64, payload_len: usize) -> PerfSample {
-    let df = DataFile::open_in_memory(DEFAULT_PAGE_SIZE).expect("open in-memory data file");
+    let df = DataFile::open_in_memory(DEFAULT_PAGE_SIZE)
+        .expect("open in-memory data file");
     let start = Instant::now();
     for seq in 1..=n {
         df.write_versioned(&make_record(seq, payload_len))
@@ -281,7 +284,11 @@ pub fn measure_in_memory_write(n: u64, payload_len: usize) -> PerfSample {
 /// Measure read throughput: prefill `n` records, then perform `reads` point
 /// lookups spread across the whole keyspace (deterministic LCG, no rand dep).
 #[must_use]
-pub fn measure_in_memory_read(n: u64, reads: u64, payload_len: usize) -> PerfSample {
+pub fn measure_in_memory_read(
+    n: u64,
+    reads: u64,
+    payload_len: usize,
+) -> PerfSample {
     let df = fill_in_memory(n, payload_len);
     // Deterministic pseudo-random walk over 1..=n.
     let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -322,7 +329,10 @@ pub struct DurableOutcome {
 /// 3. Re-open the same directory and time how long recovery takes to replay the
 ///    journal, then verify every record came back.
 #[must_use]
-pub fn measure_durable_write_and_recovery(n: u64, payload_len: usize) -> DurableOutcome {
+pub fn measure_durable_write_and_recovery(
+    n: u64,
+    payload_len: usize,
+) -> DurableOutcome {
     let dir = TempDir::new().expect("tempdir");
 
     let write_elapsed;
@@ -331,7 +341,10 @@ pub fn measure_durable_write_and_recovery(n: u64, payload_len: usize) -> Durable
         let start = Instant::now();
         for seq in 1..=n {
             storage
-                .commit_write(record_id(seq).raw(), make_record(seq, payload_len).data)
+                .commit_write(
+                    record_id(seq).raw(),
+                    make_record(seq, payload_len).data,
+                )
                 .expect("durable commit");
         }
         write_elapsed = start.elapsed();
@@ -410,7 +423,10 @@ pub fn measure_disk_write_iops(n: u64, payload_len: usize) -> PerfSample {
     let start = Instant::now();
     for seq in 1..=n {
         storage
-            .commit_write(record_id(seq).raw(), make_record(seq, payload_len).data)
+            .commit_write(
+                record_id(seq).raw(),
+                make_record(seq, payload_len).data,
+            )
             .expect("disk write");
     }
     let elapsed = start.elapsed();
@@ -422,7 +438,14 @@ pub fn measure_disk_write_iops(n: u64, payload_len: usize) -> PerfSample {
     } else {
         0.0
     };
-    PerfSample::new("disk_write_iops", n, payload_len, elapsed, disk_bytes, iops)
+    PerfSample::new(
+        "disk_write_iops",
+        n,
+        payload_len,
+        elapsed,
+        disk_bytes,
+        iops,
+    )
 }
 
 /// Measure sustained read IOPS: random point lookups from an on-disk data file.
@@ -431,18 +454,27 @@ pub fn measure_disk_write_iops(n: u64, payload_len: usize) -> PerfSample {
 /// (no journal involvement during reads), then performs `reads` random lookups.
 /// The resulting IOPS figure is comparable to cloud provider read IOPS limits.
 #[must_use]
-pub fn measure_disk_read_iops(n: u64, reads: u64, payload_len: usize) -> PerfSample {
+pub fn measure_disk_read_iops(
+    n: u64,
+    reads: u64,
+    payload_len: usize,
+) -> PerfSample {
     let dir = TempDir::new().expect("tempdir");
     {
         let storage = NodeStorage::open(dir.path()).expect("open storage");
         for seq in 1..=n {
             storage
-                .commit_write(record_id(seq).raw(), make_record(seq, payload_len).data)
+                .commit_write(
+                    record_id(seq).raw(),
+                    make_record(seq, payload_len).data,
+                )
                 .expect("prefill write");
         }
         // Flush to data.bin so the timed reads come from the data file, not
         // from journal replay — this isolates the read I/O path cleanly.
-        storage.flush_snapshot().expect("flush snapshot to data.bin");
+        storage
+            .flush_snapshot()
+            .expect("flush snapshot to data.bin");
     }
     let storage = NodeStorage::open(dir.path()).expect("reopen storage");
 
@@ -464,7 +496,10 @@ pub fn measure_disk_read_iops(n: u64, reads: u64, payload_len: usize) -> PerfSam
         }
     }
     let elapsed = start.elapsed();
-    assert_eq!(hits, reads, "every prefilled key must be readable after snapshot flush");
+    assert_eq!(
+        hits, reads,
+        "every prefilled key must be readable after snapshot flush"
+    );
     let disk_bytes = dir_size(dir.path());
     #[allow(clippy::cast_precision_loss)]
     let iops = if elapsed.as_secs_f64() > 0.0 {
@@ -472,7 +507,14 @@ pub fn measure_disk_read_iops(n: u64, reads: u64, payload_len: usize) -> PerfSam
     } else {
         0.0
     };
-    PerfSample::new("disk_read_iops", reads, payload_len, elapsed, disk_bytes, iops)
+    PerfSample::new(
+        "disk_read_iops",
+        reads,
+        payload_len,
+        elapsed,
+        disk_bytes,
+        iops,
+    )
 }
 
 /// Total size in bytes of the three storage files under `dir`.

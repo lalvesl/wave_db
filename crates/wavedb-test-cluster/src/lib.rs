@@ -107,7 +107,12 @@ impl QuickNodeHandle {
     /// count regardless of how the writes were interleaved.
     ///
     /// Returns 0 when the node has no on-disk storage.
-    pub fn recoverable_versioned(&self, tenant: u64, struct_id: u32, max_seq: u64) -> u64 {
+    pub fn recoverable_versioned(
+        &self,
+        tenant: u64,
+        struct_id: u32,
+        max_seq: u64,
+    ) -> u64 {
         let Some(storage) = self.node.storage() else {
             return 0;
         };
@@ -237,7 +242,9 @@ impl TestCluster {
 
         // ── Quick-Nodes ────────────────────────────────────────────────────
         let mut quick_nodes: Vec<QuickNodeHandle> = Vec::new();
-        for (i, (listener, addr)) in listeners.into_iter().zip(addrs.iter().copied()).enumerate() {
+        for (i, (listener, addr)) in
+            listeners.into_iter().zip(addrs.iter().copied()).enumerate()
+        {
             let peers: Vec<String> = addrs
                 .iter()
                 .enumerate()
@@ -266,7 +273,8 @@ impl TestCluster {
             };
 
             let node = Arc::new(QuickNode::new(config.clone()));
-            let compact_handle = node.start_compaction_loop(config.journal_compact_secs);
+            let compact_handle =
+                node.start_compaction_loop(config.journal_compact_secs);
             let app = quick_server::router((*node).clone());
             let task = tokio::spawn(async move {
                 axum::serve(listener, app).await.unwrap();
@@ -319,7 +327,12 @@ impl TestCluster {
     }
 
     /// Open a [`Db`] connected to `quick_nodes[node_idx]` via WebSocket.
-    pub async fn open_user_via(&self, user_id: u64, tenant: u64, node_idx: usize) -> Db {
+    pub async fn open_user_via(
+        &self,
+        user_id: u64,
+        tenant: u64,
+        node_idx: usize,
+    ) -> Db {
         let ws_url = self.quick_nodes[node_idx].ws_url();
         let (client, read_loop) = WsClient::connect(ws_url)
             .await
@@ -371,7 +384,8 @@ impl TestCluster {
         };
 
         let node = Arc::new(QuickNode::new(config.clone()));
-        let compact_handle = node.start_compaction_loop(config.journal_compact_secs);
+        let compact_handle =
+            node.start_compaction_loop(config.journal_compact_secs);
         let app = quick_server::router((*node).clone());
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -395,7 +409,8 @@ impl TestCluster {
     /// perform after accumulating writes, without requiring the full
     /// replication path to be implemented.
     pub async fn flush_batch(&self, batch: FlushBatch) {
-        let body = wavedb_net::frame::encode_payload(&batch).expect("FlushBatch encode failed");
+        let body = wavedb_net::frame::encode_payload(&batch)
+            .expect("FlushBatch encode failed");
         // Reuse the pooled client — never create a fresh one per call.
         if let Err(e) = self
             .flush_client

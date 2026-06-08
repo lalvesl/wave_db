@@ -15,7 +15,8 @@ use wavedb_slow_node::{server, store::HistoryStore};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = std::env::var("WAVE_SLOW_ADDR").unwrap_or_else(|_| "127.0.0.1:0".to_string());
+    let addr = std::env::var("WAVE_SLOW_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:0".to_string());
     let data_dir = std::env::var("WAVE_SLOW_DATA_DIR").unwrap_or_else(|_| {
         std::env::temp_dir()
             .join("wavedb-re-slow")

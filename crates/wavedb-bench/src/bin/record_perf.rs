@@ -30,8 +30,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use wavedb_bench::{
-    PerfSample, evaluate_tiers, measure_disk_read_iops, measure_disk_write_iops,
-    measure_durable_write_and_recovery, measure_in_memory_read, measure_in_memory_write,
+    PerfSample, evaluate_tiers, measure_disk_read_iops,
+    measure_disk_write_iops, measure_durable_write_and_recovery,
+    measure_in_memory_read, measure_in_memory_write,
 };
 
 /// One recorder run: metadata + every sample measured.
@@ -97,7 +98,14 @@ fn results_dir() -> PathBuf {
 fn print_table(samples: &[PerfSample]) {
     println!(
         "\n{:<22} {:>11} {:>9} {:>12} {:>14} {:>11} {:>12} {:>11}",
-        "scenario", "records", "payload", "elapsed_s", "records/s", "MiB/s", "bytes/rec", "IOPS"
+        "scenario",
+        "records",
+        "payload",
+        "elapsed_s",
+        "records/s",
+        "MiB/s",
+        "bytes/rec",
+        "IOPS"
     );
     println!("{}", "-".repeat(108));
     for s in samples {
@@ -278,7 +286,9 @@ fn write_markdown(dir: &Path, run: &RunRecord) -> std::io::Result<()> {
         }
     }
 
-    md.push_str("\nThe full time series is in [`history.jsonl`](history.jsonl). ");
+    md.push_str(
+        "\nThe full time series is in [`history.jsonl`](history.jsonl). ",
+    );
     md.push_str("Regenerate with `cargo run -p wavedb-bench --release --bin record-perf`.\n");
     fs::write(dir.join("latest.md"), md)
 }
@@ -293,7 +303,8 @@ fn append_history(dir: &Path, run: &RunRecord) -> std::io::Result<()> {
 }
 
 fn main() {
-    let payload = usize::try_from(env_u64("WAVEDB_BENCH_PAYLOAD", 128)).unwrap();
+    let payload =
+        usize::try_from(env_u64("WAVEDB_BENCH_PAYLOAD", 128)).unwrap();
     // Two write sizes by default so the committed baseline shows whether write
     // throughput holds steady or degrades as the record count grows.
     let write_sizes = env_sizes("WAVEDB_BENCH_WRITE_SIZES", "50000,200000");
@@ -340,7 +351,11 @@ fn main() {
     // ── Disk IOPS workloads ───────────────────────────────────────────────────
     eprintln!("running disk IOPS workloads…");
     samples.push(measure_disk_write_iops(disk_write_n, payload));
-    samples.push(measure_disk_read_iops(disk_read_fill, disk_read_ops, payload));
+    samples.push(measure_disk_read_iops(
+        disk_read_fill,
+        disk_read_ops,
+        payload,
+    ));
 
     print_table(&samples);
     print_tier_table(&samples);

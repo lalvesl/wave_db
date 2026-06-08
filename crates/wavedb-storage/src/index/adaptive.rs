@@ -77,7 +77,11 @@ impl Default for AdaptiveIndex {
 }
 
 impl IndexBackend for AdaptiveIndex {
-    fn insert(&mut self, key: IndexKey, anchor: AnchorKey) -> crate::StorageResult<()> {
+    fn insert(
+        &mut self,
+        key: IndexKey,
+        anchor: AnchorKey,
+    ) -> crate::StorageResult<()> {
         // Check if we need to promote
         if !self.converted && self.len() >= self.threshold as usize {
             self.promote();
@@ -206,8 +210,11 @@ mod tests {
         for &threshold in &[5u32, 100] {
             let mut idx = AdaptiveIndex::with_threshold(threshold);
             for i in 0..20 {
-                idx.insert(IndexKey(i * 10), AnchorKey::from_raw(u128::from(i)))
-                    .unwrap();
+                idx.insert(
+                    IndexKey(i * 10),
+                    AnchorKey::from_raw(u128::from(i)),
+                )
+                .unwrap();
             }
             let result = idx.range(IndexKey(50)..IndexKey(120));
             let keys: Vec<u64> = result.iter().map(|(k, _)| k.0).collect();

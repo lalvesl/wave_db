@@ -42,7 +42,10 @@ pub fn router(node: QuickNode) -> Router {
 
 // ── HTTP handler ──────────────────────────────────────────────────────────────
 
-async fn handle_http(State(node): State<Arc<QuickNode>>, body: Bytes) -> impl IntoResponse {
+async fn handle_http(
+    State(node): State<Arc<QuickNode>>,
+    body: Bytes,
+) -> impl IntoResponse {
     if body.is_empty() {
         // Idle keep-alive tick: return empty 200 so the client can collect
         // any piggybacked notifications queued on the node.
@@ -55,9 +58,10 @@ async fn handle_http(State(node): State<Arc<QuickNode>>, body: Bytes) -> impl In
     };
 
     let resp: TransportResponse = node.handle(req).await;
-    encode_payload(&resp).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
-        (StatusCode::OK, b)
-    })
+    encode_payload(&resp)
+        .map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+            (StatusCode::OK, b)
+        })
 }
 
 // ── WebSocket handler ─────────────────────────────────────────────────────────
@@ -100,7 +104,10 @@ async fn handle_ws_session(socket: WebSocket, node: Arc<QuickNode>) {
 
 // ── Gossip handler ────────────────────────────────────────────────────────────
 
-async fn handle_gossip(State(node): State<Arc<QuickNode>>, body: Bytes) -> impl IntoResponse {
+async fn handle_gossip(
+    State(node): State<Arc<QuickNode>>,
+    body: Bytes,
+) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -121,9 +128,10 @@ async fn handle_gossip(State(node): State<Arc<QuickNode>>, body: Bytes) -> impl 
     }
 
     let resp: GossipResponse = node.handle_gossip(msg).await;
-    encode_payload(&resp).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
-        (StatusCode::OK, b)
-    })
+    encode_payload(&resp)
+        .map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+            (StatusCode::OK, b)
+        })
 }
 
 // ── Drain handler ─────────────────────────────────────────────────────────────
@@ -141,7 +149,10 @@ async fn handle_drain(State(node): State<Arc<QuickNode>>) -> impl IntoResponse {
 
 // ── Metrics handler ───────────────────────────────────────────────────────────
 
-async fn handle_metrics(State(node): State<Arc<QuickNode>>, body: Bytes) -> impl IntoResponse {
+async fn handle_metrics(
+    State(node): State<Arc<QuickNode>>,
+    body: Bytes,
+) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -161,9 +172,10 @@ async fn handle_metrics(State(node): State<Arc<QuickNode>>, body: Bytes) -> impl
     }
 
     let snapshot = node.metrics();
-    encode_payload(&snapshot).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
-        (StatusCode::OK, b)
-    })
+    encode_payload(&snapshot)
+        .map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+            (StatusCode::OK, b)
+        })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -194,7 +206,8 @@ mod tests {
         })
     }
 
-    async fn start_server() -> (std::net::SocketAddr, tokio::task::AbortHandle) {
+    async fn start_server() -> (std::net::SocketAddr, tokio::task::AbortHandle)
+    {
         let node = make_node();
         let app = router(node);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -271,9 +284,10 @@ mod tests {
         // Brief pause so the server task has a chance to start.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        let (client, rl) = wavedb_net::WsClient::connect(format!("ws://{addr}/ws"))
-            .await
-            .unwrap();
+        let (client, rl) =
+            wavedb_net::WsClient::connect(format!("ws://{addr}/ws"))
+                .await
+                .unwrap();
         let _rl = tokio::spawn(rl);
 
         let req = TransportRequest::new(
@@ -294,9 +308,10 @@ mod tests {
         let (addr, _srv) = start_server().await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        let (client, rl) = wavedb_net::WsClient::connect(format!("ws://{addr}/ws"))
-            .await
-            .unwrap();
+        let (client, rl) =
+            wavedb_net::WsClient::connect(format!("ws://{addr}/ws"))
+                .await
+                .unwrap();
         let _rl = tokio::spawn(rl);
 
         let req = TransportRequest::new(
@@ -318,9 +333,10 @@ mod tests {
         let (addr, _srv) = start_server().await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        let (client, rl) = wavedb_net::WsClient::connect(format!("ws://{addr}/ws"))
-            .await
-            .unwrap();
+        let (client, rl) =
+            wavedb_net::WsClient::connect(format!("ws://{addr}/ws"))
+                .await
+                .unwrap();
         let _rl = tokio::spawn(rl);
 
         let req = TransportRequest::new(

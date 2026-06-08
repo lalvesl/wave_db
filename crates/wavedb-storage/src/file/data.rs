@@ -171,7 +171,12 @@ impl DataFile {
     /// existing test that calls `DataFile::open(&path, 4096)`.  Use
     /// [`DataFile::open_on_disk`] for actual disk persistence.
     pub fn open(path: &Path, page_size: usize) -> StorageResult<Self> {
-        Self::open_with_mode(path, page_size, DEFAULT_PAGE_COUNT, Mode::InMemory)
+        Self::open_with_mode(
+            path,
+            page_size,
+            DEFAULT_PAGE_COUNT,
+            Mode::InMemory,
+        )
     }
 
     /// Open a purely in-memory data file.
@@ -179,7 +184,12 @@ impl DataFile {
     /// No filesystem path is stored.  All state lives in RAM and is lost
     /// when the [`DataFile`] is dropped.
     pub fn open_in_memory(page_size: usize) -> StorageResult<Self> {
-        Self::open_with_mode(Path::new(""), page_size, DEFAULT_PAGE_COUNT, Mode::InMemory)
+        Self::open_with_mode(
+            Path::new(""),
+            page_size,
+            DEFAULT_PAGE_COUNT,
+            Mode::InMemory,
+        )
     }
 
     /// Open a disk-backed data file.
@@ -188,7 +198,12 @@ impl DataFile {
     /// reloaded.  Otherwise the file starts empty.  Call
     /// [`DataFile::flush`] to persist subsequent writes.
     pub fn open_on_disk(path: &Path, page_size: usize) -> StorageResult<Self> {
-        let file = Self::open_with_mode(path, page_size, DEFAULT_PAGE_COUNT, Mode::OnDisk)?;
+        let file = Self::open_with_mode(
+            path,
+            page_size,
+            DEFAULT_PAGE_COUNT,
+            Mode::OnDisk,
+        )?;
         if path.exists() && std::fs::metadata(path).is_ok_and(|m| m.len() > 0) {
             file.reload_from_disk()?;
         }
@@ -196,7 +211,11 @@ impl DataFile {
     }
 
     /// Open or create a data file with an explicit page count.
-    pub fn open_with(path: &Path, page_size: usize, page_count: u64) -> StorageResult<Self> {
+    pub fn open_with(
+        path: &Path,
+        page_size: usize,
+        page_count: u64,
+    ) -> StorageResult<Self> {
         Self::open_with_mode(path, page_size, page_count, Mode::InMemory)
     }
 
@@ -212,8 +231,10 @@ impl DataFile {
                 "page_count must be at least 1".into(),
             ));
         }
-        let pages: Vec<Page> = (0..page_count).map(|_| Page::new(page_size)).collect();
-        let page_bytes: Vec<AtomicU64> = (0..page_count).map(|_| AtomicU64::new(0)).collect();
+        let pages: Vec<Page> =
+            (0..page_count).map(|_| Page::new(page_size)).collect();
+        let page_bytes: Vec<AtomicU64> =
+            (0..page_count).map(|_| AtomicU64::new(0)).collect();
 
         if mode == Mode::OnDisk {
             if let Some(parent) = path.parent() {
@@ -301,17 +322,20 @@ impl DataFile {
         if bytes.starts_with(&DISK_FORMAT_MAGIC) {
             // Sparse format: (page_count, Vec<(page_idx, Page)>)
             let payload = &bytes[DISK_FORMAT_MAGIC.len()..];
-            let (page_count, entries): (u64, Vec<(u64, Page)>) = postcard::from_bytes(payload)?;
+            let (page_count, entries): (u64, Vec<(u64, Page)>) =
+                postcard::from_bytes(payload)?;
             if page_count == 0 {
                 return Ok(());
             }
-            let mut pages: Vec<Page> = (0..page_count).map(|_| Page::new(self.page_size)).collect();
+            let mut pages: Vec<Page> =
+                (0..page_count).map(|_| Page::new(self.page_size)).collect();
             let mut page_bytes: Vec<AtomicU64> =
                 (0..page_count).map(|_| AtomicU64::new(0)).collect();
             for (idx, page) in entries {
                 let i = idx as usize;
                 if i < pages.len() {
-                    let used: u64 = page.directory.iter().map(|e| u64::from(e.size)).sum();
+                    let used: u64 =
+                        page.directory.iter().map(|e| u64::from(e.size)).sum();
                     page_bytes[i] = AtomicU64::new(used);
                     pages[i] = page;
                 }
@@ -321,7 +345,8 @@ impl DataFile {
             self.page_count.store(page_count, Ordering::Release);
         } else {
             // Legacy dense format: (page_count, Vec<Page>)
-            let (page_count, pages): (u64, Vec<Page>) = postcard::from_bytes(&bytes)?;
+            let (page_count, pages): (u64, Vec<Page>) =
+                postcard::from_bytes(&bytes)?;
             if page_count == 0 || pages.len() as u64 != page_count {
                 return Err(crate::StorageError::Other(format!(
                     "corrupt snapshot: page_count={} pages.len()={}",
@@ -332,7 +357,8 @@ impl DataFile {
             let page_bytes: Vec<AtomicU64> = pages
                 .iter()
                 .map(|p| {
-                    let used: u64 = p.directory.iter().map(|e| u64::from(e.size)).sum();
+                    let used: u64 =
+                        p.directory.iter().map(|e| u64::from(e.size)).sum();
                     AtomicU64::new(used)
                 })
                 .collect();
@@ -392,7 +418,8 @@ impl DataFile {
                 ..
             } => (struct_id, tenant, shard),
         };
-        let step = hash::double_hash_step(struct_id, tenant, shard, page_count) as usize;
+        let step = hash::double_hash_step(struct_id, tenant, shard, page_count)
+            as usize;
         let n = (page_count as usize).max(1);
         (primary + step) % n
     }
@@ -402,7 +429,12 @@ impl DataFile {
     /// On overflow (primary + double-hash fallback both full) the call
     /// triggers a [`DataFile::rebalance`] and retries once.  If the retry
     /// still fails the entry returns `Err(PageFull)`.
-    fn insert_at_key(&self, key: PageKey, raw: u128, bytes: &[u8]) -> StorageResult<()> {
+    fn insert_at_key(
+        &self,
+        key: PageKey,
+        raw: u128,
+        bytes: &[u8],
+    ) -> StorageResult<()> {
         match self.try_insert_at_key(key, raw, bytes) {
             Ok(()) => {
                 // Opportunistically rehash when fill crosses the threshold —
@@ -424,7 +456,12 @@ impl DataFile {
     /// Insert without any rebalance retry — the primitive used both by the
     /// happy-path `insert_at_key` and by the rebalancer itself.
     #[allow(clippy::significant_drop_tightening)]
-    fn try_insert_at_key(&self, key: PageKey, raw: u128, bytes: &[u8]) -> StorageResult<()> {
+    fn try_insert_at_key(
+        &self,
+        key: PageKey,
+        raw: u128,
+        bytes: &[u8],
+    ) -> StorageResult<()> {
         let n = self.page_count.load(Ordering::Acquire);
         let primary = Self::page_index(key, n);
         let mut pages = self.pages.write();
@@ -525,12 +562,19 @@ impl DataFile {
     /// Hashed by `(struct_id, tenant, shard, created_at)` — every old
     /// version has its own page slot.  The id is recoverable from the
     /// current anchor's metadata version chain.
-    pub fn write_unique_history(&self, id: Id, rec: &VersionedRecord) -> StorageResult<()> {
+    pub fn write_unique_history(
+        &self,
+        id: Id,
+        rec: &VersionedRecord,
+    ) -> StorageResult<()> {
         self.write_full_id(id, rec)
     }
 
     /// Read a Unique record's history version by Id.
-    pub fn read_unique_history(&self, id: Id) -> StorageResult<Option<VersionedRecord>> {
+    pub fn read_unique_history(
+        &self,
+        id: Id,
+    ) -> StorageResult<Option<VersionedRecord>> {
         self.read_full_id(id)
     }
 
@@ -564,12 +608,19 @@ impl DataFile {
     /// Hashed by all four fields — `shard_id` is the content-hash or
     /// caller-assigned discriminator, and `created_at` distinguishes
     /// versions of the same element.
-    pub fn write_nonunique_element(&self, id: Id, rec: &VersionedRecord) -> StorageResult<()> {
+    pub fn write_nonunique_element(
+        &self,
+        id: Id,
+        rec: &VersionedRecord,
+    ) -> StorageResult<()> {
         self.write_full_id(id, rec)
     }
 
     /// Read a NonUnique element record.
-    pub fn read_nonunique_element(&self, id: Id) -> StorageResult<Option<VersionedRecord>> {
+    pub fn read_nonunique_element(
+        &self,
+        id: Id,
+    ) -> StorageResult<Option<VersionedRecord>> {
         self.read_full_id(id)
     }
 
@@ -577,7 +628,11 @@ impl DataFile {
     /// discoverable through the parent NonUnique element that owns it.
     ///
     /// Hashed by the full Id (tuple4).
-    pub fn write_nested_tracker(&self, id: Id, slot: &AnchorSlot) -> StorageResult<()> {
+    pub fn write_nested_tracker(
+        &self,
+        id: Id,
+        slot: &AnchorSlot,
+    ) -> StorageResult<()> {
         let key = page_key_full(id);
         let raw = id.raw();
         let bytes = slot.to_bytes()?;
@@ -588,7 +643,10 @@ impl DataFile {
     }
 
     /// Read a NestedNonUnique tracker by Id.
-    pub fn read_nested_tracker(&self, id: Id) -> StorageResult<Option<AnchorSlot>> {
+    pub fn read_nested_tracker(
+        &self,
+        id: Id,
+    ) -> StorageResult<Option<AnchorSlot>> {
         let raw = id.raw();
         if let Some(slot) = self.cache.get_anchor(AnchorKey::from_raw(raw)) {
             return Ok(Some(slot));
@@ -600,19 +658,30 @@ impl DataFile {
 
     /// Write a NestedNonUnique element record — same routing as NonUnique
     /// element.
-    pub fn write_nested_element(&self, id: Id, rec: &VersionedRecord) -> StorageResult<()> {
+    pub fn write_nested_element(
+        &self,
+        id: Id,
+        rec: &VersionedRecord,
+    ) -> StorageResult<()> {
         self.write_full_id(id, rec)
     }
 
     /// Read a NestedNonUnique element record.
-    pub fn read_nested_element(&self, id: Id) -> StorageResult<Option<VersionedRecord>> {
+    pub fn read_nested_element(
+        &self,
+        id: Id,
+    ) -> StorageResult<Option<VersionedRecord>> {
         self.read_full_id(id)
     }
 
     // ── Internal full-Id read/write (shared by all tuple4 paths) ──────────
 
     /// Write a versioned record at its full-Id page (tuple4).
-    fn write_full_id(&self, id: Id, rec: &VersionedRecord) -> StorageResult<()> {
+    fn write_full_id(
+        &self,
+        id: Id,
+        rec: &VersionedRecord,
+    ) -> StorageResult<()> {
         let bytes = rec.to_bytes()?;
         self.insert_at_key(page_key_full(id), rec.id, &bytes)?;
         self.cache.put_versioned(rec.clone());
@@ -639,7 +708,11 @@ impl DataFile {
     /// `shard_id == 0` → Unique anchor (tuple2); otherwise → NonUnique
     /// element anchor (tuple4).  See the typed methods above for explicit
     /// control.
-    pub fn write_anchor(&self, key: AnchorKey, slot: &AnchorSlot) -> StorageResult<()> {
+    pub fn write_anchor(
+        &self,
+        key: AnchorKey,
+        slot: &AnchorSlot,
+    ) -> StorageResult<()> {
         let id = Id::from_raw(key.raw());
         if id.shard_id() == 0 {
             self.write_unique_anchor(id.struct_id(), id.tenant_id(), slot)
@@ -653,7 +726,10 @@ impl DataFile {
     }
 
     /// Read an anchor slot — strategy auto-picked from `AnchorKey`.
-    pub fn read_anchor(&self, key: AnchorKey) -> StorageResult<Option<AnchorSlot>> {
+    pub fn read_anchor(
+        &self,
+        key: AnchorKey,
+    ) -> StorageResult<Option<AnchorSlot>> {
         let id = Id::from_raw(key.raw());
         if id.shard_id() == 0 {
             self.read_unique_anchor(id.struct_id(), id.tenant_id())
@@ -673,7 +749,10 @@ impl DataFile {
     }
 
     /// Read a versioned record by Id.
-    pub fn read_versioned(&self, id: Id) -> StorageResult<Option<VersionedRecord>> {
+    pub fn read_versioned(
+        &self,
+        id: Id,
+    ) -> StorageResult<Option<VersionedRecord>> {
         self.read_full_id(id)
     }
 
@@ -752,11 +831,13 @@ impl DataFile {
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss
             )]
-            let new_count =
-                ((old_count as f64 * self.growth_factor).ceil() as u64).max(old_count + 1);
+            let new_count = ((old_count as f64 * self.growth_factor).ceil()
+                as u64)
+                .max(old_count + 1);
             if new_count < old_count {
                 return Err(crate::StorageError::Other(
-                    "rebalance overflow: cannot grow beyond u64::MAX pages".into(),
+                    "rebalance overflow: cannot grow beyond u64::MAX pages"
+                        .into(),
                 ));
             }
 
@@ -816,7 +897,11 @@ impl DataFile {
     /// Move every entry on old page `old_idx` whose slot at `new_count`
     /// is different from `old_idx`.  Journalled.
     #[allow(clippy::significant_drop_tightening)]
-    fn rebalance_one_page(&self, old_idx: usize, new_count: u64) -> StorageResult<()> {
+    fn rebalance_one_page(
+        &self,
+        old_idx: usize,
+        new_count: u64,
+    ) -> StorageResult<()> {
         // Collect the move list under a read lock so we hold the write
         // lock for as short a window as possible.
         struct Move {
@@ -920,8 +1005,11 @@ mod tests {
             let f = DataFile::open_on_disk(&path, 4096).unwrap();
             for i in 1u64..=10 {
                 let id = wavedb_core::Id::new(7, 0, 11, i);
-                f.write_versioned(&VersionedRecord::new(id.raw(), b"v".to_vec()))
-                    .unwrap();
+                f.write_versioned(&VersionedRecord::new(
+                    id.raw(),
+                    b"v".to_vec(),
+                ))
+                .unwrap();
             }
             f.flush().unwrap();
             // Sparse: file must be much smaller than page_count × page_size.
@@ -1015,8 +1103,12 @@ mod tests {
     fn nonunique_tracker_shares_tuple2_namespace() {
         let dir = tempfile::tempdir().unwrap();
         let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
-        file.write_nonunique_tracker(10, 99, &AnchorSlot::inline(b"tracker", 0))
-            .unwrap();
+        file.write_nonunique_tracker(
+            10,
+            99,
+            &AnchorSlot::inline(b"tracker", 0),
+        )
+        .unwrap();
         let got = file.read_nonunique_tracker(10, 99).unwrap().unwrap();
         assert_eq!(got.inline_bytes().unwrap(), b"tracker");
     }
@@ -1116,8 +1208,11 @@ mod tests {
             assert_eq!(file.mode(), Mode::OnDisk);
             for created_at in 1..=8u64 {
                 let id = wavedb_core::Id::new(7, 0, 11, created_at);
-                file.write_versioned(&VersionedRecord::new(id.raw(), b"hi".to_vec()))
-                    .unwrap();
+                file.write_versioned(&VersionedRecord::new(
+                    id.raw(),
+                    b"hi".to_vec(),
+                ))
+                .unwrap();
             }
             file.flush().unwrap();
         }
@@ -1140,12 +1235,16 @@ mod tests {
     #[test]
     fn rebalance_grows_page_count_and_preserves_entries() {
         let dir = tempfile::tempdir().unwrap();
-        let file = DataFile::open_with(&dir.path().join("data"), 4096, 32).unwrap();
+        let file =
+            DataFile::open_with(&dir.path().join("data"), 4096, 32).unwrap();
 
         for created_at in 1..=64u64 {
             let id = wavedb_core::Id::new(7, 0, 11, created_at);
-            file.write_versioned(&VersionedRecord::new(id.raw(), b"v".to_vec()))
-                .unwrap();
+            file.write_versioned(&VersionedRecord::new(
+                id.raw(),
+                b"v".to_vec(),
+            ))
+            .unwrap();
         }
 
         let before = file.page_count_now();
@@ -1153,7 +1252,8 @@ mod tests {
         let after = file.page_count_now();
 
         // Must grow by at least the growth factor.
-        let min_expected = (before as f64 * DEFAULT_GROWTH_FACTOR).ceil() as u64;
+        let min_expected =
+            (before as f64 * DEFAULT_GROWTH_FACTOR).ceil() as u64;
         assert!(
             after >= min_expected,
             "expected at least {min_expected} pages: {before} -> {after}"
@@ -1175,7 +1275,8 @@ mod tests {
     #[test]
     fn lookup_falls_back_to_previous_page_count() {
         let dir = tempfile::tempdir().unwrap();
-        let file = DataFile::open_with(&dir.path().join("data"), 4096, 64).unwrap();
+        let file =
+            DataFile::open_with(&dir.path().join("data"), 4096, 64).unwrap();
         let id = wavedb_core::Id::new(7, 0, 11, 42);
         file.write_versioned(&VersionedRecord::new(id.raw(), b"orig".to_vec()))
             .unwrap();
@@ -1198,14 +1299,19 @@ mod tests {
         use std::sync::mpsc::sync_channel;
 
         let dir = tempfile::tempdir().unwrap();
-        let file = DataFile::open_with(&dir.path().join("data"), 4096, 16).unwrap();
-        let (tx, rx) = sync_channel::<crate::pipeline::journal::JournalEntry>(256);
+        let file =
+            DataFile::open_with(&dir.path().join("data"), 4096, 16).unwrap();
+        let (tx, rx) =
+            sync_channel::<crate::pipeline::journal::JournalEntry>(256);
         file.set_journal_pipe(tx);
 
         for created_at in 1..=64u64 {
             let id = wavedb_core::Id::new(7, 0, 11, created_at);
-            file.write_versioned(&VersionedRecord::new(id.raw(), b"v".to_vec()))
-                .unwrap();
+            file.write_versioned(&VersionedRecord::new(
+                id.raw(),
+                b"v".to_vec(),
+            ))
+            .unwrap();
         }
         file.rebalance().unwrap();
 
@@ -1223,7 +1329,8 @@ mod tests {
     fn open_with_accepts_non_power_of_two() {
         let dir = tempfile::tempdir().unwrap();
         // Non-power-of-two page counts are now valid.
-        let f = DataFile::open_with(&dir.path().join("data"), 4096, 13).unwrap();
+        let f =
+            DataFile::open_with(&dir.path().join("data"), 4096, 13).unwrap();
         assert_eq!(f.page_count_now(), 13);
     }
 

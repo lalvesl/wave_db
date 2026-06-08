@@ -48,8 +48,10 @@ use wavedb_core::Result;
 /// In tests it resolves to [`MockTransport`].
 pub trait Transport: Send + Sync + 'static {
     /// Send a request to the Quick-Node and await a response.
-    fn send(&self, req: TransportRequest)
-    -> impl Future<Output = Result<TransportResponse>> + Send;
+    fn send(
+        &self,
+        req: TransportRequest,
+    ) -> impl Future<Output = Result<TransportResponse>> + Send;
 
     /// Notify the Quick-Node that this session is ending.
     ///

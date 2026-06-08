@@ -22,7 +22,8 @@ pub fn drain_journal(
     data_file: &DataFile,
     _cache: &Cache,
 ) -> crate::StorageResult<DrainResult> {
-    let entries: Vec<JournalEntry> = journal.entries_since_checkpoint().to_vec();
+    let entries: Vec<JournalEntry> =
+        journal.entries_since_checkpoint().to_vec();
     let mut drained = 0;
 
     for entry in &entries {
@@ -76,7 +77,9 @@ mod tests {
         let cache = Cache::new();
         let mut journal = Journal::in_memory();
 
-        let key = AnchorKey::from_raw(wavedb_core::Id::new(1, 0, 1, 1000).anchor_key().raw());
+        let key = AnchorKey::from_raw(
+            wavedb_core::Id::new(1, 0, 1, 1000).anchor_key().raw(),
+        );
         let slot = AnchorSlot::inline(b"drain test", 1000);
 
         journal
@@ -110,7 +113,10 @@ mod tests {
 
         journal
             .append(JournalEntry::WriteVersioned {
-                record: VersionedRecord::new(id1.raw(), b"version data".to_vec()),
+                record: VersionedRecord::new(
+                    id1.raw(),
+                    b"version data".to_vec(),
+                ),
             })
             .unwrap();
 

@@ -22,14 +22,19 @@ pub trait UniqueObject: WaveDbStruct + Sized {
     /// Look up the one live record for the current tenant, if it exists.
     ///
     /// Returns `None` when no record has been written yet (e.g. a new tenant).
-    fn search(db: &Db) -> impl std::future::Future<Output = Result<Option<Self>>> + Send;
+    fn search(
+        db: &Db,
+    ) -> impl std::future::Future<Output = Result<Option<Self>>> + Send;
 
     /// Persist this record as the new live version for the current tenant.
     ///
     /// Writes a versioned record and rotates the anchor to point at it.
     /// If `id` and `metadata` are at their defaults, the engine assigns
     /// fresh values at write time.
-    fn save(self, db: &Db) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn save(
+        self,
+        db: &Db,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
 /// Behaviour for **NonUnique** records — many live records per tenant.
@@ -41,13 +46,22 @@ pub trait NonUniqueObject: WaveDbStruct + Sized {
     ///
     /// Pass [`Expr::all()`] to return every live record for this type
     /// under the current tenant.
-    fn query(db: &Db, expr: Expr) -> impl std::future::Future<Output = Result<Vec<Self>>> + Send;
+    fn query(
+        db: &Db,
+        expr: Expr,
+    ) -> impl std::future::Future<Output = Result<Vec<Self>>> + Send;
 
     /// Persist this record as a new versioned entry, rotating the anchor.
-    fn save(self, db: &Db) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn save(
+        self,
+        db: &Db,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Delete this record: write a tombstone to the anchor.
-    fn delete(self, db: &Db) -> impl std::future::Future<Output = Result<()>> + Send;
+    fn delete(
+        self,
+        db: &Db,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
 // ── Shape guard ──────────────────────────────────────────────────────────────

@@ -37,7 +37,11 @@ impl IndexKey {
 /// The trait that both array and B+ tree backends implement.
 pub trait IndexBackend {
     /// Insert a key→anchor mapping.
-    fn insert(&mut self, key: IndexKey, anchor: AnchorKey) -> crate::StorageResult<()>;
+    fn insert(
+        &mut self,
+        key: IndexKey,
+        anchor: AnchorKey,
+    ) -> crate::StorageResult<()>;
 
     /// Point lookup by exact key. Returns the first match.
     fn lookup(&self, key: &IndexKey) -> Option<AnchorKey>;

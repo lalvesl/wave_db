@@ -5,7 +5,16 @@
 //! record); postcard encodes `None` in a single byte.
 
 /// Reference to a separately-stored permission group.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct PermissionGroupId(pub u64);
 
 /// Per-record access control.
@@ -64,14 +73,19 @@ mod tests {
     fn none_permission_one_byte() {
         let perm: Option<PermissionRef> = None;
         let bytes = postcard::to_allocvec(&perm).unwrap();
-        assert_eq!(bytes.len(), 1, "None permission should serialize to 1 byte");
+        assert_eq!(
+            bytes.len(),
+            1,
+            "None permission should serialize to 1 byte"
+        );
     }
 
     #[test]
     fn inline_permission_roundtrip() {
         let perm = Some(PermissionRef::Inline(vec![1, 2, 42]));
         let bytes = postcard::to_allocvec(&perm).unwrap();
-        let decoded: Option<PermissionRef> = postcard::from_bytes(&bytes).unwrap();
+        let decoded: Option<PermissionRef> =
+            postcard::from_bytes(&bytes).unwrap();
         assert_eq!(perm, decoded);
     }
 
@@ -79,7 +93,8 @@ mod tests {
     fn group_permission_roundtrip() {
         let perm = Some(PermissionRef::Group(PermissionGroupId(99)));
         let bytes = postcard::to_allocvec(&perm).unwrap();
-        let decoded: Option<PermissionRef> = postcard::from_bytes(&bytes).unwrap();
+        let decoded: Option<PermissionRef> =
+            postcard::from_bytes(&bytes).unwrap();
         assert_eq!(perm, decoded);
     }
 

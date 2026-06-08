@@ -8,8 +8,12 @@
 
 use std::time::{Duration, Instant};
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use wavedb_bench::{DEFAULT_PAYLOAD_LEN, fill_in_memory, make_record, record_id};
+use criterion::{
+    BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
+};
+use wavedb_bench::{
+    DEFAULT_PAYLOAD_LEN, fill_in_memory, make_record, record_id,
+};
 use wavedb_storage::DataFile;
 use wavedb_storage::file::data::DEFAULT_PAGE_SIZE;
 
@@ -23,12 +27,15 @@ fn bench_in_memory_write(c: &mut Criterion) {
             b.iter_custom(|iters| {
                 let mut total = Duration::ZERO;
                 for _ in 0..iters {
-                    let df =
-                        DataFile::open_in_memory(DEFAULT_PAGE_SIZE).expect("open in-memory file");
+                    let df = DataFile::open_in_memory(DEFAULT_PAGE_SIZE)
+                        .expect("open in-memory file");
                     let start = Instant::now();
                     for seq in 1..=n {
-                        df.write_versioned(&make_record(seq, DEFAULT_PAYLOAD_LEN))
-                            .expect("write");
+                        df.write_versioned(&make_record(
+                            seq,
+                            DEFAULT_PAYLOAD_LEN,
+                        ))
+                        .expect("write");
                     }
                     total += start.elapsed();
                     std::hint::black_box(&df);
@@ -53,7 +60,9 @@ fn bench_in_memory_read(c: &mut Criterion) {
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1);
                 let seq = (state >> 33) % n + 1;
-                std::hint::black_box(df.read_versioned(record_id(seq)).expect("read"));
+                std::hint::black_box(
+                    df.read_versioned(record_id(seq)).expect("read"),
+                );
             });
         });
     }

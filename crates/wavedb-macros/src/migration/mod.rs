@@ -24,7 +24,8 @@ pub fn build_migration_impl(
 ) -> proc_macro2::TokenStream {
     let migrates_from_impl = traits::build_migrates_from(name, args);
     let rollback_from_impl = traits::build_rollback_from(name, args);
-    let register_migration = registry::build_register_migration(name, sid, version, args);
+    let register_migration =
+        registry::build_register_migration(name, sid, version, args);
     let migrate_from_with_impl = methods::build_migrate_from_with(name, args);
     let rollback_with_impl = methods::build_rollback_with(name, args);
     let first_try_impl = methods::build_first_try(name, args);

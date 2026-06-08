@@ -103,9 +103,11 @@ async fn open_sets_user_and_tenant() {
         "ws://backup:7700",
     ));
 
-    let db = Db::open_with_transport(mock, /* user */ 42, /* tenant */ 999)
-        .await
-        .unwrap();
+    let db = Db::open_with_transport(
+        mock, /* user */ 42, /* tenant */ 999,
+    )
+    .await
+    .unwrap();
     assert_eq!(db.user(), 42);
     assert_eq!(db.tenant(), 999);
 }

@@ -114,7 +114,8 @@ impl SeenFilter {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(
-                BloomFilter::with_false_pos(BLOOM_FP_RATE).expected_items(BLOOM_CAPACITY),
+                BloomFilter::with_false_pos(BLOOM_FP_RATE)
+                    .expected_items(BLOOM_CAPACITY),
             )),
         }
     }

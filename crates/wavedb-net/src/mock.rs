@@ -56,7 +56,10 @@ impl ScriptedReply {
     }
 
     /// A successful `Connect` reply with owner and backup URLs.
-    pub fn connect(owner_url: impl Into<String>, backup_url: impl Into<String>) -> Self {
+    pub fn connect(
+        owner_url: impl Into<String>,
+        backup_url: impl Into<String>,
+    ) -> Self {
         Self {
             payload: Vec::new(),
             error: false,
@@ -185,7 +188,8 @@ mod channel {
     use tokio::sync::{mpsc, oneshot};
     use wavedb_core::Result;
 
-    type Envelope = (TransportRequest, oneshot::Sender<Result<TransportResponse>>);
+    type Envelope =
+        (TransportRequest, oneshot::Sender<Result<TransportResponse>>);
 
     /// A channel-backed transport whose other end is a [`MockServer`].
     ///
@@ -205,15 +209,17 @@ mod channel {
     }
 
     impl Transport for ChannelTransport {
-        async fn send(&self, req: TransportRequest) -> Result<TransportResponse> {
+        async fn send(
+            &self,
+            req: TransportRequest,
+        ) -> Result<TransportResponse> {
             let (reply_tx, reply_rx) = oneshot::channel();
-            self.tx
-                .send((req, reply_tx))
-                .await
-                .map_err(|_| wavedb_core::Error::Transport("MockServer dropped".into()))?;
-            reply_rx
-                .await
-                .map_err(|_| wavedb_core::Error::Transport("MockServer dropped".into()))?
+            self.tx.send((req, reply_tx)).await.map_err(|_| {
+                wavedb_core::Error::Transport("MockServer dropped".into())
+            })?;
+            reply_rx.await.map_err(|_| {
+                wavedb_core::Error::Transport("MockServer dropped".into())
+            })?
         }
 
         fn disconnect(&self, _user: u64, _tenant: u64) {}
@@ -246,7 +252,11 @@ mod channel {
         }
 
         /// Consume the next request and reply with a `Connect` handshake.
-        pub async fn reply_connect(&mut self, owner: impl Into<String>, backup: impl Into<String>) {
+        pub async fn reply_connect(
+            &mut self,
+            owner: impl Into<String>,
+            backup: impl Into<String>,
+        ) {
             let (req, tx) = self.take().await;
             let _ = tx.send(Ok(TransportResponse {
                 seq: req.seq,

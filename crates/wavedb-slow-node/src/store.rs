@@ -84,7 +84,10 @@ impl HistoryStore {
     /// Apply a [`FlushBatch`]: journal all records and update the in-memory index.
     ///
     /// Returns the write sequence that was durably stored.
-    pub fn apply_flush(&self, batch: FlushBatch) -> wavedb_storage::StorageResult<u64> {
+    pub fn apply_flush(
+        &self,
+        batch: FlushBatch,
+    ) -> wavedb_storage::StorageResult<u64> {
         let write_seq = batch.write_seq;
         let tenant = batch.tenant;
         let mut guard = self.inner.lock();

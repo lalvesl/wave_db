@@ -2,7 +2,10 @@ use crate::args::WaveDbArgs;
 use quote::quote;
 use syn::Ident;
 
-pub fn build_migration_chain(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStream {
+pub fn build_migration_chain(
+    name: &Ident,
+    args: &WaveDbArgs,
+) -> proc_macro2::TokenStream {
     // Generated on EVERY wave_db struct, regardless of migration attrs.  This
     // walks the chain (via `MigratesFrom`/`RollbackFrom`) to deserialize stored
     // bytes at any version into `Self`.  No manual `register_migration` needed —

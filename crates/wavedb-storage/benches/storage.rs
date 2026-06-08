@@ -1,4 +1,6 @@
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{
+    BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
+};
 use tempfile::tempdir;
 use wavedb_core::Id;
 use wavedb_storage::{AnchorKey, AnchorSlot, DataFile, VersionedRecord, hash};
@@ -15,7 +17,8 @@ fn bench_anchor_write(c: &mut Criterion) {
             || {
                 // Fresh DataFile per batch so pages never fill up.
                 let dir = tempdir().unwrap();
-                let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
+                let file =
+                    DataFile::open(&dir.path().join("data"), 4096).unwrap();
                 (dir, file)
             },
             |(_dir, file)| {
@@ -54,7 +57,8 @@ fn bench_anchor_read(c: &mut Criterion) {
         let target_i = n / 2;
         let target_tenant = target_i % 256;
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            let target = AnchorKey::from(Id::new(target_tenant, 0, 0, target_i));
+            let target =
+                AnchorKey::from(Id::new(target_tenant, 0, 0, target_i));
             b.iter(|| {
                 std::hint::black_box(file.read_anchor(target).unwrap());
             });
@@ -75,7 +79,8 @@ fn bench_versioned_write(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let dir = tempdir().unwrap();
-                let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
+                let file =
+                    DataFile::open(&dir.path().join("data"), 4096).unwrap();
                 (dir, file)
             },
             |(_dir, file)| {
@@ -100,7 +105,9 @@ fn bench_hash_functions(c: &mut Criterion) {
     });
 
     group.bench_function("tuple4_page", |b| {
-        b.iter(|| std::hint::black_box(hash::tuple4_page(7, 42, 3, 1_000_000, 256)));
+        b.iter(|| {
+            std::hint::black_box(hash::tuple4_page(7, 42, 3, 1_000_000, 256))
+        });
     });
 
     group.bench_function("double_hash_step", |b| {

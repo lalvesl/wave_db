@@ -21,9 +21,12 @@ mod wasm_impl {
     use wasm_bindgen::prelude::*;
 
     use wavedb_net::frame::{decode_payload, encode_payload};
-    use wavedb_net::request::{RequestKind, TransportRequest, TransportResponse};
+    use wavedb_net::request::{
+        RequestKind, TransportRequest, TransportResponse,
+    };
 
-    type PendingMap = Rc<RefCell<HashMap<u64, oneshot::Sender<TransportResponse>>>>;
+    type PendingMap =
+        Rc<RefCell<HashMap<u64, oneshot::Sender<TransportResponse>>>>;
 
     /// JS-visible handle to a WaveDB Quick-Node session.
     ///
@@ -48,7 +51,11 @@ mod wasm_impl {
         ///
         /// Waits for the underlying WebSocket to open and sends the initial
         /// `Connect` request before resolving.
-        pub async fn connect(ws_url: &str, user: u64, tenant: u64) -> Result<Self, JsValue> {
+        pub async fn connect(
+            ws_url: &str,
+            user: u64,
+            tenant: u64,
+        ) -> Result<Self, JsValue> {
             let ws = web_sys::WebSocket::new(ws_url)?;
             ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
@@ -71,7 +78,9 @@ mod wasm_impl {
                 let tx = Rc::clone(&open_tx);
                 let cb = Closure::wrap(Box::new(move |_: web_sys::Event| {
                     if let Some(s) = tx.borrow_mut().take() {
-                        let _ = s.send(Err(JsValue::from_str("WebSocket connection failed")));
+                        let _ = s.send(Err(JsValue::from_str(
+                            "WebSocket connection failed",
+                        )));
                     }
                 }) as Box<dyn FnMut(_)>);
                 ws.set_onerror(Some(cb.as_ref().unchecked_ref()));
@@ -86,18 +95,21 @@ mod wasm_impl {
             let pending: PendingMap = Rc::new(RefCell::new(HashMap::new()));
             let pending_msg = Rc::clone(&pending);
 
-            let onmessage = Closure::wrap(Box::new(move |evt: web_sys::MessageEvent| {
-                let Ok(ab) = evt.data().dyn_into::<ArrayBuffer>() else {
-                    return;
-                };
-                let bytes: Vec<u8> = Uint8Array::new(&ab).to_vec();
-                let Ok(resp) = decode_payload::<TransportResponse>(&bytes) else {
-                    return;
-                };
-                if let Some(tx) = pending_msg.borrow_mut().remove(&resp.seq) {
-                    let _ = tx.send(resp);
-                }
-            }) as Box<dyn FnMut(_)>);
+            let onmessage =
+                Closure::wrap(Box::new(move |evt: web_sys::MessageEvent| {
+                    let Ok(ab) = evt.data().dyn_into::<ArrayBuffer>() else {
+                        return;
+                    };
+                    let bytes: Vec<u8> = Uint8Array::new(&ab).to_vec();
+                    let Ok(resp) = decode_payload::<TransportResponse>(&bytes)
+                    else {
+                        return;
+                    };
+                    if let Some(tx) = pending_msg.borrow_mut().remove(&resp.seq)
+                    {
+                        let _ = tx.send(resp);
+                    }
+                }) as Box<dyn FnMut(_)>);
             ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
 
             // ── Connect handshake ─────────────────────────────────────────────
@@ -105,13 +117,17 @@ mod wasm_impl {
             let (tx, rx) = oneshot::channel::<TransportResponse>();
             pending.borrow_mut().insert(seq, tx);
 
-            let req = TransportRequest::new(seq, RequestKind::Connect { user, tenant });
-            let bytes = encode_payload(&req).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let req = TransportRequest::new(
+                seq,
+                RequestKind::Connect { user, tenant },
+            );
+            let bytes = encode_payload(&req)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
             ws.send_with_u8_array(&bytes)?;
 
-            let resp = rx
-                .await
-                .map_err(|_| JsValue::from_str("disconnected during Connect handshake"))?;
+            let resp = rx.await.map_err(|_| {
+                JsValue::from_str("disconnected during Connect handshake")
+            })?;
 
             let owner_url = resp.owner_url.unwrap_or_default();
             let backup_url = resp.backup_url.unwrap_or_default();
@@ -159,7 +175,11 @@ mod wasm_impl {
         /// `payload` must be a postcard-encoded struct byte slice.
         /// Returns the raw response payload, or an error if the write was
         /// rejected (e.g. `b"not_owner"`).
-        pub async fn write(&self, struct_id: u32, payload: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        pub async fn write(
+            &self,
+            struct_id: u32,
+            payload: Vec<u8>,
+        ) -> Result<Vec<u8>, JsValue> {
             let resp = self
                 .send_raw(RequestKind::Write {
                     struct_id,
@@ -174,7 +194,10 @@ mod wasm_impl {
         /// Search for a Unique record.
         ///
         /// Returns raw postcard-encoded bytes, or empty if no record exists yet.
-        pub async fn search_unique(&self, struct_id: u32) -> Result<Vec<u8>, JsValue> {
+        pub async fn search_unique(
+            &self,
+            struct_id: u32,
+        ) -> Result<Vec<u8>, JsValue> {
             let resp = self
                 .send_raw(RequestKind::SearchUnique {
                     struct_id,
@@ -233,7 +256,10 @@ mod wasm_impl {
     }
 
     impl JsDb {
-        async fn send_raw(&self, kind: RequestKind) -> Result<TransportResponse, JsValue> {
+        async fn send_raw(
+            &self,
+            kind: RequestKind,
+        ) -> Result<TransportResponse, JsValue> {
             let seq = self.seq.get();
             self.seq.set(seq + 1);
 
@@ -241,7 +267,8 @@ mod wasm_impl {
             self.pending.borrow_mut().insert(seq, tx);
 
             let req = TransportRequest::new(seq, kind);
-            let bytes = encode_payload(&req).map_err(|e| JsValue::from_str(&e.to_string()))?;
+            let bytes = encode_payload(&req)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
             self.ws.send_with_u8_array(&bytes)?;
 
@@ -293,7 +320,10 @@ mod wasm_impl {
             let decoded: TransportResponse = decode_payload(&bytes).unwrap();
             assert_eq!(decoded.seq, 3);
             assert_eq!(decoded.payload, b"hello_wasm");
-            assert_eq!(decoded.owner_url.as_deref(), Some("ws://127.0.0.1:7700"));
+            assert_eq!(
+                decoded.owner_url.as_deref(),
+                Some("ws://127.0.0.1:7700")
+            );
         }
 
         #[wasm_bindgen_test]

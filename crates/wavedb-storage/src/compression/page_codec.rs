@@ -9,12 +9,18 @@ use crate::compression::heap_zstd;
 ///
 /// For now, uses plain zstd. When dictionaries are trained, the dict bytes
 /// will be prepended to the zstd context for better ratios.
-pub fn encode_stack(data: &[u8], _dict_version: u32) -> crate::StorageResult<Vec<u8>> {
+pub fn encode_stack(
+    data: &[u8],
+    _dict_version: u32,
+) -> crate::StorageResult<Vec<u8>> {
     heap_zstd::compress(data)
 }
 
 /// Decode page stack data.
-pub fn decode_stack(compressed: &[u8], _dict_version: u32) -> crate::StorageResult<Vec<u8>> {
+pub fn decode_stack(
+    compressed: &[u8],
+    _dict_version: u32,
+) -> crate::StorageResult<Vec<u8>> {
     heap_zstd::decompress(compressed)
 }
 

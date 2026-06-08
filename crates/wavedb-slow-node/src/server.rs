@@ -18,7 +18,9 @@ use wavedb_net::auth::{ClusterKey, TokenPurpose};
 use wavedb_net::frame::{decode_payload, encode_payload};
 use wavedb_net::metrics::{MetricsRequest, SlowNodeMetrics};
 
-use crate::flush::{FlushAck, FlushBatch, HistoryReadRequest, HistoryReadResponse};
+use crate::flush::{
+    FlushAck, FlushBatch, HistoryReadRequest, HistoryReadResponse,
+};
 use crate::store::HistoryStore;
 
 // ── AppState ──────────────────────────────────────────────────────────────────
@@ -46,7 +48,10 @@ pub fn router(store: HistoryStore, auth_key: Option<ClusterKey>) -> Router {
 
 // ── Flush handler ─────────────────────────────────────────────────────────────
 
-async fn handle_flush(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
+async fn handle_flush(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -71,16 +76,20 @@ async fn handle_flush(State(state): State<Arc<AppState>>, body: Bytes) -> impl I
         |_| (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
         |write_seq| {
             let ack = FlushAck { write_seq };
-            encode_payload(&ack).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
-                (StatusCode::OK, b)
-            })
+            encode_payload(&ack).map_or(
+                (StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()),
+                |b| (StatusCode::OK, b),
+            )
         },
     )
 }
 
 // ── History handler ───────────────────────────────────────────────────────────
 
-async fn handle_history(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
+async fn handle_history(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -95,14 +104,18 @@ async fn handle_history(State(state): State<Arc<AppState>>, body: Bytes) -> impl
         .get(req.tenant, req.record_id)
         .unwrap_or_default();
     let resp = HistoryReadResponse { data };
-    encode_payload(&resp).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
-        (StatusCode::OK, b)
-    })
+    encode_payload(&resp)
+        .map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+            (StatusCode::OK, b)
+        })
 }
 
 // ── Metrics handler ───────────────────────────────────────────────────────────
 
-async fn handle_metrics(State(state): State<Arc<AppState>>, body: Bytes) -> impl IntoResponse {
+async fn handle_metrics(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
     if body.is_empty() {
         return (StatusCode::BAD_REQUEST, Bytes::new());
     }
@@ -129,9 +142,10 @@ async fn handle_metrics(State(state): State<Arc<AppState>>, body: Bytes) -> impl
         journal_bytes: state.store.journal_bytes(),
         index_bytes: state.store.index_bytes(),
     };
-    encode_payload(&snapshot).map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
-        (StatusCode::OK, b)
-    })
+    encode_payload(&snapshot)
+        .map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+            (StatusCode::OK, b)
+        })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -143,7 +157,8 @@ mod tests {
     use tokio::net::TcpListener;
     use wavedb_storage::VersionedRecord;
 
-    async fn start_server() -> (std::net::SocketAddr, tokio::task::AbortHandle) {
+    async fn start_server() -> (std::net::SocketAddr, tokio::task::AbortHandle)
+    {
         start_server_with_key(None).await
     }
 

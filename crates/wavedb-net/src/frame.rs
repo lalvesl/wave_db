@@ -68,7 +68,9 @@ pub fn encode<T: Serialize>(value: &T) -> Result<Bytes> {
 /// assert_eq!(decoded, 100u32);
 /// assert!(buf.is_empty());
 /// ```
-pub fn decode<T: for<'de> Deserialize<'de>>(buf: &mut BytesMut) -> Result<Option<T>> {
+pub fn decode<T: for<'de> Deserialize<'de>>(
+    buf: &mut BytesMut,
+) -> Result<Option<T>> {
     if buf.len() < LENGTH_PREFIX_BYTES {
         return Ok(None);
     }
@@ -90,7 +92,9 @@ pub fn decode<T: for<'de> Deserialize<'de>>(buf: &mut BytesMut) -> Result<Option
 ///
 /// Useful when the transport layer has already separated the frame for us
 /// (e.g. WebSocket message boundaries).
-pub fn decode_payload<T: for<'de> Deserialize<'de>>(payload: &[u8]) -> Result<T> {
+pub fn decode_payload<T: for<'de> Deserialize<'de>>(
+    payload: &[u8],
+) -> Result<T> {
     Ok(postcard::from_bytes(payload)?)
 }
 

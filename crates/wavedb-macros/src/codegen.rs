@@ -13,7 +13,10 @@ pub fn build_shape(args: &WaveDbArgs) -> proc_macro2::TokenStream {
     }
 }
 
-fn build_get_by_id(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStream {
+fn build_get_by_id(
+    name: &Ident,
+    args: &WaveDbArgs,
+) -> proc_macro2::TokenStream {
     if args.non_unique || args.nested_non_unique {
         quote! {
             /// Fetch the record whose `id` matches this typed ID.
@@ -49,7 +52,10 @@ fn build_get_by_id(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStream 
     }
 }
 
-fn build_get_by_anchor(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStream {
+fn build_get_by_anchor(
+    name: &Ident,
+    args: &WaveDbArgs,
+) -> proc_macro2::TokenStream {
     if args.non_unique || args.nested_non_unique {
         quote! {
             /// Fetch the live record at this anchor address.
@@ -215,7 +221,10 @@ pub fn build_typed_wrappers(
     }
 }
 
-pub fn build_anchors_impl(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStream {
+pub fn build_anchors_impl(
+    name: &Ident,
+    args: &WaveDbArgs,
+) -> proc_macro2::TokenStream {
     let id_name = format_ident!("{}Id", name);
     let anchor_name = format_ident!("{}Anchor", name);
 
@@ -241,7 +250,8 @@ pub fn build_anchors_impl(name: &Ident, args: &WaveDbArgs) -> proc_macro2::Token
     });
 
     let primary_accessor = args.primary_anchor.as_ref().map(|field| {
-        let find_fn_name = syn::Ident::new(&format!("find_by_{field}"), field.span());
+        let find_fn_name =
+            syn::Ident::new(&format!("find_by_{field}"), field.span());
         quote! {
             /// Look up a record by its primary anchor field.
             pub fn primary_anchor_field() -> &'static str {
@@ -254,7 +264,8 @@ pub fn build_anchors_impl(name: &Ident, args: &WaveDbArgs) -> proc_macro2::Token
         }
     });
 
-    let secondary_field_lists: Vec<&String> = args.secondary_anchors.iter().collect();
+    let secondary_field_lists: Vec<&String> =
+        args.secondary_anchors.iter().collect();
     let secondary_anchors_const = if secondary_field_lists.is_empty() {
         quote! {}
     } else {

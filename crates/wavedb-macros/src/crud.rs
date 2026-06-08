@@ -2,7 +2,10 @@ use crate::args::WaveDbArgs;
 use quote::quote;
 use syn::Ident;
 
-pub fn build_crud_impl(name: &Ident, args: &WaveDbArgs) -> proc_macro2::TokenStream {
+pub fn build_crud_impl(
+    name: &Ident,
+    args: &WaveDbArgs,
+) -> proc_macro2::TokenStream {
     if args.no_auto_crud {
         quote! {}
     } else if args.nested_non_unique || args.non_unique {

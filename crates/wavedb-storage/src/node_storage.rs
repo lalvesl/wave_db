@@ -65,7 +65,10 @@ impl NodeStorage {
     /// duplicates) the same entries.
     pub fn open(data_dir: &Path) -> StorageResult<Arc<Self>> {
         std::fs::create_dir_all(data_dir)?;
-        let data_file = DataFile::open_on_disk(&data_dir.join("data.bin"), DEFAULT_PAGE_SIZE)?;
+        let data_file = DataFile::open_on_disk(
+            &data_dir.join("data.bin"),
+            DEFAULT_PAGE_SIZE,
+        )?;
         let journal = Journal::open(&data_dir.join("journal.log"))?;
         let heap_file = HeapFile::open(&data_dir.join("heap.bin"))?;
 
@@ -166,7 +169,11 @@ impl NodeStorage {
     /// Convenience wrapper: build a `VersionedRecord` from `(id, bytes)`
     /// and commit it.  Used by request handlers that don't already have
     /// the assembled record.
-    pub fn commit_write(&self, id: u128, payload: Vec<u8>) -> StorageResult<()> {
+    pub fn commit_write(
+        &self,
+        id: u128,
+        payload: Vec<u8>,
+    ) -> StorageResult<()> {
         let rec = crate::versioned::VersionedRecord::new(id, payload);
         self.commit_versioned_write(&rec)
     }

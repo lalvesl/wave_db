@@ -250,8 +250,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         enroll_alice_async.clone(),
         enroll_bob_rust.clone(),
     ]);
-    let enc_courses = encode_query(&[course_rust.clone(), course_async.clone()]);
-    let enc_students = encode_query(&[student_alice.clone(), student_bob.clone()]);
+    let enc_courses =
+        encode_query(&[course_rust.clone(), course_async.clone()]);
+    let enc_students =
+        encode_query(&[student_alice.clone(), student_bob.clone()]);
 
     let (transport, mut server) = ChannelTransport::pair();
     tokio::spawn(async move {
@@ -276,7 +278,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     citizen_v1.clone().save(&db).await?;
     passport.clone().save(&db).await?;
     citizen_v2.clone().save(&db).await?; // replacement at same anchor (SHARD = 1)
-    println!("Wrote citizen_v1, passport, citizen_v2 (replacement at same anchor)");
+    println!(
+        "Wrote citizen_v1, passport, citizen_v2 (replacement at same anchor)"
+    );
 
     // Query returns the live citizen (v2). Follow the reference by comparing
     // anchor keys — CREATED_AT is irrelevant so the resolution is stable.

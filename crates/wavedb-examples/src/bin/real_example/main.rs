@@ -83,7 +83,10 @@ fn sibling_bin(name: &str) -> std::path::PathBuf {
 /// Returns the full line (without trailing newline) so the caller can parse
 /// embedded key=value pairs.  Panics if the child closes stdout before
 /// sending the line.
-fn wait_ready(reader: &mut BufReader<impl std::io::Read>, label: &str) -> String {
+fn wait_ready(
+    reader: &mut BufReader<impl std::io::Read>,
+    label: &str,
+) -> String {
     for line in reader.lines() {
         let line = line.expect("read child stdout");
         eprintln!("[orchestrator] {label}: {line}");
@@ -159,12 +162,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bump_nofile(65_536);
 
     // ── Create temp directories ───────────────────────────────────────────────
-    let base_tmp = std::env::temp_dir().join(format!("wavedb-re-{}", std::process::id()));
+    let base_tmp =
+        std::env::temp_dir().join(format!("wavedb-re-{}", std::process::id()));
     std::fs::create_dir_all(&base_tmp)?;
 
     // ── Allocate ports ────────────────────────────────────────────────────────
     let slow_addr = find_free_port();
-    let qn_addrs: Vec<String> = (0..NUM_QUICK_NODES).map(|_| find_free_port()).collect();
+    let qn_addrs: Vec<String> =
+        (0..NUM_QUICK_NODES).map(|_| find_free_port()).collect();
 
     eprintln!("[orchestrator] slow-node addr  : {slow_addr}");
     for (i, addr) in qn_addrs.iter().enumerate() {
@@ -407,7 +412,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Client processes    : {NUM_CLIENTS}");
     println!("  Quick-node processes: {NUM_QUICK_NODES}");
     println!("  Writes committed    : {committed}");
-    println!("  Writes dropped      : {dropped}  (clients on draining/failed nodes)");
+    println!(
+        "  Writes dropped      : {dropped}  (clients on draining/failed nodes)"
+    );
     println!("  Throughput (avg)    : {throughput:.0} writes/s");
     println!();
     println!("✓  Multi-process load test complete.");

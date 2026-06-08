@@ -131,7 +131,11 @@ impl GossipClient {
 
     /// POST `msg` to the Quick-Node at `addr` and decode the
     /// [`GossipResponse`].  Returns `None` on any transport or decode error.
-    pub async fn send(&self, addr: &str, msg: &GossipMessage) -> Option<GossipResponse> {
+    pub async fn send(
+        &self,
+        addr: &str,
+        msg: &GossipMessage,
+    ) -> Option<GossipResponse> {
         let url = format!("http://{addr}/gossip");
         let body = postcard::to_allocvec(msg).ok()?;
         let resp = self
