@@ -1,6 +1,7 @@
 //! Metrics polling: POST /metrics to each node and decode the response.
 
 use futures_util::future;
+use std::fmt::Write as _;
 use wavedb_net::auth::TokenPurpose;
 use wavedb_net::frame::{decode_payload, encode_payload};
 use wavedb_net::metrics::{MetricsRequest, QuickNodeMetrics, SlowNodeMetrics};
@@ -114,7 +115,7 @@ async fn poll_quick(
             let mut msg = format!("[monitor] quick {url}: {e}");
             let mut src = std::error::Error::source(&e);
             while let Some(s) = src {
-                msg.push_str(&format!(" | {s}"));
+                let _ = write!(msg, " | {s}");
                 src = std::error::Error::source(s);
             }
             eprintln!("{msg}");
@@ -169,7 +170,7 @@ async fn poll_slow(
             let mut msg = format!("[monitor] slow {url}: {e}");
             let mut src = std::error::Error::source(&e);
             while let Some(s) = src {
-                msg.push_str(&format!(" | {s}"));
+                let _ = write!(msg, " | {s}");
                 src = std::error::Error::source(s);
             }
             eprintln!("{msg}");

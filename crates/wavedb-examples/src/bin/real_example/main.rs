@@ -56,7 +56,7 @@ const TENANT: u64 = 100;
 fn find_free_port() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind free port");
     let addr = listener.local_addr().expect("local_addr");
-    let _ = drop(listener);
+    drop(listener);
     addr.to_string()
 }
 
@@ -145,6 +145,7 @@ fn bump_nofile(target: u64) {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines, clippy::zombie_processes)]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║   WaveDB — Payment Gateway Multi-Process Load Test       ║");
@@ -200,7 +201,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Keep draining slow-node stderr in background to avoid pipe stalls.
     std::thread::spawn(move || {
-        for line in slow_reader.lines().flatten() {
+        for line in slow_reader.lines().map_while(Result::ok) {
             eprintln!("[slow-node] {line}");
         }
     });
@@ -248,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Drain remaining stdout in background.
         let label = format!("quick-node[{i}]");
         std::thread::spawn(move || {
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 eprintln!("[{label}] {line}");
             }
         });
@@ -323,18 +324,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wait for all clients to signal WAVE_READY in parallel threads.
     let mut ready_handles = Vec::with_capacity(NUM_CLIENTS);
-    for (_id, reader) in client_stdout_handles.into_iter().enumerate() {
+    for reader in client_stdout_handles {
         let summary_arc = Arc::clone(&summary);
         let handle = std::thread::spawn(move || {
             let mut reader = reader;
             // First, read until WAVE_READY.
-            for line in reader.by_ref().lines().flatten() {
+            for line in reader.by_ref().lines().map_while(Result::ok) {
                 if line.starts_with("WAVE_READY") {
                     break;
                 }
             }
             // Then read until WAVE_DONE to collect summary.
-            for line in reader.by_ref().lines().flatten() {
+            for line in reader.by_ref().lines().map_while(Result::ok) {
                 if line.starts_with("WAVE_DONE") {
                     // Parse committed=N dropped=N
                     let mut c = 0u64;
