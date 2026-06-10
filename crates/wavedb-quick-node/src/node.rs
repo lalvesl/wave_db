@@ -261,22 +261,20 @@ impl QuickNode {
             data_file_bytes,
             data_file_page_count,
             data_file_used_pages,
-        ) = if let Some(storage) = self.inner.storage.as_ref() {
-            let j = std::fs::metadata(storage.data_dir.join("journal.log"))
-                .map(|m| m.len())
-                .unwrap_or(0);
-            let h = std::fs::metadata(storage.data_dir.join("heap.bin"))
-                .map(|m| m.len())
-                .unwrap_or(0);
-            let d = std::fs::metadata(storage.data_dir.join("data.bin"))
-                .map(|m| m.len())
-                .unwrap_or(0);
-            let df_pages = storage.data_file.page_count_now();
-            let df_used = storage.data_file.used_page_count();
-            (true, j, h, d, df_pages, df_used)
-        } else {
-            (false, 0u64, 0u64, 0u64, 0u64, 0u64)
-        };
+        ) = self.inner.storage.as_ref().map_or(
+            (false, 0u64, 0u64, 0u64, 0u64, 0u64),
+            |storage| {
+                let j = std::fs::metadata(storage.data_dir.join("journal.log"))
+                    .map_or(0, |m| m.len());
+                let h = std::fs::metadata(storage.data_dir.join("heap.bin"))
+                    .map_or(0, |m| m.len());
+                let d = std::fs::metadata(storage.data_dir.join("data.bin"))
+                    .map_or(0, |m| m.len());
+                let df_pages = storage.data_file.page_count_now();
+                let df_used = storage.data_file.used_page_count();
+                (true, j, h, d, df_pages, df_used)
+            },
+        );
         QuickNodeMetrics {
             node_id: self.inner.node_id,
             listen_addr: self.inner.listen_addr.clone(),

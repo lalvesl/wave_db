@@ -209,7 +209,7 @@ impl AppState {
             (self.event_log_offset + EVENT_SCROLL_STEP).min(max_offset);
     }
 
-    pub fn scroll_events_down(&mut self) {
+    pub const fn scroll_events_down(&mut self) {
         self.event_log_offset =
             self.event_log_offset.saturating_sub(EVENT_SCROLL_STEP);
     }
@@ -356,7 +356,7 @@ fn handle_search(state: &mut AppState, key: KeyEvent) -> bool {
     true
 }
 
-fn handle_detail(state: &mut AppState, key: KeyEvent) -> bool {
+const fn handle_detail(state: &mut AppState, key: KeyEvent) -> bool {
     match key.code {
         KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
             state.mode = InputMode::Normal;
@@ -481,6 +481,7 @@ fn human_bytes(b: u64) -> String {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn node_row(idx: usize, n: &NodeEntry, is_match: bool) -> Row<'_> {
     let match_style = if is_match {
         Style::default().fg(Color::Cyan)
@@ -626,6 +627,7 @@ fn render_sparklines(f: &mut Frame, state: &AppState, area: Rect) {
 
 // ── Page map ──────────────────────────────────────────────────────────────────
 
+#[allow(clippy::cast_precision_loss)]
 fn render_page_map(f: &mut Frame, state: &AppState, area: Rect) {
     let selected_entry = state
         .table

@@ -332,7 +332,8 @@ impl DataFile {
             let mut page_bytes: Vec<AtomicU64> =
                 (0..page_count).map(|_| AtomicU64::new(0)).collect();
             for (idx, page) in entries {
-                let i = idx as usize;
+                let i = usize::try_from(idx)
+                    .map_err(|e| crate::StorageError::Other(e.to_string()))?;
                 if i < pages.len() {
                     let used: u64 =
                         page.directory.iter().map(|e| u64::from(e.size)).sum();
@@ -1252,6 +1253,11 @@ mod tests {
         let after = file.page_count_now();
 
         // Must grow by at least the growth factor.
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
         let min_expected =
             (before as f64 * DEFAULT_GROWTH_FACTOR).ceil() as u64;
         assert!(
