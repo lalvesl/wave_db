@@ -65,7 +65,7 @@ pub struct DirEntry {
 
 impl DirEntry {
     /// Size of a serialized directory entry.
-    pub const SIZE: usize = 24; // 16 (id) + 4 (offset) + 4 (size)
+    pub const SIZE: usize = size_of::<Self>();
 }
 
 /// An in-memory representation of a page.
