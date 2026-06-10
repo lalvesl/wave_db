@@ -16,17 +16,49 @@ WaveDB is a research project exploring a fundamentally different approach: a dat
 
 ### The Problem with Traditional SQL (for Applications)
 
-In a conventional SQL database, all user data lives in shared tables:
+Conventional SQL organises storage **by type — not by who owns the data or what it relates to**. Two kinds of unrelated data end up physically interleaved on the same pages or need to navigate between leaf nodes to found correct id, by the correct user, by the correct relation with another table, and application reads pay for it twice or more depending the complexity, here start the phrase ONE QUERY, 10 JOINS. This experimental ideia of DB try to solve this problem with only one IO of disk without dozens of GB of cache in memory.
+
+#### Mixing 1 — every tenant's rows share one table
 
 ```sql
+-- Every tenant's orders share one table, so the partition key
+-- ("whose data?") has to ride in every query next to the real filter.
 SELECT * FROM orders
-LEFT JOIN users ON orders.user_id = users.id
-WHERE users.id = 42;
+WHERE user_id = 42      -- partition key — restated on every read
+  AND amount > 100;     -- the business filter you actually wanted
 ```
 
-Every query for a single user filters a table containing **every user's data**. The CPU is constantly running hash joins, filter pipelines, and aggregations just to serve one person's data. Horizontal scaling requires "manual" sharding — which means splitting user data across databases anyway.
+The `orders` table holds **every user's orders**, interleaved row-by-row across shared pages. To serve a single user the engine index-walks or scans through bytes belonging to thousands of unrelated tenants, then filters down to the few rows that matter. Every page pulled into the buffer pool is mostly data this query will throw away.
 
-**WaveDB starts from that endpoint**: data is partitioned by tenant from the very beginning. There are no joins. The CPU saved from join processing is available for compression instead.
+In WaveDB the partition key is **structural, not a predicate**: the tenant is bound once at connect and never appears in a query again — only the business filter is left.
+
+```rust
+use wavedb::prelude::*;
+
+// For a B2C app the tenant *is* the user — bound once, at connect time.
+let db = Db::connect("wss://wavedb.example", /* user */ 42, /* tenant */ 42).await?;
+
+// No `WHERE user_id`, no join: the engine reads only tenant 42's orders.
+// `Order::amount` is a macro-generated typed column — a misspelt field is a
+// compile error, not an empty result.
+let orders: Vec<Order> = Order::query(&db, Order::amount.gt(100u64)).await?;
+```
+
+#### Mixing 2 — unrelated child rows share one table (the NonUnique-within-NonUnique case)
+
+Even inside a single tenant, a classic schema puts every invoice's line items in one `invoice_lines` table:
+
+```sql
+SELECT * FROM invoice_lines WHERE invoice_id = 1001;
+```
+
+The lines for invoice `1001` sit scattered among the lines of every other invoice — and, combined with Mixing 1, every other tenant's invoices too. The rows you actually want (one parent's children) are never colocated on disk. Fetching them is a scatter of random page reads guided by an index, never one sequential pull.
+
+#### The shared root cause
+
+Both problems stem from laying out storage **by table/type instead of by access pattern**. Application reads are almost always _"give me this one tenant's — and often this one parent's — data."_ But the bytes that answer that question are sprayed across pages shared with data nobody asked for. The cost surfaces as **cache misses and wasted disk IOPS**: every read drags in neighbours you didn't request, the page cache holds a low fraction of useful bytes, and the CPU burns cycles on joins and filters that exist only to undo the mixing. Horizontal scaling then forces "manual" sharding — splitting tenants across databases by hand, which is just reintroducing partitioning after the fact.
+
+**WaveDB starts from that endpoint.** Data is partitioned by tenant from the first byte, and NonUnique-within-NonUnique children are clustered under their parent's address space — so the bytes a query needs sit together on the same pages and nothing else does. A read touches only the interested data: high cache hit rate, minimal IOPS, no joins. The CPU saved from join processing goes to compression instead.
 
 ### The Ocean Wave Analogy
 
@@ -65,7 +97,7 @@ WaveDB recognises **three** data shapes, each with different ownership and index
 
 > `"save"` and `"delete"` are quoted because WaveDB is versioned: an update writes a new versioned record and rotates the anchor; a delete writes a tombstone. The bytes never disappear, and Unique records have no `delete` because there is nothing single-record-deletable about an exclusive record per tenant.
 
-The third shape — **NonUnique-within-NonUnique** — is _not_ modelled as a generic many-to-many. Lines on an invoice have no independent identity; they exist only in the context of their parent invoice. Treating them as M2M cross-references would force needless anchor maintenance for relationships that never escape their parent. Instead, WaveDB stores them as a tightly-coupled child collection under the parent's address space.
+The third shape — **NonUnique-within-NonUnique** — is _not_ modelled as a generic many-to-many. Lines on an invoice have no independent identity; they exist only in the context of their parent invoice. Treating them as M2M cross-references would force needless anchor maintenance for relationships that never escape their parent. Instead, WaveDB stores them as a tightly-coupled child collection under the parent's address space. The nesting is recursive: a child record can itself own a child collection (project → tasks → checklist items), with every level clustered under the same top-level parent's address space.
 
 ### The ID
 
@@ -718,6 +750,15 @@ A pre-version of WaveDB had a separate "Type 2" migration kind for the case wher
 
 This unifies the "compose from multiple sources" case with normal Type-1 migrations: it's the same pipeline; the application just plugs into a different stage.
 
+### Splitting a struct — the inverse of compose
+
+The same hook also covers the opposite direction: one struct family splitting into several. Each new family points its own `first_try` at the old record and lifts out its slice:
+
+- `Order2` stays in the original family (same `struct_id`), drops the shipping fields, and upgrades via a normal `migrate_from = Order1`.
+- `ShippingInfo1` starts a new family (new `struct_id`) and declares `first_try = read Order1, lift the shipping fields` — the synthesised source then flows through its `migrate_from_with` like any other forward migration.
+
+The old record stays readable until every split target has lazily materialised its slice. Compose and split are the same mechanism viewed from opposite ends: compose pulls many sources into one `first_try`; split points many `first_try`s at one source.
+
 ### Lazy migration on read
 
 When a record is read with a `struct_version` behind the current compiled version:
@@ -841,10 +882,10 @@ WaveDB ships as a library with the same code path on servers, native clients, an
 | ------------------------------------------- | --------------------------------- | --------------------------- |
 | `Db::open(url, path, user)`                 | Local file at `path`              | `tenant = user_id`          |
 | `Db::open(url, path, user, default_tenant)` | Local file at `path`              | Tenant explicit (companies) |
-| `Db::open(url, user, default_tenant)`       | Browser localStorage (WASM build) | Tenant explicit             |
-| `Db::open(url, user)`                       | Browser localStorage (WASM build) | `tenant = user_id`          |
+| `Db::open(url, user, default_tenant)`       | Browser IndexedDB (WASM build) | Tenant explicit             |
+| `Db::open(url, user)`                       | Browser IndexedDB (WASM build) | `tenant = user_id`          |
 
-In all four, `url` resolves to the cluster's front door — the request is then redirected to the Quick-Node currently owning the user's tenant, and the second URL of the **backup** Quick-Node is returned alongside it for failover. The native modes use the local `path` as a write-through cache and as the file layer that sits underneath `tokio::broadcast`; the WASM modes use browser localStorage in the same role.
+In all four, `url` resolves to the cluster's front door — the request is then redirected to the Quick-Node currently owning the user's tenant, and the second URL of the **backup** Quick-Node is returned alongside it for failover. The native modes use the local `path` as a write-through cache and as the file layer that sits underneath `tokio::broadcast`; the WASM modes use browser IndexedDB in the same role (async API, binary blobs, GB-scale quota — localStorage's synchronous, string-only, ~5 MB model cannot hold pages).
 
 Once a `Db` instance exists, it can spawn **another `Db` for a different tenant**:
 
@@ -863,7 +904,7 @@ Objects can never be **created in isolation**. Every `create` is preceded by a "
 let profile: Option<UserProfile> = UserProfile::search(&db).await?;
 
 // Lookup NonUnique with a query (sea_orm-flavoured Expression).
-let recent: Vec<Order> = Order::query(&db, expr.gt(Order::amount, 100)).await?;
+let recent: Vec<Order> = Order::query(&db, Order::amount.gt(100)).await?;
 
 // Update (versioned in place) and delete (NonUnique only).
 order.save(&db).await?;
@@ -901,7 +942,7 @@ The net result: the application code is identical across transports — it alway
 
 ### Browser specifics
 
-The WASM build replaces the Tokio runtime: futures run via `wasm_bindgen_futures`, HTTP goes through the browser `fetch` API, WebSockets go through `gloo_net::websocket`. The public API is identical.
+The WASM build replaces the Tokio runtime: futures run via `wasm_bindgen_futures`, HTTP goes through the browser `fetch` API, WebSockets go through `gloo_net::websocket`, and pages persist in IndexedDB. The public API is identical.
 
 ---
 
