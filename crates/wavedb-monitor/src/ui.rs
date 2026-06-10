@@ -821,42 +821,10 @@ fn render_node_detail(f: &mut Frame, state: &AppState, idx: usize, area: Rect) {
     }
 }
 
-#[allow(clippy::cast_precision_loss)]
-fn render_quick_detail(
-    f: &mut Frame,
-    idx: usize,
-    url: &str,
-    metrics: Option<&wavedb_net::metrics::QuickNodeMetrics>,
-    error: bool,
-    area: Rect,
-) {
-    let title = format!(" Quick Node [{idx}] — {url} ");
-    let block = Block::default().borders(Borders::ALL).title(title);
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(""));
-
-    let Some(m) = metrics else {
-        let status = if error {
-            "ERR — no metrics available"
-        } else {
-            "— no data"
-        };
-        lines.push(Line::from(vec![
-            Span::raw("  Status:    "),
-            Span::styled(status, Style::default().fg(Color::Red)),
-        ]));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "  [Esc] back",
-            Style::default().fg(Color::DarkGray),
-        )));
-        f.render_widget(Paragraph::new(lines), inner);
-        return;
-    };
-
+fn quick_node_basic_lines(
+    m: &wavedb_net::metrics::QuickNodeMetrics,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     let status_span = if m.is_draining {
         Span::styled("DRAINING", Style::default().fg(Color::Red))
     } else {
@@ -892,8 +860,26 @@ fn render_quick_detail(
     lines.push(kv("Write bytes:", human_bytes(m.write_bytes)));
     lines.push(kv("Est. memory:", human_bytes(m.estimated_memory_bytes)));
     lines.push(Line::from(""));
+    lines
+}
 
-    // Storage section.
+#[allow(clippy::cast_precision_loss)]
+fn quick_node_storage_lines(
+    m: &wavedb_net::metrics::QuickNodeMetrics,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    // Two-column info rows.
+    let kv = |label: &'static str, val: String| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(
+                format!("  {label:<18}"),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(val),
+        ])
+    };
+
     lines.push(Line::from(Span::styled(
         "  ── Storage ──────────────────────────────────────────────────────",
         Style::default().fg(Color::DarkGray),
@@ -962,8 +948,14 @@ fn render_quick_detail(
         ));
     }
     lines.push(Line::from(""));
+    lines
+}
 
-    // Page map inline (full width).
+fn quick_node_page_map_lines(
+    m: &wavedb_net::metrics::QuickNodeMetrics,
+    inner_width: u16,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
     lines.push(Line::from(Span::styled(
         "  ── Page Map ─────────────────────────────────────────────────────",
         Style::default().fg(Color::DarkGray),
@@ -971,7 +963,7 @@ fn render_quick_detail(
     if m.page_map.is_empty() {
         lines.push(Line::from("  (no data yet)"));
     } else {
-        let cols = inner.width.saturating_sub(2) as usize;
+        let cols = inner_width.saturating_sub(2) as usize;
         for chunk in m.page_map.chunks(cols.max(1)) {
             let spans: Vec<Span> = std::iter::once(Span::raw("  "))
                 .chain(chunk.iter().map(|&occ| {
@@ -993,6 +985,47 @@ fn render_quick_detail(
         "  [Esc] / [Enter] — back to cluster view",
         Style::default().fg(Color::DarkGray),
     )));
+    lines
+}
+
+fn render_quick_detail(
+    f: &mut Frame,
+    idx: usize,
+    url: &str,
+    metrics: Option<&wavedb_net::metrics::QuickNodeMetrics>,
+    error: bool,
+    area: Rect,
+) {
+    let title = format!(" Quick Node [{idx}] — {url} ");
+    let block = Block::default().borders(Borders::ALL).title(title);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+
+    let Some(m) = metrics else {
+        let status = if error {
+            "ERR — no metrics available"
+        } else {
+            "— no data"
+        };
+        lines.push(Line::from(vec![
+            Span::raw("  Status:    "),
+            Span::styled(status, Style::default().fg(Color::Red)),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  [Esc] back",
+            Style::default().fg(Color::DarkGray),
+        )));
+        f.render_widget(Paragraph::new(lines), inner);
+        return;
+    };
+
+    lines.extend(quick_node_basic_lines(m));
+    lines.extend(quick_node_storage_lines(m));
+    lines.extend(quick_node_page_map_lines(m, inner.width));
 
     f.render_widget(Paragraph::new(lines), inner);
 }
