@@ -159,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         live_book.title, live_book.author
     );
 
-    let chapters = Chapter::query(&db, Expr::gte("number", 1u64)).await?;
+    let chapters = Chapter::query(&db, Chapter::number.gte(1u64)).await?;
     assert_eq!(chapters.len(), 2);
     assert!(chapters.iter().all(|c| c.book == live_book.anchor()));
     println!(

@@ -151,12 +151,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Wrote 2 employees");
 
     let by_username =
-        Employee::query(&db, Expr::eq("username", "alice")).await?;
+        Employee::query(&db, Employee::username.eq("alice")).await?;
     assert_eq!(by_username.len(), 1);
     println!("by username 'alice'      → {}", by_username[0].display_name);
 
     let by_email =
-        Employee::query(&db, Expr::eq("email", "alice@corp.example")).await?;
+        Employee::query(&db, Employee::email.eq("alice@corp.example")).await?;
     assert_eq!(by_email.len(), 1);
     assert_eq!(by_email[0].username, by_username[0].username);
     println!("by email                 → {}", by_email[0].display_name);
@@ -164,8 +164,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let by_dep_num = Employee::query(
         &db,
         Expr::and(
-            Expr::eq("department", "platform"),
-            Expr::eq("employee_number", 17u64),
+            Employee::department.eq("platform"),
+            Employee::employee_number.eq(17u64),
         ),
     )
     .await?;

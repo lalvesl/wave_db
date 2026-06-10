@@ -125,7 +125,7 @@
 //!     let db = Db::open_with_transport(mock, /* user */ 1, /* tenant */ 100).await?;
 //!
 //!     let _profile: Option<UserProfile1> = UserProfile1::search(&db).await?;
-//!     let _orders: Vec<Order1> = Order1::query(&db, Expr::gt("amount", 100u64)).await?;
+//!     let _orders: Vec<Order1> = Order1::query(&db, Order1::amount.gt(100u64)).await?;
 //!     Ok(())
 //! }
 //! ```
@@ -170,7 +170,7 @@ pub mod prelude {
     pub use crate::{
         Db,
         object::{NonUniqueObject, UniqueObject},
-        query::Expr,
+        query::{Expr, Field},
     };
     pub use wavedb_core::{Id, Metadata, PermissionRef, Shape, WaveDbStruct};
     pub use wavedb_macros::wave_db;

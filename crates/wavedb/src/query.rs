@@ -4,12 +4,26 @@
 //! being sent to the Quick-Node.  The engine on the server side deserialises
 //! them and applies them while scanning the per-`(STRUCT_ID, TENANT_ID)` index.
 //!
+//! # Columns
+//!
+//! Comparison constructors take a [`Field`] — a typed column handle. The
+//! `#[wave_db]` macro emits one `const` per struct field, so a query names its
+//! columns through the type (`Order::amount`) and a misspelt column is a
+//! compile error rather than a silently-empty result. A `&'static str` literal
+//! also converts into a `Field`, for dynamic or ad-hoc field names.
+//!
 //! # Example
 //!
 //! ```rust,ignore
 //! use wavedb::query::Expr;
 //!
-//! // All orders where amount > 100 AND status == "shipped"
+//! // All orders where amount > 100 AND status == "shipped" — typed columns.
+//! let filter = Expr::and(
+//!     Order::amount.gt(100u64),
+//!     Order::status.eq("shipped"),
+//! );
+//!
+//! // The same, with string-literal field names (the escape hatch).
 //! let filter = Expr::and(
 //!     Expr::gt("amount", 100u64),
 //!     Expr::eq("status", "shipped"),
@@ -212,6 +226,10 @@ impl Expr {
 
     /// `field == value`
     ///
+    /// `field` is a typed [`Field`] handle — pass the macro-generated column
+    /// constant (`Order::amount`) for a compile-time-checked name. A
+    /// `&'static str` literal also converts, for dynamic or ad-hoc field names.
+    ///
     /// # Examples
     ///
     /// ```
@@ -221,49 +239,49 @@ impl Expr {
     /// let decoded = Expr::from_bytes(&bytes).unwrap();
     /// assert_eq!(e, decoded);
     /// ```
-    pub fn eq(field: impl Into<FieldName>, value: impl Into<Value>) -> Self {
+    pub fn eq(field: impl Into<Field>, value: impl Into<Value>) -> Self {
         Self::Eq {
-            field: field.into(),
+            field: field.into().name().to_owned(),
             value: value.into(),
         }
     }
 
     /// `field != value`
-    pub fn ne(field: impl Into<FieldName>, value: impl Into<Value>) -> Self {
+    pub fn ne(field: impl Into<Field>, value: impl Into<Value>) -> Self {
         Self::Ne {
-            field: field.into(),
+            field: field.into().name().to_owned(),
             value: value.into(),
         }
     }
 
     /// `field > value`
-    pub fn gt(field: impl Into<FieldName>, value: impl Into<Value>) -> Self {
+    pub fn gt(field: impl Into<Field>, value: impl Into<Value>) -> Self {
         Self::Gt {
-            field: field.into(),
+            field: field.into().name().to_owned(),
             value: value.into(),
         }
     }
 
     /// `field >= value`
-    pub fn gte(field: impl Into<FieldName>, value: impl Into<Value>) -> Self {
+    pub fn gte(field: impl Into<Field>, value: impl Into<Value>) -> Self {
         Self::Gte {
-            field: field.into(),
+            field: field.into().name().to_owned(),
             value: value.into(),
         }
     }
 
     /// `field < value`
-    pub fn lt(field: impl Into<FieldName>, value: impl Into<Value>) -> Self {
+    pub fn lt(field: impl Into<Field>, value: impl Into<Value>) -> Self {
         Self::Lt {
-            field: field.into(),
+            field: field.into().name().to_owned(),
             value: value.into(),
         }
     }
 
     /// `field <= value`
-    pub fn lte(field: impl Into<FieldName>, value: impl Into<Value>) -> Self {
+    pub fn lte(field: impl Into<Field>, value: impl Into<Value>) -> Self {
         Self::Lte {
-            field: field.into(),
+            field: field.into().name().to_owned(),
             value: value.into(),
         }
     }
@@ -411,6 +429,17 @@ impl Field {
     /// `self <= value`
     pub fn lte(self, value: impl Into<Value>) -> Expr {
         Expr::lte(self.name, value)
+    }
+}
+
+/// Build a [`Field`] from a static string literal.
+///
+/// Lets the [`Expr`] constructors keep accepting `&'static str` field names
+/// (`Expr::gt("amount", 100u64)`) alongside the typed, macro-generated column
+/// constants (`Expr::gt(Order::amount, 100u64)`).
+impl From<&'static str> for Field {
+    fn from(name: &'static str) -> Self {
+        Self::new(name)
     }
 }
 

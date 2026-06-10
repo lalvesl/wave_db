@@ -51,8 +51,8 @@ use syn::{ItemStruct, parse_macro_input};
 
 use args::WaveDbArgs;
 use codegen::{
-    build_anchors_impl, build_auto_derives, build_fields_accessor, build_shape,
-    build_typed_wrappers,
+    build_anchors_impl, build_auto_derives, build_field_consts,
+    build_fields_accessor, build_shape, build_typed_wrappers,
 };
 use crud::build_crud_impl;
 use migration::build_migration_impl;
@@ -133,6 +133,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     let auto_derives = build_auto_derives(&input.attrs);
     let fields_accessor =
         build_fields_accessor(name, &input.vis, &user_field_idents);
+    let field_consts = build_field_consts(&user_field_idents);
     let fields_name = format_ident!("{}Fields", name);
     let fields_const = quote! {
         /// Typed field handles for the query DSL — see [`::wavedb::query::Field`].
@@ -167,6 +168,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
         impl #name {
             #anchors_impl
             #fields_const
+            #field_consts
         }
 
         #crud_impl

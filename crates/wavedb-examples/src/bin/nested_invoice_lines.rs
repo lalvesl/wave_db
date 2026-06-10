@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Invoices: {}", found_invoices.len());
 
     let found_lines =
-        InvoiceLine::query(&db, Expr::eq("product", 101u64)).await?;
+        InvoiceLine::query(&db, InvoiceLine::product.eq(101u64)).await?;
     assert_eq!(found_lines.len(), 2);
     println!(
         "Invoice lines for customer {}: {}",

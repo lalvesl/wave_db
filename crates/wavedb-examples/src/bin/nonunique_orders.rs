@@ -96,9 +96,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(all.len(), 3);
     println!("All orders: {}", all.len());
 
-    // Query filtered: amount > 100 — using the typed `FIELDS` handle so a
-    // misspelt field name becomes a compile error rather than an empty result.
-    let large: Vec<Order> = db.query(Order::FIELDS.amount().gt(100u64)).await?;
+    // Query filtered: amount > 100 — using the typed `Order::amount` column
+    // handle so a misspelt field is a compile error, not an empty result.
+    let large: Vec<Order> = db.query(Order::amount.gt(100u64)).await?;
     assert_eq!(large.len(), 2);
     println!("Orders with amount > 100: {}", large.len());
 

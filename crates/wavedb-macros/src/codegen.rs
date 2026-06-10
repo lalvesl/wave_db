@@ -329,6 +329,38 @@ pub fn build_fields_accessor(
     }
 }
 
+/// Emit one `pub const <field>: Field` per user-declared field on the struct.
+///
+/// These are the typed column handles: `Order::amount` resolves to a
+/// [`wavedb::query::Field`] and replaces stringly-typed field names in queries
+/// (`Expr::gt(Order::amount, 100u64)` instead of `Expr::gt("amount", 100u64)`).
+/// Because they are associated constants on the versioned struct, they resolve
+/// through the unversioned `pub type` alias (`Order`), and a misspelt column is
+/// a compile error rather than an empty result.
+///
+/// `field_idents` must contain only **user-declared** fields — `id` and
+/// `metadata` are auto-injected by the macro and are excluded.
+pub fn build_field_consts(
+    field_idents: &[Ident],
+) -> proc_macro2::TokenStream {
+    let consts = field_idents.iter().map(|f| {
+        let fname = f.to_string();
+        let doc = format!(
+            "Typed column handle for the `{fname}` field — use in [`::wavedb::query::Expr`] queries."
+        );
+        quote! {
+            #[doc = #doc]
+            #[allow(non_upper_case_globals)]
+            pub const #f: ::wavedb::query::Field =
+                ::wavedb::query::Field::new(#fname);
+        }
+    });
+
+    quote! {
+        #(#consts)*
+    }
+}
+
 pub fn build_auto_derives(attrs: &[Attribute]) -> proc_macro2::TokenStream {
     let existing_derives = collect_derived_traits(attrs);
     let mut needed = Vec::new();
