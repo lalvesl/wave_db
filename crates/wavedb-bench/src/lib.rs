@@ -224,7 +224,7 @@ pub struct TierVerdict<'a> {
 
 impl TierVerdict<'_> {
     /// True when all three dimensions fit within the tier's limits.
-    pub fn fits(&self) -> bool {
+    pub const fn fits(&self) -> bool {
         self.write_fits && self.read_fits && self.throughput_fits
     }
 }
@@ -530,6 +530,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn in_memory_write_reports_positive_throughput() {
         let s = measure_in_memory_write(2_000, 64);
         assert_eq!(s.records, 2_000);

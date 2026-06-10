@@ -152,8 +152,8 @@ fn print_tier_table(samples: &[PerfSample]) {
         "Cloud disk tier comparison  (write IOPS={write_iops:.0}  read IOPS={read_iops:.0}  peak MiB/s={peak_mib:.1})"
     );
     println!(
-        "\n{:<8} {:<26} {:>12} {:>12} {:>12}  {}",
-        "provider", "tier", "max w-IOPS", "max r-IOPS", "max MiB/s", "fits?"
+        "\n{:<8} {:<26} {:>12} {:>12} {:>12}  fits?",
+        "provider", "tier", "max w-IOPS", "max r-IOPS", "max MiB/s"
     );
     println!("{}", "-".repeat(82));
     for v in evaluate_tiers(write_iops, read_iops, peak_mib) {
