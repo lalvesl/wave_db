@@ -9,6 +9,7 @@
 //!
 //! Run via `nix run .#real_example` — do not invoke directly.
 
+use std::io::Write as _;
 use tokio::net::TcpListener;
 
 use wavedb_slow_node::{server, store::HistoryStore};
@@ -36,7 +37,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // line from our stdout pipe (WAVE_READY prefix).
     println!("WAVE_READY addr={bound}");
     // Flush stdout so the orchestrator sees the line immediately.
-    use std::io::Write as _;
     std::io::stdout().flush().ok();
 
     axum::serve(listener, server::router(store, None)).await?;

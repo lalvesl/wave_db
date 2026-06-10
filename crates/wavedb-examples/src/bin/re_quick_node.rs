@@ -13,6 +13,7 @@
 //! Run via `nix run .#real_example` — do not invoke directly.
 
 use std::sync::Arc;
+use std::io::Write as _;
 
 use tokio::net::TcpListener;
 
@@ -72,7 +73,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Readiness signal ──────────────────────────────────────────────────────
     // Print the bound address so the orchestrator can parse it.
     println!("WAVE_READY addr={bound}");
-    use std::io::Write as _;
     std::io::stdout().flush().ok();
 
     let app = server::router((*node).clone());

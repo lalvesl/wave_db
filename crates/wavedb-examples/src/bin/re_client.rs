@@ -21,6 +21,7 @@
 //! Run via `nix run .#real_example` — do not invoke directly.
 
 use std::time::Duration;
+use std::io::Write as _;
 
 use tokio::time::sleep;
 use wavedb::Db;
@@ -77,6 +78,7 @@ fn make_padded_note(user_id: u64, seq: u64, target_len: usize) -> String {
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() {
     let ws_urls_raw = std::env::var("WAVE_QN_WS_URLS").unwrap_or_default();
     let tenant: u64 = std::env::var("WAVE_TENANT")
@@ -107,12 +109,11 @@ async fn main() {
     // Distribute clients across quick-nodes round-robin.
     let num_nodes = ws_urls.len();
     let per_node = (num_clients / num_nodes).max(1);
-    let node_idx = (client_id as usize / per_node).min(num_nodes - 1);
+    let node_idx = (usize::try_from(client_id).unwrap() / per_node).min(num_nodes - 1);
     let ws_url = ws_urls[node_idx].clone();
 
     // Signal readiness to the orchestrator.
     {
-        use std::io::Write as _;
         println!("WAVE_READY client={client_id}");
         std::io::stdout().flush().ok();
     }
@@ -148,13 +149,12 @@ async fn main() {
         writes_seen: 0,
         ..Default::default()
     };
-    match db.save(&merchant).await {
-        Ok(_) => committed += 1,
-        Err(_) => {
-            dropped += 1;
-            println!("WAVE_DONE committed={committed} dropped={dropped}");
-            return;
-        }
+    if db.save(&merchant).await.is_ok() {
+        committed += 1;
+    } else {
+        dropped += 1;
+        println!("WAVE_DONE committed={committed} dropped={dropped}");
+        return;
     }
     let merchant_anchor = merchant.anchor();
     let mut seq: u64 = 0;
@@ -180,12 +180,11 @@ async fn main() {
             note,
             ..Default::default()
         };
-        match db.save(&payment).await {
-            Ok(_) => committed += 1,
-            Err(_) => {
-                dropped += 1;
-                break;
-            }
+        if db.save(&payment).await.is_ok() {
+            committed += 1;
+        } else {
+            dropped += 1;
+            break;
         }
         let payment_anchor = payment.anchor();
 
@@ -199,13 +198,12 @@ async fn main() {
                 unit_cents: 100,
                 ..Default::default()
             };
-            match db.save(&line).await {
-                Ok(_) => committed += 1,
-                Err(_) => {
-                    dropped += 1;
-                    ok = false;
-                    break;
-                }
+            if db.save(&line).await.is_ok() {
+                committed += 1;
+            } else {
+                dropped += 1;
+                ok = false;
+                break;
             }
         }
         if !ok {
@@ -221,7 +219,6 @@ async fn main() {
     }
 
     // Summary line read by the orchestrator monitor thread.
-    use std::io::Write as _;
     println!("WAVE_DONE committed={committed} dropped={dropped}");
     std::io::stdout().flush().ok();
 }
