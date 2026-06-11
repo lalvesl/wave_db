@@ -12,8 +12,8 @@
 //!
 //! Run via `nix run .#real_example` — do not invoke directly.
 
-use std::sync::Arc;
 use std::io::Write as _;
+use std::sync::Arc;
 
 use tokio::net::TcpListener;
 

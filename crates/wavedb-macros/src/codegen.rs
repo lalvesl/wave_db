@@ -340,9 +340,7 @@ pub fn build_fields_accessor(
 ///
 /// `field_idents` must contain only **user-declared** fields — `id` and
 /// `metadata` are auto-injected by the macro and are excluded.
-pub fn build_field_consts(
-    field_idents: &[Ident],
-) -> proc_macro2::TokenStream {
+pub fn build_field_consts(field_idents: &[Ident]) -> proc_macro2::TokenStream {
     let consts = field_idents.iter().map(|f| {
         let fname = f.to_string();
         let doc = format!(

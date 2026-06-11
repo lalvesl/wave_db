@@ -1148,6 +1148,54 @@ mod tests {
         assert_eq!(got.data, b"nested-elem");
     }
 
+    /// Nesting recurses: a NestedNonUnique record can own its own child
+    /// collection.  Trackers and elements are addressed purely by Id, so a
+    /// grandchild level routes exactly like the first — prove a three-level
+    /// chain (NonUnique parent → child tracker/element → grandchild
+    /// tracker/element) round-trips with no cross-talk between levels.
+    #[test]
+    fn nested_within_nested_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
+
+        // Level 0 — the NonUnique parent element (e.g. a Project).
+        let project_id = wavedb_core::Id::new(99, 4, 30, 100);
+        let project =
+            VersionedRecord::new(project_id.raw(), b"project".to_vec());
+        file.write_nonunique_element(project_id, &project).unwrap();
+
+        // Level 1 — Task collection nested under the project.
+        let task_tracker_id = wavedb_core::Id::new(99, 4, 31, 101);
+        let task_tracker = AnchorSlot::inline(b"task-tracker", 101);
+        file.write_nested_tracker(task_tracker_id, &task_tracker)
+            .unwrap();
+        let task_id = wavedb_core::Id::new(99, 4, 31, 102);
+        let task = VersionedRecord::new(task_id.raw(), b"task".to_vec());
+        file.write_nested_element(task_id, &task).unwrap();
+
+        // Level 2 — checklist items nested under the task: the task is
+        // itself NestedNonUnique and owns its own tracker.
+        let check_tracker_id = wavedb_core::Id::new(99, 4, 32, 103);
+        let check_tracker = AnchorSlot::inline(b"check-tracker", 103);
+        file.write_nested_tracker(check_tracker_id, &check_tracker)
+            .unwrap();
+        let check_id = wavedb_core::Id::new(99, 4, 32, 104);
+        let check = VersionedRecord::new(check_id.raw(), b"check".to_vec());
+        file.write_nested_element(check_id, &check).unwrap();
+
+        // Every level reads back through the same typed entry points.
+        let got = file.read_nonunique_element(project_id).unwrap().unwrap();
+        assert_eq!(got.data, b"project");
+        let got = file.read_nested_tracker(task_tracker_id).unwrap().unwrap();
+        assert_eq!(got.inline_bytes().unwrap(), b"task-tracker");
+        let got = file.read_nested_element(task_id).unwrap().unwrap();
+        assert_eq!(got.data, b"task");
+        let got = file.read_nested_tracker(check_tracker_id).unwrap().unwrap();
+        assert_eq!(got.inline_bytes().unwrap(), b"check-tracker");
+        let got = file.read_nested_element(check_id).unwrap().unwrap();
+        assert_eq!(got.data, b"check");
+    }
+
     /// Two records under the same `(struct, tenant)` but with distinct
     /// `created_at` must land on different pages so version history does
     /// not pile onto a single hot page.

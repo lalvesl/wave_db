@@ -21,7 +21,10 @@ pub enum Shape {
     Unique,
     /// Many live records per tenant.
     NonUnique,
-    /// Many records tightly bound to a single parent `NonUnique` record.
+    /// Many records tightly bound to a single parent record.  The parent
+    /// is usually `NonUnique`, but may itself be `NestedNonUnique` —
+    /// nesting recurses, with every level clustered under the same
+    /// top-level parent's address space.
     NestedNonUnique,
 }
 

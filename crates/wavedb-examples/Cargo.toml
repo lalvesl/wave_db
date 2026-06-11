@@ -21,12 +21,20 @@ name = "nested_invoice_lines"
 path = "src/bin/nested_invoice_lines.rs"
 
 [[bin]]
+name = "nested_recursive"
+path = "src/bin/nested_recursive.rs"
+
+[[bin]]
 name = "migration_type_1"
 path = "src/bin/migration_type_1.rs"
 
 [[bin]]
 name = "migration_type_2"
 path = "src/bin/migration_type_2.rs"
+
+[[bin]]
+name = "migration_split"
+path = "src/bin/migration_split.rs"
 
 [[bin]]
 name = "distributed_cluster"
