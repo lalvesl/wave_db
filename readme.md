@@ -912,7 +912,7 @@ WaveDB ships as a library with the same code path on servers, native clients, an
 | `Db::open(url, user, default_tenant)`       | Browser IndexedDB (WASM build) | Tenant explicit             |
 | `Db::open(url, user)`                       | Browser IndexedDB (WASM build) | `tenant = user_id`          |
 
-In all four, `url` resolves to the cluster's front door — the request is then redirected to the Quick-Node currently owning the user's tenant, and the second URL of the **backup** Quick-Node is returned alongside it for failover. The native modes use the local `path` as a write-through cache and as the file layer that sits underneath `tokio::broadcast`; the WASM modes use browser IndexedDB in the same role (async API, binary blobs, GB-scale quota — localStorage's synchronous, string-only, ~5 MB model cannot hold pages).
+In all four, `url` resolves to the cluster's front door — the request is then redirected to the Quick-Node currently owning the user's tenant, and the second URL of the **backup** Quick-Node is returned alongside it for failover. The native modes use the local `path` as a write-through cache and as the file layer that sits underneath `tokio::broadcast`; the WASM modes use browser IndexedDB in the same role, as a **direct key→value store with no page emulation** (see _Browser storage: key→value, not pages_). localStorage — synchronous, string-only, ~5 MB — cannot fill this role.
 
 Once a `Db` instance exists, it can spawn **another `Db` for a different tenant**:
 
@@ -969,7 +969,20 @@ The net result: the application code is identical across transports — it alway
 
 ### Browser specifics
 
-The WASM build replaces the Tokio runtime: futures run via `wasm_bindgen_futures`, HTTP goes through the browser `fetch` API, WebSockets go through `gloo_net::websocket`, and pages persist in IndexedDB. The public API is identical.
+The WASM build replaces the Tokio runtime: futures run via `wasm_bindgen_futures`, HTTP goes through the browser `fetch` API, WebSockets go through `gloo_net::websocket`, and persistence goes through IndexedDB. The public API is identical.
+
+### Browser storage: key→value, not pages
+
+The native engine manages pages because it owns the physical layout — the 4KB disk reality, alignment, fullness, rebalance. In the browser it owns none of that: IndexedDB is already an **ordered key→value store** (LevelDB under Chrome, SQLite under Firefox) doing its own page management internally. Emulating WaveDB pages on top would stack two block managers and pay write amplification — mutating one object means rewriting its whole page-record — for zero IO benefit.
+
+So the WASM build skips the page layer entirely:
+
+- **Key = the 128-bit Id** (big-endian bytes). Anchors live at their anchor key, versioned records at their full Id, heap-dedup entries at their content hash.
+- **Value = the postcard-encoded record**, compressed exactly as on native.
+- Because `TENANT_ID` occupies the Id's top bits, IndexedDB's ordered keyspace **clusters a tenant's records naturally** — a `getAll(range)` over a tenant/struct prefix is the browser equivalent of reading a hot page.
+- The page-pressure machinery (heapable eviction, double hashing, rebalance) simply does not run client-side. Quota is the browser's job, and the local store is a write-through cache that can always be re-fetched from the cluster.
+
+The engine layers above storage — anchors, versioning, migration chains, query evaluation — are identical on both targets; only the storage adapter changes shape (block device on native, KV surface in the browser). Sync needs no page parity either: the Bloom-filter protocol exchanges objects and anchors, never pages.
 
 ---
 
