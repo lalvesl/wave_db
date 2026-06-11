@@ -381,4 +381,8 @@ mod wasm_impl {
 
 // Re-export public types so `wasm-pack build` exposes them at the crate root.
 #[cfg(target_arch = "wasm32")]
+pub use example::{ExampleReport, example_roundtrip};
+#[cfg(target_arch = "wasm32")]
+pub use idb::IdbStore;
+#[cfg(target_arch = "wasm32")]
 pub use wasm_impl::JsDb;
