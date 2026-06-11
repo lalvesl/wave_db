@@ -688,7 +688,7 @@ History records live at their natural versioned hash `(STRUCT_ID, TENANT_ID, SHA
 
 WaveDB stores access control **inline in `Metadata`**, scoped per record. The `permission` field is an `Option<PermissionRef>` and behaves as follows:
 
-| Value                                  | Semantics                                                                                                                                                                                             | Storage cost (wire) |
+| Value                                  | Semantics                                                                                                                                                                                             | Storage cost (wire)     |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
 | `None`                                 | Only the tenant's own users can read/write/delete this record (the common case for B2C apps).                                                                                                         | 1 byte                  |
 | `Some(PermissionRef::Inline(list))`    | A small inline ACL — a linked list of user IDs allowed to act on this record. Used for small tenants and short-lived shares. Auto-promotes to a per-record B+ tree once the list crosses a threshold. | 1 byte tag + list bytes |
@@ -1111,7 +1111,7 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 | P11 | Index maintenance cost     | Per-(STRUCT_ID, TENANT_ID) B+ trees with adaptive conversion from array at threshold; index entries point to anchors so property mutations don't cascade                                                                                                                                                                     |
 | P12 | Adaptive index threshold   | Default 50 items (`MAX_NON_UNIQUE_ELEMENTS`), tunable per-STRUCT_ID via proc-macro attribute; one-way atomic conversion                                                                                                                                                                                                      |
 | P13 | Anchor storage cost        | Accepted as design trade-off (2x live data only, history single-copy); opt-in pointer-only mode available for storage-constrained deployments                                                                                                                                                                                |
-| P14 | Permissions struct design  | `permission: Option<PermissionRef>` in `Metadata`; `None` reserves its fixed wire slot; inline-list (auto-promoting to a small B+ tree) for ad-hoc shares; group reference for large-tenant ACLs                                                                                                                                 |
+| P14 | Permissions struct design  | `permission: Option<PermissionRef>` in `Metadata`; `None` reserves its fixed wire slot; inline-list (auto-promoting to a small B+ tree) for ad-hoc shares; group reference for large-tenant ACLs                                                                                                                             |
 
 ---
 

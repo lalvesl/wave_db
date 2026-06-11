@@ -35,10 +35,7 @@ impl crate::Wire for PermissionGroupId {
     fn heap_size(&self) -> usize {
         0
     }
-    fn write_stack(
-        &self,
-        w: &mut crate::WireWriter,
-    ) -> crate::WireResult<()> {
+    fn write_stack(&self, w: &mut crate::WireWriter) -> crate::WireResult<()> {
         self.0.write_stack(w)
     }
     fn read(r: &mut crate::WireReader<'_>) -> crate::WireResult<Self> {
@@ -62,10 +59,7 @@ impl crate::Wire for PermissionRef {
         }
     }
 
-    fn write_stack(
-        &self,
-        w: &mut crate::WireWriter,
-    ) -> crate::WireResult<()> {
+    fn write_stack(&self, w: &mut crate::WireWriter) -> crate::WireResult<()> {
         use crate::Wire;
         match self {
             Self::Inline(users) => {

@@ -365,9 +365,8 @@ impl DataFile {
         }
 
         let payload = &bytes[DISK_FORMAT_MAGIC.len()..];
-        let truncated = || {
-            crate::StorageError::Other("truncated data snapshot".into())
-        };
+        let truncated =
+            || crate::StorageError::Other("truncated data snapshot".into());
         let fixed = payload.get(..12).ok_or_else(truncated)?;
         let page_count =
             u64::from_le_bytes(fixed[..8].try_into().expect("8 bytes"));
@@ -386,9 +385,9 @@ impl DataFile {
             let head = payload.get(pos..pos + 12).ok_or_else(truncated)?;
             let idx =
                 u64::from_le_bytes(head[..8].try_into().expect("8 bytes"));
-            let len = u32::from_le_bytes(
-                head[8..12].try_into().expect("4 bytes"),
-            ) as usize;
+            let len =
+                u32::from_le_bytes(head[8..12].try_into().expect("4 bytes"))
+                    as usize;
             pos += 12;
             let body = payload.get(pos..pos + len).ok_or_else(truncated)?;
             let page: Page = wavedb_core::wire::from_wire(body)?;

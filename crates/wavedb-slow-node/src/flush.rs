@@ -100,8 +100,7 @@ mod tests {
             token: None,
         };
         let bytes = wavedb_core::wire::to_wire(&batch).unwrap();
-        let decoded: FlushBatch =
-            wavedb_core::wire::from_wire(&bytes).unwrap();
+        let decoded: FlushBatch = wavedb_core::wire::from_wire(&bytes).unwrap();
         assert_eq!(decoded.write_seq, 7);
         assert_eq!(decoded.tenant, 42);
         assert_eq!(decoded.records.len(), 1);

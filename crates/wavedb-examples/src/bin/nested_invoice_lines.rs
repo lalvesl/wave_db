@@ -72,7 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let entries: Vec<(u8, Vec<u8>)> = records
             .iter()
-            .map(|r| (T::STRUCT_VERSION, wavedb_core::wire::to_wire(r).unwrap()))
+            .map(|r| {
+                (T::STRUCT_VERSION, wavedb_core::wire::to_wire(r).unwrap())
+            })
             .collect();
         wavedb_core::wire::to_wire(&entries).unwrap()
     }

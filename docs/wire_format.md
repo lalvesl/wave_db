@@ -15,7 +15,7 @@ A serialised value is two contiguous sections:
 ```
 
 - **Stack section**: every fixed-width field packed little-endian in
-  declaration order, no padding. Every *dynamic* field contributes a fixed
+  declaration order, no padding. Every _dynamic_ field contributes a fixed
   slot to the stack section too (its `u32` heap-length, plus flag/tag bytes),
   so all stack offsets are compile-time constants.
 - **Heap section**: the dynamic payloads, appended in depth-first field
@@ -27,20 +27,20 @@ value.heap_size())`.
 
 ## Per-type encoding
 
-| Type | Stack bytes | Heap bytes |
-|------|-------------|------------|
-| `u8..u128`, `i8..i128`, `f32/f64` | width, LE | — |
-| `bool` | 1 (`0`/`1`) | — |
-| `char` | 4 (`u32` scalar) | — |
-| `Id` | 16 | — |
-| `[T; N]` | `N * T::STACK_SIZE` | elements' heap, in order |
-| `String` | `u32` byte-length | UTF-8 bytes |
-| `Vec<T>` | `u32` region byte-length | element units, back-to-back |
-| `Option<T>` | `1` flag + `T::STACK_SIZE` (zero-filled when `None`) | `T`'s heap when `Some` |
-| struct | sum of field stack sizes | fields' heap, declaration order |
-| enum, all variants field-less | 1 (tag) | — |
-| enum, any variant with fields | 1 (tag) + `u32` payload length | variant fields as a unit |
-| tuple | sum of member stack sizes | members' heap, in order |
+| Type                              | Stack bytes                                          | Heap bytes                      |
+| --------------------------------- | ---------------------------------------------------- | ------------------------------- |
+| `u8..u128`, `i8..i128`, `f32/f64` | width, LE                                            | —                               |
+| `bool`                            | 1 (`0`/`1`)                                          | —                               |
+| `char`                            | 4 (`u32` scalar)                                     | —                               |
+| `Id`                              | 16                                                   | —                               |
+| `[T; N]`                          | `N * T::STACK_SIZE`                                  | elements' heap, in order        |
+| `String`                          | `u32` byte-length                                    | UTF-8 bytes                     |
+| `Vec<T>`                          | `u32` region byte-length                             | element units, back-to-back     |
+| `Option<T>`                       | `1` flag + `T::STACK_SIZE` (zero-filled when `None`) | `T`'s heap when `Some`          |
+| struct                            | sum of field stack sizes                             | fields' heap, declaration order |
+| enum, all variants field-less     | 1 (tag)                                              | —                               |
+| enum, any variant with fields     | 1 (tag) + `u32` payload length                       | variant fields as a unit        |
+| tuple                             | sum of member stack sizes                            | members' heap, in order         |
 
 `usize`/`isize` are **not** encodable — wire layout must not depend on the
 platform.

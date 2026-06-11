@@ -58,7 +58,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let encode_query = |records: &[Order]| -> Vec<u8> {
         let entries: Vec<(u8, Vec<u8>)> = records
             .iter()
-            .map(|r| (Order::STRUCT_VERSION, wavedb_core::wire::to_wire(r).unwrap()))
+            .map(|r| {
+                (
+                    Order::STRUCT_VERSION,
+                    wavedb_core::wire::to_wire(r).unwrap(),
+                )
+            })
             .collect();
         wavedb_core::wire::to_wire(&entries).unwrap()
     };

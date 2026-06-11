@@ -66,7 +66,11 @@ impl Parse for DeclareObjects {
         let content;
         braced!(content in input);
         let families = content.parse_terminated(Family::parse, Token![,])?;
-        Ok(Self { vis, mod_name, families })
+        Ok(Self {
+            vis,
+            mod_name,
+            families,
+        })
     }
 }
 
@@ -75,11 +79,8 @@ pub fn expand(decl: &DeclareObjects) -> TokenStream {
     let vis = &decl.vis;
     let mod_name = &decl.mod_name;
 
-    let all_types: Vec<&syn::Path> = decl
-        .families
-        .iter()
-        .flat_map(|f| f.types.iter())
-        .collect();
+    let all_types: Vec<&syn::Path> =
+        decl.families.iter().flat_map(|f| f.types.iter()).collect();
     let count = all_types.len();
 
     // ── Per-family submodules ────────────────────────────────────────────

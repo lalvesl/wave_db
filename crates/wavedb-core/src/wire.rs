@@ -20,7 +20,9 @@
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
     /// Ran out of bytes while reading.
-    #[error("unexpected end of wire data: needed {needed} bytes at offset {offset}, buffer is {len}")]
+    #[error(
+        "unexpected end of wire data: needed {needed} bytes at offset {offset}, buffer is {len}"
+    )]
     UnexpectedEnd {
         /// Bytes the reader needed.
         needed: usize,
@@ -145,8 +147,16 @@ pub fn to_wire<T: Wire>(value: &T) -> WireResult<Vec<u8>> {
     buf.resize(T::STACK_SIZE, 0);
     let mut w = WireWriter { buf, stack_pos: 0 };
     value.write_stack(&mut w)?;
-    debug_assert_eq!(w.stack_pos, T::STACK_SIZE, "stack section not fully written");
-    debug_assert_eq!(w.buf.len(), total, "heap_size() disagreed with bytes written");
+    debug_assert_eq!(
+        w.stack_pos,
+        T::STACK_SIZE,
+        "stack section not fully written"
+    );
+    debug_assert_eq!(
+        w.buf.len(),
+        total,
+        "heap_size() disagreed with bytes written"
+    );
     Ok(w.buf)
 }
 
@@ -161,7 +171,11 @@ pub fn to_wire_with_header<T: Wire>(
     buf.resize(4 + T::STACK_SIZE, 0);
     let mut w = WireWriter { buf, stack_pos: 4 };
     value.write_stack(&mut w)?;
-    debug_assert_eq!(w.buf.len(), total, "heap_size() disagreed with bytes written");
+    debug_assert_eq!(
+        w.buf.len(),
+        total,
+        "heap_size() disagreed with bytes written"
+    );
     Ok(w.buf)
 }
 
@@ -169,7 +183,10 @@ pub fn to_wire_with_header<T: Wire>(
 pub fn from_wire<T: Wire>(bytes: &[u8]) -> WireResult<T> {
     let (value, consumed) = read_unit::<T>(bytes, 0)?;
     if consumed != bytes.len() {
-        return Err(WireError::TrailingBytes { consumed, len: bytes.len() });
+        return Err(WireError::TrailingBytes {
+            consumed,
+            len: bytes.len(),
+        });
     }
     Ok(value)
 }
@@ -187,10 +204,7 @@ pub fn from_wire_with_header<T: Wire>(bytes: &[u8]) -> WireResult<(u32, T)> {
 
 /// Read one self-contained `[stack][heap]` unit starting at `offset`.
 /// Returns the value and the offset of the first byte after it.
-pub fn read_unit<T: Wire>(
-    buf: &[u8],
-    offset: usize,
-) -> WireResult<(T, usize)> {
+pub fn read_unit<T: Wire>(buf: &[u8], offset: usize) -> WireResult<(T, usize)> {
     let stack_end = offset
         .checked_add(T::STACK_SIZE)
         .filter(|&end| end <= buf.len())
@@ -199,7 +213,11 @@ pub fn read_unit<T: Wire>(
             offset,
             len: buf.len(),
         })?;
-    let mut r = WireReader { buf, stack_pos: offset, heap_pos: stack_end };
+    let mut r = WireReader {
+        buf,
+        stack_pos: offset,
+        heap_pos: stack_end,
+    };
     let value = T::read(&mut r)?;
     debug_assert_eq!(r.stack_pos, stack_end, "stack section not fully read");
     Ok((value, r.heap_pos))
@@ -234,7 +252,8 @@ impl WireWriter {
 
     /// Write a `u32` heap-length slot at the stack cursor.
     pub fn put_len_slot(&mut self, len: usize) -> WireResult<()> {
-        let len = u32::try_from(len).map_err(|_| WireError::LengthOverflow(len))?;
+        let len =
+            u32::try_from(len).map_err(|_| WireError::LengthOverflow(len))?;
         self.put_stack(&len.to_le_bytes());
         Ok(())
     }
@@ -253,7 +272,10 @@ impl WireWriter {
         let unit_stack_end = self.stack_pos + stack_size;
         self.buf.resize(unit_stack_end, 0);
         f(self)?;
-        debug_assert_eq!(self.stack_pos, unit_stack_end, "unit stack not fully written");
+        debug_assert_eq!(
+            self.stack_pos, unit_stack_end,
+            "unit stack not fully written"
+        );
         self.stack_pos = saved;
         Ok(())
     }
@@ -277,7 +299,10 @@ pub struct WireReader<'a> {
 impl<'a> WireReader<'a> {
     /// Take fixed bytes at the stack cursor.
     pub fn take_stack(&mut self, n: usize) -> WireResult<&'a [u8]> {
-        let end = self.stack_pos.checked_add(n).filter(|&e| e <= self.buf.len());
+        let end = self
+            .stack_pos
+            .checked_add(n)
+            .filter(|&e| e <= self.buf.len());
         match end {
             Some(end) => {
                 let s = &self.buf[self.stack_pos..end];
@@ -299,7 +324,10 @@ impl<'a> WireReader<'a> {
 
     /// Take a heap region of `n` bytes at the heap cursor.
     pub fn take_heap(&mut self, n: usize) -> WireResult<&'a [u8]> {
-        let end = self.heap_pos.checked_add(n).filter(|&e| e <= self.buf.len());
+        let end = self
+            .heap_pos
+            .checked_add(n)
+            .filter(|&e| e <= self.buf.len());
         match end {
             Some(end) => {
                 let s = &self.buf[self.heap_pos..end];
@@ -322,7 +350,10 @@ impl<'a> WireReader<'a> {
 
     /// Build a reader over one self-contained `[stack][heap]` unit region —
     /// used by derived enum impls to parse a variant payload.
-    pub const fn for_unit(region: &'a [u8], stack_size: usize) -> WireResult<Self> {
+    pub const fn for_unit(
+        region: &'a [u8],
+        stack_size: usize,
+    ) -> WireResult<Self> {
         if stack_size > region.len() {
             return Err(WireError::UnexpectedEnd {
                 needed: stack_size,
@@ -330,7 +361,11 @@ impl<'a> WireReader<'a> {
                 len: region.len(),
             });
         }
-        Ok(Self { buf: region, stack_pos: 0, heap_pos: stack_size })
+        Ok(Self {
+            buf: region,
+            stack_pos: 0,
+            heap_pos: stack_size,
+        })
     }
 
     /// Assert a unit region was consumed exactly to its end.
@@ -559,7 +594,11 @@ impl<T: Wire, const N: usize> Wire for [T; N] {
     const FIXED: bool = T::FIXED;
 
     fn heap_size(&self) -> usize {
-        if T::FIXED { 0 } else { self.iter().map(Wire::heap_size).sum() }
+        if T::FIXED {
+            0
+        } else {
+            self.iter().map(Wire::heap_size).sum()
+        }
     }
 
     fn write_stack(&self, w: &mut WireWriter) -> WireResult<()> {
@@ -571,7 +610,9 @@ impl<T: Wire, const N: usize> Wire for [T; N] {
         for _ in 0..N {
             out.push(T::read(r)?);
         }
-        Ok(out.try_into().unwrap_or_else(|_| unreachable!("read exactly N elements")))
+        Ok(out
+            .try_into()
+            .unwrap_or_else(|_| unreachable!("read exactly N elements")))
     }
 }
 
@@ -771,7 +812,10 @@ mod tests {
         bytes.push(0);
         assert!(matches!(
             from_wire::<u32>(&bytes),
-            Err(WireError::TrailingBytes { consumed: 4, len: 5 })
+            Err(WireError::TrailingBytes {
+                consumed: 4,
+                len: 5
+            })
         ));
     }
 

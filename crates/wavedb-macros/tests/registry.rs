@@ -74,10 +74,7 @@ fn contains_and_helpers() {
     );
     assert_eq!(registry::stack_size(0), None);
 
-    assert_eq!(
-        registry::heap_fields(Order1::HEADER),
-        Some(&["status"][..])
-    );
+    assert_eq!(registry::heap_fields(Order1::HEADER), Some(&["status"][..]));
     assert_eq!(
         registry::heap_fields(Order2::HEADER),
         Some(&["status", "note"][..])
@@ -140,7 +137,10 @@ fn descriptor_fields_carry_exact_offsets() {
     assert_eq!(d.stack_size, ID_SIZE + META_SIZE + 8 + 4);
 
     // Descriptor lookup by name.
-    assert_eq!(d.field("status").map(|f| f.stack_offset), Some(ID_SIZE + META_SIZE + 8));
+    assert_eq!(
+        d.field("status").map(|f| f.stack_offset),
+        Some(ID_SIZE + META_SIZE + 8)
+    );
     assert!(d.field("nope").is_none());
 }
 

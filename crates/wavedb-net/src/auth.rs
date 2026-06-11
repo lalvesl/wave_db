@@ -247,8 +247,7 @@ mod tests {
         let k = key();
         let token = k.mint_at(77, TokenPurpose::Flush, 9_999_999);
         let bytes = wavedb_core::wire::to_wire(&token).unwrap();
-        let decoded: NodeToken =
-            wavedb_core::wire::from_wire(&bytes).unwrap();
+        let decoded: NodeToken = wavedb_core::wire::from_wire(&bytes).unwrap();
         assert_eq!(decoded, token);
     }
 }

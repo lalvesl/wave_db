@@ -48,7 +48,12 @@ struct UnitStruct;
 fn fixed_struct_is_packed() {
     assert_eq!(AllFixed::STACK_SIZE, 1 + 8 + 1 + 4);
     assert!(AllFixed::FIXED);
-    let v = AllFixed { a: 1, b: u64::MAX, c: true, d: -7 };
+    let v = AllFixed {
+        a: 1,
+        b: u64::MAX,
+        c: true,
+        d: -7,
+    };
     assert_eq!(v.heap_size(), 0);
     roundtrip(&v);
 }
@@ -83,7 +88,12 @@ fn nested_struct_flattens() {
         AllFixed::STACK_SIZE + WithHeap::STACK_SIZE + 1
     );
     let v = Nested {
-        fixed: AllFixed { a: 9, b: 8, c: false, d: 7 },
+        fixed: AllFixed {
+            a: 9,
+            b: 8,
+            c: false,
+            d: 7,
+        },
         heapy: WithHeap {
             id: 1,
             name: "abc".into(),
@@ -130,7 +140,10 @@ fn unit_enum_is_one_byte() {
     roundtrip(&Plain::C);
     assert!(matches!(
         from_wire::<Plain>(&[3]),
-        Err(WireError::InvalidTag { type_name: "Plain", tag: 3 })
+        Err(WireError::InvalidTag {
+            type_name: "Plain",
+            tag: 3
+        })
     ));
 }
 
@@ -150,7 +163,10 @@ fn payload_enum_layout() {
 
     roundtrip(&Mixed::Empty);
     roundtrip(&Mixed::Scalar(u64::MAX));
-    roundtrip(&Mixed::Pair { x: 1, y: "pair".into() });
+    roundtrip(&Mixed::Pair {
+        x: 1,
+        y: "pair".into(),
+    });
     roundtrip(&Mixed::List(vec![1, 2, 3, 4]));
 }
 
@@ -166,7 +182,10 @@ fn enum_in_struct_and_vec() {
     assert_eq!(Holder::STACK_SIZE, 1 + 5 + 1);
     roundtrip(&Holder {
         before: 1,
-        m: Mixed::Pair { x: 9, y: "inner".into() },
+        m: Mixed::Pair {
+            x: 9,
+            y: "inner".into(),
+        },
         after: 2,
     });
 
@@ -225,7 +244,10 @@ fn id_field_roundtrips() {
         n: u32,
     }
     assert_eq!(HasId::STACK_SIZE, 20);
-    roundtrip(&HasId { id: Id::new(42, 7, 1000, 123_456), n: 5 });
+    roundtrip(&HasId {
+        id: Id::new(42, 7, 1000, 123_456),
+        n: 5,
+    });
 }
 
 // ── Generics ─────────────────────────────────────────────────────────────────
@@ -238,8 +260,14 @@ struct Wrapper<T> {
 
 #[test]
 fn generic_struct_roundtrips() {
-    roundtrip(&Wrapper { inner: "generic".to_owned(), count: 3 });
-    roundtrip(&Wrapper { inner: 17u64, count: 0 });
+    roundtrip(&Wrapper {
+        inner: "generic".to_owned(),
+        count: 3,
+    });
+    roundtrip(&Wrapper {
+        inner: 17u64,
+        count: 0,
+    });
     assert!(Wrapper::<u64>::FIXED);
     assert!(!Wrapper::<String>::FIXED);
 }

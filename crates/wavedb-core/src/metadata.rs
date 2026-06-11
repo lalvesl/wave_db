@@ -38,10 +38,7 @@ impl crate::Wire for Metadata {
         crate::Wire::heap_size(&self.permission)
     }
 
-    fn write_stack(
-        &self,
-        w: &mut crate::WireWriter,
-    ) -> crate::WireResult<()> {
+    fn write_stack(&self, w: &mut crate::WireWriter) -> crate::WireResult<()> {
         self.old_modification_id.write_stack(w)?;
         self.new_modification_id.write_stack(w)?;
         self.struct_version.write_stack(w)?;

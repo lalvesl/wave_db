@@ -136,7 +136,9 @@ fn expand_struct(input: &DeriveInput, data: &DataStruct) -> TokenStream {
 }
 
 /// Bind a variant's fields to generated idents for match arms.
-fn variant_bindings(fields: &Fields) -> (TokenStream, Vec<syn::Ident>, Vec<&syn::Type>) {
+fn variant_bindings(
+    fields: &Fields,
+) -> (TokenStream, Vec<syn::Ident>, Vec<&syn::Type>) {
     match fields {
         Fields::Named(named) => {
             let idents: Vec<syn::Ident> = named
@@ -185,7 +187,10 @@ fn variant_construct(
 }
 
 #[allow(clippy::too_many_lines)]
-fn expand_enum(input: &DeriveInput, data: &DataEnum) -> syn::Result<TokenStream> {
+fn expand_enum(
+    input: &DeriveInput,
+    data: &DataEnum,
+) -> syn::Result<TokenStream> {
     let name = &input.ident;
     let name_str = name.to_string();
 
