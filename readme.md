@@ -508,25 +508,51 @@ This means **dictionary rebuilds are never on the write hot path** — the journ
 
 ## Heap Data Strategy (Detailed)
 
-### Step 1 — Inline compression
+### Stackable vs. heapable — the engine must know the difference
 
-zstd compress and store at the end of the page.
+A node cannot manage page pressure if it can't tell what the bytes it holds _are_. Every `#[wave_db]` struct's layout is known at compile time, and the macro hands that classification to the engine as part of the struct's layout descriptor:
 
-### Step 2 — Overflow to a hashed block
+- **Stackable** — fixed-width fields: integers, enums, IDs, booleans. Live in the record's object bytes, compressed by the per-STRUCT dictionaries.
+- **Heapable** — variable-length fields: `String`, `Vec<T>`, blobs. Candidates for relocation when a page comes under pressure.
 
-If still too large, the page slot stores a pointer `(STRUCT_ID, TENANT_ID, data_id)` and the value goes to a separate overflow block addressed by that pointer's hash.
+Both **Quick-Nodes and Slow-Nodes** carry this descriptor, so either tier can make the same inline-vs-evict decision for any record it holds — a node never has to guess what a byte range is.
 
-### Step 3 — Heap Anchor for very large values
+### Step 1 — Inline first
 
-When the value exceeds what an overflow block can hold cleanly, WaveDB writes a **Heap Anchor**: a small indirection record in the data file that points to the actual bytes living at the tail of the heap file.
+On first write, every heapable value (every string, every `Vec`) is zstd-compressed and stored **inline in the page's heap region**, right alongside its record. Small values stay where their record lives — one IO reads both. Only values that physically cannot fit (larger than `max_heap_inline`) skip this step and go straight to the heap file.
 
-- The heap anchor is hashed by `(CREATED_AT, SHARD_ID, TENANT_ID)` instead of the usual `(STRUCT_ID, TENANT_ID)`. Because `SHARD_ID` is range-owned by a single Quick-Node and that node serialises within each 100µs tick, this hash is unique per record without coordination — heap anchors don't collide with normal Anchor Slots.
-- The anchor record itself is tiny: a single pointer `(offset, size)` into the heap file.
-- The actual bytes are appended to the **tail of the heap file**, padded out to keep every entry **4KB-aligned**. This guarantees that heap reads never straddle a page boundary, regardless of the underlying value's size.
+### Step 2 — Eviction to the heap file under page pressure
 
-A read for an oversized field costs a bounded **2 IOs**: one for the heap anchor, one for the heap data — independent of how large the value actually is.
+When a hash page grows past the security limit (`warning_size_page_occupation`) and a balance is needed, the **first response is not to rebalance — it is to evict every heapable value on that page to the heap file**. Stackable bytes stay put. Only if the page is still over the limit after eviction does the normal collision/rebalance machinery take over (see _Collision & Fullness Strategy_).
 
-> **Trade-off vs. earlier deduplicating linked-list design:** This approach drops the per-tail ownership-dedup that an earlier sketch carried. In exchange, large-value reads stop scaling with chain depth and heap writes are pure appends. Content-addressed dedup can be layered on top later if profile data shows it's worth the complexity.
+Each evicted value is registered under a **Heap Anchor**:
+
+- **Address = content hash.** The anchor's ID is the **u128 hash of the value's bytes** — not a `(TENANT, SHARD, …)` tuple. Identical values evicted from different records hash to the **same** anchor, which is what makes dedup structural. The slot is tagged as a heap anchor, so even an improbable collision with a structured record ID is detected rather than misread.
+- **Payload = block position.** The anchor slot holds a single `u64`: the index of the value's first block inside the heap file. No size, no offset math — everything else lives in the heap block itself.
+
+### Heap file block layout
+
+The heap file is an array of **4KB-aligned blocks**; an entry occupies as many whole blocks as it needs:
+
+```
+┌─────────────────────────── 4KB block(s) ────────────────────────────┐
+│ size: u64 │ value bytes …            │ [owner ID, owner ID, …]      │
+│           │                          │   ← ID list grows at the end │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+- `size: u64` — byte length of the heapable data, first thing in the block.
+- The value bytes follow.
+- At the end sits the **owner-ID list**: the full `Id` of every record that uses this heap data.
+
+When another record stores the **same value**, no new entry is written: the content hash lands on the existing anchor, and the new record's ID is **appended to the owner list**. One copy on disk, any number of records pointing at it.
+
+### What this buys
+
+- **Dedup for free.** Content addressing collapses identical values — repeated attachments, copy-pasted text, shared templates — into one physical copy per node.
+- **Bounded 2-IO reads.** Anchor (block position) → block. The `size` header is in the block itself, so the read never needs a third hop, independent of value size.
+- **Local reclamation.** Deleting a record removes its ID from the owner list. An empty owner list marks the entry dead; the freed blocks are recorded as a journal free-space delta and reclaimed by the normal cleanup pass.
+- **Tier-symmetric format.** Slow-Nodes receive heap entries in the same block format when history is flushed down — the owner list travels with the data, so the archive knows exactly which historical records still reference it.
 
 ---
 
@@ -538,12 +564,12 @@ WaveDB splits its on-disk state across **four files**, each tuned for a differen
 | -------------- | ---------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------- |
 | `data` file    | Hash-mapped pages — Anchor Slots, versioned records, heap-anchor stubs | Page-addressed (hash → page)             | Random IO, page-sized                         |
 | `index` file   | B+ tree nodes and small-collection array indexes                       | **Highly contiguous**; nodes 4KB-aligned | Sequential within a tree, random across trees |
-| `heap` file    | Compressed / oversized payloads + the heap-anchor append region        | Append-mostly, 4KB-padded                | Append on write, point IO on read             |
+| `heap` file    | Content-addressed heap entries: `size: u64` + value bytes + owner-ID list, per 4KB block(s) | Append-mostly, 4KB blocks | Append on write, point IO on read |
 | `journal` file | In-flight mutations, dictionary updates, free-space deltas             | Append-only                              | Append + sequential replay on startup         |
 
 ### Why split
 
-Index entries reference data-file records **by ID**, never by file offset. That keeps B+ trees portable across rebalances and lets the index file be compacted independently of the data file without rewriting any pointers. The same logic applies to heap-anchor stubs: they address the heap by `(offset, size)` only at the moment of read — between reads, ranges are free to be relocated by cleanup.
+Index entries reference data-file records **by ID**, never by file offset. That keeps B+ trees portable across rebalances and lets the index file be compacted independently of the data file without rewriting any pointers. The same logic applies to heap anchors: the data file holds only a `u64` block position, and the entry's size lives in the heap block itself — between reads, cleanup is free to relocate blocks as long as it updates the one `u64` in the anchor.
 
 The index file's contiguous layout is the payoff of the per-(STRUCT_ID, TENANT_ID) tree design: millions of tiny trees laid out next to each other compress and prefetch well, and they never share pages with the random-access data file.
 
@@ -551,10 +577,11 @@ The index file's contiguous layout is the payoff of the per-(STRUCT_ID, TENANT_I
 
 ## Collision & Fullness Strategy
 
-Multiple `(STRUCT_ID, TENANT_ID)` pairs naturally share pages. When a target page is full:
+Multiple `(STRUCT_ID, TENANT_ID)` pairs naturally share pages. When a target page crosses the security limit (`warning_size_page_occupation`) or fills up:
 
-1. **Double hashing** finds an alternative candidate page.
-2. Double hashing firing at a meaningful rate **is the signal** — the file is approaching capacity and a rebalance triggers automatically.
+1. **Heapable eviction first.** Every heapable value on the page (strings, `Vec`s) is moved to the heap file behind content-hashed Heap Anchors (see _Heap Data Strategy_). Stackable bytes stay. For most pages this alone restores headroom — variable-length values are where the growth was.
+2. **Double hashing** finds an alternative candidate page if the page is still over the limit.
+3. Double hashing firing at a meaningful rate **is the signal** — the file is approaching capacity and a rebalance triggers automatically.
 
 The collision resolution mechanism _is_ the alert system.
 
@@ -1044,7 +1071,7 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 | ------------------------------- | ---------------------------------------------------------------------------- | -------------------- |
 | `page_size`                     | Bytes per page                                                               | varies by deployment |
 | `page_counter`                  | Number of pages in file                                                      | grows as needed      |
-| `max_heap_inline`               | Largest heap value stored inline before overflow                             | 25% of page_size     |
+| `max_heap_inline`               | Largest heapable value stored inline; bigger values go straight to the heap file | 25% of page_size     |
 | `warning_size_page_occupation`  | Fill threshold to alert                                                      | 70%                  |
 | `max_dict_memory`               | RAM budget for STRUCT_ID dictionaries                                        | 64 MB                |
 | `MAX_NON_UNIQUE_ELEMENTS`       | Per-STRUCT_ID array → B+ tree conversion threshold                           | 50                   |
@@ -1063,7 +1090,7 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 
 | #   | Problem                    | Resolution                                                                                                                                                                                                                           |
 | --- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| P1  | Heap overflow strategy     | zstd inline → hashed overflow block → **Heap Anchor stub** in the data file (hashed by `(CREATED_AT, SHARD_ID, TENANT_ID)`) addressing 4KB-padded entries appended to the heap-file tail; bounded 2-IO read regardless of value size |
+| P1  | Heap overflow strategy     | zstd inline first → on page pressure, evict heapables behind **content-hashed Heap Anchors** (`u128 = hash(value)`, payload = `u64` heap block position); heap blocks are 4KB-aligned `[size: u64][bytes][owner-ID list]`, identical values dedup by appending to the owner list; bounded 2-IO read regardless of value size |
 | P2  | Hash collision / page full | Tenants share pages naturally; double hashing as fallback; double hashing rate = rebalance trigger                                                                                                                                   |
 | P3  | Heap compression           | zstd; CPU is free because no join processing                                                                                                                                                                                         |
 | P4  | Cross-tenant queries       | Out of scope by design — application context always knows the tenant                                                                                                                                                                 |
