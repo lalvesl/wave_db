@@ -1,15 +1,19 @@
 //! Minimal async IndexedDB key-value store for the WASM client.
 //!
-//! This is the browser-side persistence layer: cached pages written by the
-//! write-through cache and small bookkeeping entries (like the owner URL)
+//! This is the browser-side persistence layer: records cached by the
+//! write-through layer and small bookkeeping entries (like the owner URL)
 //! all go through one object store.  localStorage is unsuitable for this
 //! role — synchronous API, string-only values, ~5 MB quota — so IndexedDB
 //! is the only backend.
 //!
-//! The store is deliberately a flat KV surface (`&str` key → byte value):
-//! page images are opaque byte blobs to the browser, and structured needs
-//! (directories, version markers) are already encoded inside the page
-//! bytes by the storage engine.
+//! **No page emulation in the browser.**  IndexedDB is already an ordered
+//! key→value store doing its own page management internally, so WaveDB
+//! stores one key per object — anchors at their anchor key, versioned
+//! records at their full 128-bit Id, heap-dedup entries at their content
+//! hash — instead of stacking a second block manager on top.  The
+//! page-pressure machinery (heapable eviction, double hashing, rebalance)
+//! never runs client-side.  See the readme section
+//! _Browser storage: key→value, not pages_.
 
 use std::cell::RefCell;
 use std::rc::Rc;
