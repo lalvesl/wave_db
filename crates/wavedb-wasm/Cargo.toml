@@ -23,7 +23,12 @@ gloo-net = { workspace = true }
 js-sys = { workspace = true }
 
 futures = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true }
 serde-wasm-bindgen = { workspace = true }
+# Direct dep so the `::wavedb_core::` paths emitted by #[wave_db] resolve
+# in this crate (the example schema lives here).
+wavedb-core = { path = "../wavedb-core" }
 wavedb-net = { path = "../wavedb-net", default-features = false }
 # IndexedDB features on top of the workspace web-sys set — browser-side
 # persistence (pages + bookkeeping) lives in IndexedDB, not localStorage.
@@ -43,3 +48,6 @@ web-sys = { workspace = true, features = [
 
 [dev-dependencies]
 wasm-bindgen-test = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+serde-wasm-bindgen = { workspace = true }

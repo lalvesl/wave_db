@@ -63,11 +63,19 @@
 
           cargoLock.lockFile = ./Cargo.lock;
 
-          nativeBuildInputs = [ wasmBindgenCli ];
+          nativeBuildInputs = [
+            wasmBindgenCli
+            pkgs.binaryen # wasm-opt
+            pkgs.gzip
+          ];
 
+          # The exported `example_roundtrip` entry point (src/example.rs)
+          # exercises the engine — schema macro, migration chain, query DSL,
+          # IndexedDB — so fat LTO keeps the codebase and the size below is a
+          # meaningful number, not an empty shell.
           buildPhase = ''
             runHook preBuild
-            cargo build --target wasm32-unknown-unknown --release -p wavedb-wasm
+            cargo build --target wasm32-unknown-unknown --profile wasm-release -p wavedb-wasm
             runHook postBuild
           '';
 
@@ -77,7 +85,24 @@
             wasm-bindgen \
               --out-dir $out \
               --target bundler \
-              target/wasm32-unknown-unknown/release/wavedb_wasm.wasm
+              target/wasm32-unknown-unknown/wasm-release/wavedb_wasm.wasm
+
+            # Post-link size pass.  Feature flags match what rustc 1.8x+
+            # emits and wasm-bindgen's externref pass requires.
+            for f in $out/*_bg.wasm; do
+              before=$(stat -c%s "$f")
+              wasm-opt -Oz \
+                --enable-bulk-memory \
+                --enable-sign-ext \
+                --enable-mutable-globals \
+                --enable-nontrapping-float-to-int \
+                --enable-reference-types \
+                "$f" -o "$f.opt"
+              mv "$f.opt" "$f"
+              after=$(stat -c%s "$f")
+              gzipped=$(gzip -9 -c "$f" | wc -c)
+              echo "wasm size: $f  raw=$after (was $before)  gzip=$gzipped"
+            done
             runHook postInstall
           '';
 

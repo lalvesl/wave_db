@@ -77,5 +77,16 @@ lto = "fat"
 codegen-units = 1
 debug = "line-tables-only"
 
+# Size-optimised wasm artifact — used by `nix build .#wasm` and
+# scripts/wasm_size.sh.  Differences vs release: optimise for size, no
+# debug info (line tables bloat .wasm), strip symbols, abort on panic
+# (drops the unwinding machinery the browser can't use anyway).
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+debug = false
+strip = "symbols"
+panic = "abort"
+
 [profile.bench]
 inherits = "release"
