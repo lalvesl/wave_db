@@ -5,16 +5,17 @@
 #   scripts/wasm_size.sh            # canonical: nix build .#wasm (wasm-bindgen + wasm-opt -Oz)
 #   scripts/wasm_size.sh --cargo    # fast path: cargo only (pre-bindgen, no wasm-opt — upper bound)
 #
-# Every run appends one row to wasm-size.csv:
-#   date,git_rev,mode,raw_bytes,gzip_bytes
-# and prints the delta against the previous row of the same mode.
-# Run it whenever a feature lands or a crate updates — the CSV is the
+# Every run appends one JSON line to
+#   crates/wavedb-wasm/tests/track_size_of_wasm.jsonl
+#   {"date":...,"git_rev":...,"mode":...,"raw_bytes":...,"gzip_bytes":...}
+# and prints the delta against the previous entry of the same mode.
+# Run it whenever a feature lands or a crate updates — the JSONL is the
 # growth history.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CSV="wasm-size.csv"
+LOG="crates/wavedb-wasm/tests/track_size_of_wasm.jsonl"
 MODE="nix"
 [[ "${1:-}" == "--cargo" ]] && MODE="cargo"
 
@@ -32,10 +33,24 @@ GZ=$(gzip -9 -c "$WASM" | wc -c)
 REV=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE=$(date -u +%Y-%m-%d)
 
-[[ -f "$CSV" ]] || echo "date,git_rev,mode,raw_bytes,gzip_bytes" > "$CSV"
+# Previous raw size for this mode.  `nix run .#fmt` pretty-prints the
+# JSONL through jq, so parse per-object (RS="}") instead of per-line —
+# works on both compact and jq-formatted entries.
+PREV=0
+if [[ -f "$LOG" ]]; then
+  PREV=$(awk -v m="$MODE" 'BEGIN { RS="}" }
+    $0 ~ "\"mode\"[[:space:]]*:[[:space:]]*\"" m "\"" {
+      if (match($0, /"raw_bytes"[[:space:]]*:[[:space:]]*[0-9]+/)) {
+        v = substr($0, RSTART, RLENGTH)
+        gsub(/[^0-9]/, "", v)
+        raw = v
+      }
+    }
+    END { print raw + 0 }' "$LOG")
+fi
 
-PREV=$(awk -F, -v m="$MODE" '$3 == m { raw=$4 } END { print raw+0 }' "$CSV")
-echo "$DATE,$REV,$MODE,$RAW,$GZ" >> "$CSV"
+printf '{"date":"%s","git_rev":"%s","mode":"%s","raw_bytes":%s,"gzip_bytes":%s}\n' \
+  "$DATE" "$REV" "$MODE" "$RAW" "$GZ" >> "$LOG"
 
 human() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "${1}B"; }
 
