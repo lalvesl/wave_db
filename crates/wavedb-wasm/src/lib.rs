@@ -2,15 +2,21 @@
 //!
 //! All code is gated on `target_arch = "wasm32"`.  On native targets this
 //! crate is empty — it only exists so `cargo test --workspace` can compile it.
+//!
+//! Browser-side persistence (cached pages, owner-URL bookkeeping) goes
+//! through IndexedDB via [`idb::IdbStore`] — see that module for why
+//! localStorage is not an option.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::future_not_send)]
+
+#[cfg(target_arch = "wasm32")]
+pub mod idb;
 
 // ── WASM implementation ───────────────────────────────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_impl {
-    use gloo_storage::{LocalStorage, Storage};
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
     use std::rc::Rc;
@@ -24,6 +30,8 @@ mod wasm_impl {
     use wavedb_net::request::{
         RequestKind, TransportRequest, TransportResponse,
     };
+
+    use crate::idb::{IdbStore, OWNER_URL_KEY};
 
     type PendingMap =
         Rc<RefCell<HashMap<u64, oneshot::Sender<TransportResponse>>>>;
@@ -132,9 +140,11 @@ mod wasm_impl {
             let owner_url = resp.owner_url.unwrap_or_default();
             let backup_url = resp.backup_url.unwrap_or_default();
 
-            // Persist owner URL in localStorage so clients can reconnect after
+            // Persist owner URL in IndexedDB so clients can reconnect after
             // a page refresh without re-discovering the owner via the ring.
-            LocalStorage::set("wavedb_owner_url", &owner_url).ok();
+            if let Ok(store) = IdbStore::open().await {
+                let _ = store.put(OWNER_URL_KEY, owner_url.as_bytes()).await;
+            }
 
             Ok(Self {
                 ws,
@@ -146,6 +156,16 @@ mod wasm_impl {
                 backup_url,
                 _onmessage: onmessage,
             })
+        }
+
+        /// The owner URL persisted by the last successful connect, if any.
+        ///
+        /// Lets a freshly-loaded page dial the previous owner directly
+        /// instead of re-discovering it via the ring.
+        pub async fn cached_owner_url() -> Option<String> {
+            let store = IdbStore::open().await.ok()?;
+            let bytes = store.get(OWNER_URL_KEY).await.ok()??;
+            String::from_utf8(bytes).ok()
         }
 
         /// The Quick-Node URL that owns this session's partition.
@@ -358,5 +378,7 @@ mod wasm_impl {
 }
 
 // Re-export public types so `wasm-pack build` exposes them at the crate root.
+#[cfg(target_arch = "wasm32")]
+pub use idb::IdbStore;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_impl::JsDb;

@@ -67,7 +67,6 @@ syn = { version = "2.0.117", features = ["full", "extra-traits"] }
 wasm-bindgen = "0.2.121"
 wasm-bindgen-futures = "0.4.71"
 gloo-net = { version = "0.7.0", features = ["http", "websocket"] }
-gloo-storage = "0.4.0"
 js-sys = "0.3.98"
 futures = "0.3.32"
 serde-wasm-bindgen = "0.6.5"

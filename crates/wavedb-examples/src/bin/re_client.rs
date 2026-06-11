@@ -20,8 +20,8 @@
 //!
 //! Run via `nix run .#real_example` — do not invoke directly.
 
-use std::time::Duration;
 use std::io::Write as _;
+use std::time::Duration;
 
 use tokio::time::sleep;
 use wavedb::Db;
@@ -109,7 +109,8 @@ async fn main() {
     // Distribute clients across quick-nodes round-robin.
     let num_nodes = ws_urls.len();
     let per_node = (num_clients / num_nodes).max(1);
-    let node_idx = (usize::try_from(client_id).unwrap() / per_node).min(num_nodes - 1);
+    let node_idx =
+        (usize::try_from(client_id).unwrap() / per_node).min(num_nodes - 1);
     let ws_url = ws_urls[node_idx].clone();
 
     // Signal readiness to the orchestrator.

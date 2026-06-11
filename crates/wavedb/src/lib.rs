@@ -18,7 +18,7 @@
 //! |-------|--------------------------------------|-------------|
 //! | `Unique` (default) | Exactly 1 live record | User profile, settings |
 //! | `NonUnique` | Many live records | Orders, events, messages |
-//! | `NestedNonUnique` | Many, child of one `NonUnique` parent | Invoice lines |
+//! | `NestedNonUnique` | Many, child of one parent record (recurses: a child may own its own child collection) | Invoice lines, checklist items |
 //!
 //! ## 128-bit composite IDs
 //!
