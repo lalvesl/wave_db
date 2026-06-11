@@ -178,6 +178,52 @@ impl NodeStorage {
         self.commit_versioned_write(&rec)
     }
 
+    /// Store a heapable value with **content-addressed dedup**.
+    ///
+    /// Small values come back as [`HeapPlacement::Inline`] (compressed) and
+    /// belong inline in their record's page; larger values land in the heap
+    /// file behind a content-hashed heap anchor, with `owner` appended to
+    /// the entry's owner-ID list.  Identical values share one entry.
+    ///
+    /// Durability note: heap-anchor writes are not journalled yet — call
+    /// [`Self::flush_snapshot`] (and [`HeapFile::flush`] via the public
+    /// handle) to persist.  WAL integration is the next step.
+    pub fn store_heapable(
+        &self,
+        owner: u128,
+        value: &[u8],
+    ) -> StorageResult<crate::heap::HeapPlacement> {
+        let mut heap = self.heap_file.lock();
+        crate::heap::dedup_store(&self.data_file, &mut heap, value, owner)
+    }
+
+    /// Read a heap-stored value back by its content hash — the bounded
+    /// 2-IO path (anchor → block).
+    pub fn read_heapable(
+        &self,
+        content_hash: u128,
+    ) -> StorageResult<Option<Vec<u8>>> {
+        let heap = self.heap_file.lock();
+        crate::heap::dedup_read(&self.data_file, &heap, content_hash)
+    }
+
+    /// Release one owner's claim on a heap entry.  Returns `true` when the
+    /// owner list emptied: the entry's blocks are freed and its anchor is
+    /// tombstoned.
+    pub fn release_heapable(
+        &self,
+        content_hash: u128,
+        owner: u128,
+    ) -> StorageResult<bool> {
+        let mut heap = self.heap_file.lock();
+        crate::heap::release_owner(
+            &self.data_file,
+            &mut heap,
+            content_hash,
+            owner,
+        )
+    }
+
     /// Force-flush the data-file snapshot.  No-op for the journal and
     /// heap, which are flushed on every commit.
     pub fn flush_snapshot(&self) -> StorageResult<()> {
@@ -292,6 +338,41 @@ mod tests {
                 format!("payload-{}", id.created_at()).into_bytes()
             );
         }
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn heapable_dedup_lifecycle_through_node_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = NodeStorage::open(dir.path()).unwrap();
+
+        let owner_a = wavedb_core::Id::new(7, 1, 11, 100).raw();
+        let owner_b = wavedb_core::Id::new(7, 2, 11, 200).raw();
+        // Incompressible-ish payload so it exceeds max_inline.
+        let value: Vec<u8> = (0..40_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+
+        let crate::heap::HeapPlacement::Heap { content_hash, .. } =
+            storage.store_heapable(owner_a, &value).unwrap()
+        else {
+            panic!("expected heap placement");
+        };
+        let size_once = storage.heap_file.lock().size();
+
+        // Second owner, same value — dedup, no growth.
+        storage.store_heapable(owner_b, &value).unwrap();
+        assert_eq!(storage.heap_file.lock().size(), size_once);
+
+        assert_eq!(
+            storage.read_heapable(content_hash).unwrap().unwrap(),
+            value
+        );
+
+        assert!(!storage.release_heapable(content_hash, owner_a).unwrap());
+        assert!(storage.release_heapable(content_hash, owner_b).unwrap());
+        assert!(storage.read_heapable(content_hash).unwrap().is_none());
+        assert_eq!(storage.heap_file.lock().take_freed().len(), 1);
     }
 
     #[test]

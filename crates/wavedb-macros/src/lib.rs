@@ -78,6 +78,9 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Captured **before** `id`/`metadata` are injected — used to emit
     // `XxxFields` typed field handles for the query DSL.
     let mut user_field_idents: Vec<syn::Ident> = Vec::new();
+    // Heapable (variable-length) field names — the stackable/heapable
+    // descriptor emitted as `WaveDbStruct::HEAPABLE_FIELDS`.
+    let mut heapable_field_names: Vec<String> = Vec::new();
 
     if let syn::Fields::Named(ref mut fields) = input.fields {
         for f in &fields.named {
@@ -91,6 +94,9 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .into();
                 }
                 user_field_idents.push(ident.clone());
+                if utils::is_heapable_type(&f.ty) {
+                    heapable_field_names.push(ident.to_string());
+                }
             }
         }
 
@@ -163,6 +169,8 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             const STRUCT_ID: u32 = #sid;
             const STRUCT_VERSION: u8 = #version;
             const SHAPE: ::wavedb_core::Shape = #shape;
+            const HEAPABLE_FIELDS: &'static [&'static str] =
+                &[ #(#heapable_field_names),* ];
         }
 
         impl #name {

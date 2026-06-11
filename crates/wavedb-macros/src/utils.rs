@@ -24,6 +24,38 @@ pub fn collect_derived_traits(
     out
 }
 
+/// Whether a field type is **heapable** (variable-length): `String`,
+/// `Vec<T>`, or an `Option` wrapping either.  Everything else — integers,
+/// enums, IDs, fixed arrays — is **stackable** (fixed-width).
+///
+/// The classification is syntactic (last path segment), which matches how
+/// the engine treats the bytes: a type alias that hides a `String` will be
+/// misclassified, and that's accepted for v1 — the descriptor is a routing
+/// hint, not a safety boundary.
+pub fn is_heapable_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(p) = ty else {
+        return false;
+    };
+    let Some(seg) = p.path.segments.last() else {
+        return false;
+    };
+    match seg.ident.to_string().as_str() {
+        "String" | "Vec" => true,
+        "Option" => match &seg.arguments {
+            syn::PathArguments::AngleBracketed(args) => {
+                args.args.iter().any(|a| {
+                    matches!(
+                        a,
+                        syn::GenericArgument::Type(t) if is_heapable_type(t)
+                    )
+                })
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Parse the trailing integer from a struct name (e.g. `"Message42"` → `42`).
 pub fn parse_trailing_version(
     name: &str,

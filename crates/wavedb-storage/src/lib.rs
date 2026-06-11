@@ -25,7 +25,10 @@ pub use anchor::{AnchorKey, AnchorKind, AnchorMode, AnchorSlot};
 pub use error::{StorageError, StorageResult};
 pub use file::data::DataFile;
 pub use hash::{PageKey, mix64, tuple2_page, tuple4_page};
-pub use heap::HeapFile;
+pub use heap::{
+    HEAP_BLOCK_SIZE, HeapFile, HeapPlacement, content_hash128, dedup_read,
+    dedup_store, release_owner,
+};
 pub use index::{AdaptiveIndex, IndexBackend, IndexKey};
 pub use node_storage::NodeStorage;
 pub use page::{Page, PageHeader};
