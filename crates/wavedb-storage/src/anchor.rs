@@ -65,6 +65,16 @@ pub enum AnchorKind {
     },
     /// Tombstone for a deleted secondary.
     SecondaryTombstone,
+    /// Content-addressed heap reference.
+    ///
+    /// The slot of a **heap anchor**: its `AnchorKey` is the u128 content
+    /// hash of the heapable value, and the payload is the single `u64`
+    /// block position of the entry inside the heap file.  Size, value
+    /// bytes, and the owner-ID list all live in the heap block itself.
+    HeapRef {
+        /// Index of the entry's first 4KB block in the heap file.
+        block: u64,
+    },
 }
 
 /// A complete anchor slot.
@@ -136,6 +146,14 @@ impl AnchorSlot {
         }
     }
 
+    /// Create a content-addressed heap reference slot.
+    pub const fn heap_ref(block: u64) -> Self {
+        Self {
+            kind: AnchorKind::HeapRef { block },
+            references: Vec::new(),
+        }
+    }
+
     /// Is this a live primary?
     pub const fn is_live_primary(&self) -> bool {
         matches!(self.kind, AnchorKind::Primary { .. })
@@ -157,6 +175,14 @@ impl AnchorSlot {
                 mode: AnchorMode::Inline { bytes },
                 ..
             } => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// Get the heap block position if this is a heap reference.
+    pub const fn heap_block(&self) -> Option<u64> {
+        match self.kind {
+            AnchorKind::HeapRef { block } => Some(block),
             _ => None,
         }
     }
@@ -213,5 +239,26 @@ mod tests {
     fn tombstones() {
         assert!(AnchorSlot::primary_tombstone(500).is_tombstone());
         assert!(AnchorSlot::secondary_tombstone().is_tombstone());
+    }
+
+    #[test]
+    fn heap_ref_roundtrip() {
+        let slot = AnchorSlot::heap_ref(1234);
+        assert_eq!(slot.heap_block(), Some(1234));
+        assert!(!slot.is_live_primary());
+        assert!(!slot.is_tombstone());
+        let bytes = slot.to_bytes().unwrap();
+        let decoded = AnchorSlot::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.heap_block(), Some(1234));
+    }
+
+    /// Adding `HeapRef` at the end of the enum must not break decoding of
+    /// slots serialized before the variant existed.
+    #[test]
+    fn pre_heap_ref_slots_still_decode() {
+        let old = AnchorSlot::inline(b"legacy", 7).to_bytes().unwrap();
+        let decoded = AnchorSlot::from_bytes(&old).unwrap();
+        assert_eq!(decoded.inline_bytes().unwrap(), b"legacy");
+        assert_eq!(decoded.heap_block(), None);
     }
 }

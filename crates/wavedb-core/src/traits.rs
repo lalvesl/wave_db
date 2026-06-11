@@ -12,6 +12,15 @@ pub trait WaveDbStruct {
     const STRUCT_VERSION: u8;
     /// The data shape: `Unique`, `NonUnique`, or `NestedNonUnique`.
     const SHAPE: Shape;
+    /// Names of the struct's **heapable** (variable-length) fields —
+    /// `String`s, `Vec`s, and `Option`s of either — as classified by the
+    /// `#[wave_db]` macro at compile time.
+    ///
+    /// Everything not listed here is **stackable** (fixed-width).  Nodes use
+    /// this descriptor to decide what can be evicted to the heap file when a
+    /// page comes under pressure — the engine never has to guess what a byte
+    /// range is.  See the readme section _Stackable vs. heapable_.
+    const HEAPABLE_FIELDS: &'static [&'static str] = &[];
 }
 
 /// Compile-time chain link **backward**: `Self` migrates *from* `Source` (older).

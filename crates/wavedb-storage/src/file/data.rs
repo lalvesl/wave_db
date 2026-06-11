@@ -125,6 +125,28 @@ const fn page_key_full(id: Id) -> PageKey {
     }
 }
 
+/// Re-derive the routing key from a stored raw page key.
+///
+/// Unique anchors and NonUnique trackers are written with
+/// `shard_id == 0 && created_at == 0` and route tuple2; every other kind —
+/// including **content-hashed heap anchors**, whose u128 is treated as an
+/// opaque `Id` — routes by the full tuple4.  The write/lookup paths for
+/// heap anchors and the rebalancer all use this one function, so any u128
+/// key (structured or content hash) re-routes consistently across
+/// page-count changes.
+#[inline]
+const fn route_key_for_raw(raw: u128) -> PageKey {
+    let id = Id::from_raw(raw);
+    if id.shard_id() == 0 && id.created_at() == 0 {
+        PageKey::Tuple2 {
+            struct_id: id.struct_id(),
+            tenant: id.tenant_id(),
+        }
+    } else {
+        page_key_full(id)
+    }
+}
+
 /// The data file: manages pages on disk with an in-memory cache.
 ///
 /// Pages live in `pages: RwLock<Vec<Page>>`; their count is `page_count`
@@ -675,6 +697,66 @@ impl DataFile {
         self.read_full_id(id)
     }
 
+    // ── Heap anchors (content-addressed) ──────────────────────────────────
+    //
+    // A heap anchor maps `u128 content hash → u64 heap block position`
+    // ([`AnchorKind::HeapRef`]).  The hash is routed through
+    // [`route_key_for_raw`] — the same derivation the rebalancer applies to
+    // every stored key — so heap anchors survive page-count changes exactly
+    // like structured records.
+
+    /// Write a **heap anchor**: content hash → heap block position.
+    pub fn write_heap_anchor(
+        &self,
+        content_hash: u128,
+        block: u64,
+    ) -> StorageResult<()> {
+        let slot = AnchorSlot::heap_ref(block);
+        let bytes = slot.to_bytes()?;
+        self.insert_at_key(
+            route_key_for_raw(content_hash),
+            content_hash,
+            &bytes,
+        )?;
+        self.cache
+            .put_anchor(AnchorKey::from_raw(content_hash), slot);
+        Ok(())
+    }
+
+    /// Read a heap anchor.  Returns the entry's block position, or `None`
+    /// when the anchor is absent or tombstoned (entry died).
+    pub fn read_heap_anchor(
+        &self,
+        content_hash: u128,
+    ) -> StorageResult<Option<u64>> {
+        let key = AnchorKey::from_raw(content_hash);
+        if let Some(slot) = self.cache.get_anchor(key) {
+            return Ok(slot.heap_block());
+        }
+        let slot = self
+            .lookup_at_key(route_key_for_raw(content_hash), content_hash)
+            .map(|b| AnchorSlot::from_bytes(&b))
+            .transpose()?;
+        Ok(slot.and_then(|s| s.heap_block()))
+    }
+
+    /// Tombstone a heap anchor after its entry died (owner list emptied).
+    ///
+    /// Readers distinguish "deleted" from "never existed": the slot stays,
+    /// but [`Self::read_heap_anchor`] returns `None` for it.
+    pub fn clear_heap_anchor(&self, content_hash: u128) -> StorageResult<()> {
+        let slot = AnchorSlot::secondary_tombstone();
+        let bytes = slot.to_bytes()?;
+        self.insert_at_key(
+            route_key_for_raw(content_hash),
+            content_hash,
+            &bytes,
+        )?;
+        self.cache
+            .put_anchor(AnchorKey::from_raw(content_hash), slot);
+        Ok(())
+    }
+
     // ── Internal full-Id read/write (shared by all tuple4 paths) ──────────
 
     /// Write a versioned record at its full-Id page (tuple4).
@@ -916,18 +998,10 @@ impl DataFile {
             let page = &pages[old_idx];
             let mut out = Vec::with_capacity(page.directory.len());
             for entry in &page.directory {
-                let id = Id::from_raw(entry.id);
-                // Re-derive the original [`PageKey`].  Anchor entries
-                // for Unique records keep `shard_id == 0 && created_at == 0`;
-                // every other kind hashes by the full Id.
-                let key = if id.shard_id() == 0 && id.created_at() == 0 {
-                    PageKey::Tuple2 {
-                        struct_id: id.struct_id(),
-                        tenant: id.tenant_id(),
-                    }
-                } else {
-                    page_key_full(id)
-                };
+                // Re-derive the original [`PageKey`] — shared with the
+                // heap-anchor write path so content-hash keys re-route
+                // identically.
+                let key = route_key_for_raw(entry.id);
                 let new_slot = Self::page_index(key, new_count);
                 if new_slot != old_idx {
                     let start = entry.offset as usize;
@@ -1194,6 +1268,59 @@ mod tests {
         assert_eq!(got.inline_bytes().unwrap(), b"check-tracker");
         let got = file.read_nested_element(check_id).unwrap().unwrap();
         assert_eq!(got.data, b"check");
+    }
+
+    // ── Heap anchors ───────────────────────────────────────────────────
+
+    #[test]
+    fn heap_anchor_roundtrip_and_tombstone() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
+        let hash = crate::heap::content_hash128(b"some big value");
+
+        assert_eq!(file.read_heap_anchor(hash).unwrap(), None);
+        file.write_heap_anchor(hash, 42).unwrap();
+        assert_eq!(file.read_heap_anchor(hash).unwrap(), Some(42));
+
+        // Relocation: same hash, new block — single u64 update.
+        file.write_heap_anchor(hash, 99).unwrap();
+        assert_eq!(file.read_heap_anchor(hash).unwrap(), Some(99));
+
+        // Dead entry: tombstoned, reads as None.
+        file.clear_heap_anchor(hash).unwrap();
+        assert_eq!(file.read_heap_anchor(hash).unwrap(), None);
+    }
+
+    /// Content-hash keys route through the same `route_key_for_raw` the
+    /// rebalancer uses, so heap anchors must survive page-count growth.
+    #[test]
+    fn heap_anchors_survive_rebalance() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = DataFile::open(&dir.path().join("data"), 4096).unwrap();
+
+        let hashes: Vec<u128> = (0..64u32)
+            .map(|i| {
+                crate::heap::content_hash128(format!("value-{i}").as_bytes())
+            })
+            .collect();
+        for (i, h) in hashes.iter().enumerate() {
+            file.write_heap_anchor(*h, i as u64).unwrap();
+        }
+
+        let before = file.page_count_now();
+        file.rebalance().unwrap();
+        assert!(file.page_count_now() > before);
+
+        for (i, h) in hashes.iter().enumerate() {
+            // Evict from the cache so the read exercises the page path —
+            // the cache is keyed by hash and would mask a routing bug.
+            file.cache.remove_anchor(AnchorKey::from_raw(*h));
+            assert_eq!(
+                file.read_heap_anchor(*h).unwrap(),
+                Some(i as u64),
+                "heap anchor {i} lost after rebalance"
+            );
+        }
     }
 
     /// Two records under the same `(struct, tenant)` but with distinct
