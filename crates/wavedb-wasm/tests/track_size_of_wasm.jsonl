@@ -1,3 +1,21 @@
-{"date":"2026-06-11","git_rev":"b2a6a06","mode":"cargo","raw_bytes":786287,"gzip_bytes":193486}
-{"date":"2026-06-11","git_rev":"0e15db0","mode":"nix","raw_bytes":95182,"gzip_bytes":41772}
-{"date":"2026-06-11","git_rev":"5f02dac","mode":"cargo","raw_bytes":786287,"gzip_bytes":193485}
+{
+  "date": "2026-06-11",
+  "git_rev": "b2a6a06",
+  "mode": "cargo",
+  "raw_bytes": 786287,
+  "gzip_bytes": 193486
+}
+{
+  "date": "2026-06-11",
+  "git_rev": "0e15db0",
+  "mode": "nix",
+  "raw_bytes": 95182,
+  "gzip_bytes": 41772
+}
+{
+  "date": "2026-06-11",
+  "git_rev": "5f02dac",
+  "mode": "cargo",
+  "raw_bytes": 786287,
+  "gzip_bytes": 193485
+}

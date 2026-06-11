@@ -560,12 +560,12 @@ When another record stores the **same value**, no new entry is written: the cont
 
 WaveDB splits its on-disk state across **four files**, each tuned for a different access pattern. (How these are physically combined is controlled by _Operation Modes (file layout)_ further down — single-file mode merges them all; production splits them.)
 
-| File           | Contents                                                               | Layout                                   | Access pattern                                |
-| -------------- | ---------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------- |
-| `data` file    | Hash-mapped pages — Anchor Slots, versioned records, heap-anchor stubs | Page-addressed (hash → page)             | Random IO, page-sized                         |
-| `index` file   | B+ tree nodes and small-collection array indexes                       | **Highly contiguous**; nodes 4KB-aligned | Sequential within a tree, random across trees |
-| `heap` file    | Content-addressed heap entries: `size: u64` + value bytes + owner-ID list, per 4KB block(s) | Append-mostly, 4KB blocks | Append on write, point IO on read |
-| `journal` file | In-flight mutations, dictionary updates, free-space deltas             | Append-only                              | Append + sequential replay on startup         |
+| File           | Contents                                                                                    | Layout                                   | Access pattern                                |
+| -------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------- |
+| `data` file    | Hash-mapped pages — Anchor Slots, versioned records, heap-anchor stubs                      | Page-addressed (hash → page)             | Random IO, page-sized                         |
+| `index` file   | B+ tree nodes and small-collection array indexes                                            | **Highly contiguous**; nodes 4KB-aligned | Sequential within a tree, random across trees |
+| `heap` file    | Content-addressed heap entries: `size: u64` + value bytes + owner-ID list, per 4KB block(s) | Append-mostly, 4KB blocks                | Append on write, point IO on read             |
+| `journal` file | In-flight mutations, dictionary updates, free-space deltas                                  | Append-only                              | Append + sequential replay on startup         |
 
 ### Why split
 
@@ -905,10 +905,10 @@ The distribution machinery exists primarily to let Quick-Nodes flush history to 
 
 WaveDB ships as a library with the same code path on servers, native clients, and (compiled to WASM) browsers. The four supported entry-points cover both server-managed and self-hosted setups:
 
-| Mode                                        | Storage location                  | Tenant model                |
-| ------------------------------------------- | --------------------------------- | --------------------------- |
-| `Db::open(url, path, user)`                 | Local file at `path`              | `tenant = user_id`          |
-| `Db::open(url, path, user, default_tenant)` | Local file at `path`              | Tenant explicit (companies) |
+| Mode                                        | Storage location               | Tenant model                |
+| ------------------------------------------- | ------------------------------ | --------------------------- |
+| `Db::open(url, path, user)`                 | Local file at `path`           | `tenant = user_id`          |
+| `Db::open(url, path, user, default_tenant)` | Local file at `path`           | Tenant explicit (companies) |
 | `Db::open(url, user, default_tenant)`       | Browser IndexedDB (WASM build) | Tenant explicit             |
 | `Db::open(url, user)`                       | Browser IndexedDB (WASM build) | `tenant = user_id`          |
 
@@ -1080,20 +1080,20 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 
 ## Configuration Parameters
 
-| Parameter                       | Description                                                                  | Default              |
-| ------------------------------- | ---------------------------------------------------------------------------- | -------------------- |
-| `page_size`                     | Bytes per page                                                               | varies by deployment |
-| `page_counter`                  | Number of pages in file                                                      | grows as needed      |
+| Parameter                       | Description                                                                      | Default              |
+| ------------------------------- | -------------------------------------------------------------------------------- | -------------------- |
+| `page_size`                     | Bytes per page                                                                   | varies by deployment |
+| `page_counter`                  | Number of pages in file                                                          | grows as needed      |
 | `max_heap_inline`               | Largest heapable value stored inline; bigger values go straight to the heap file | 25% of page_size     |
-| `warning_size_page_occupation`  | Fill threshold to alert                                                      | 70%                  |
-| `max_dict_memory`               | RAM budget for STRUCT_ID dictionaries                                        | 64 MB                |
-| `MAX_NON_UNIQUE_ELEMENTS`       | Per-STRUCT_ID array → B+ tree conversion threshold                           | 50                   |
-| `MAX_CACHED_SIZE`               | RAM budget for the in-memory write/read cache; writes block when near limit  | tunable              |
-| `MAX_DISK_IOPS`                 | Soft IO budget per second across all background actors                       | hardware-dependent   |
-| `MIN_REPLICAS`                  | Minimum number of Quick-Nodes holding each `(TENANT_ID, SHARD_ID)` partition | 2                    |
-| `lock_timeout`                  | Max hold time for an ID lock                                                 | 30 s                 |
-| `bloom_filter_publish_interval` | How often nodes share ownership filters                                      | 1 s                  |
-| `http_poll_interval`            | Idle tick rate of the HTTP-POST client queue when no requests are pending    | 2 s                  |
+| `warning_size_page_occupation`  | Fill threshold to alert                                                          | 70%                  |
+| `max_dict_memory`               | RAM budget for STRUCT_ID dictionaries                                            | 64 MB                |
+| `MAX_NON_UNIQUE_ELEMENTS`       | Per-STRUCT_ID array → B+ tree conversion threshold                               | 50                   |
+| `MAX_CACHED_SIZE`               | RAM budget for the in-memory write/read cache; writes block when near limit      | tunable              |
+| `MAX_DISK_IOPS`                 | Soft IO budget per second across all background actors                           | hardware-dependent   |
+| `MIN_REPLICAS`                  | Minimum number of Quick-Nodes holding each `(TENANT_ID, SHARD_ID)` partition     | 2                    |
+| `lock_timeout`                  | Max hold time for an ID lock                                                     | 30 s                 |
+| `bloom_filter_publish_interval` | How often nodes share ownership filters                                          | 1 s                  |
+| `http_poll_interval`            | Idle tick rate of the HTTP-POST client queue when no requests are pending        | 2 s                  |
 
 ---
 
@@ -1101,20 +1101,20 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 
 ### ✅ Resolved
 
-| #   | Problem                    | Resolution                                                                                                                                                                                                                           |
-| --- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| #   | Problem                    | Resolution                                                                                                                                                                                                                                                                                                                   |
+| --- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1  | Heap overflow strategy     | zstd inline first → on page pressure, evict heapables behind **content-hashed Heap Anchors** (`u128 = hash(value)`, payload = `u64` heap block position); heap blocks are 4KB-aligned `[size: u64][bytes][owner-ID list]`, identical values dedup by appending to the owner list; bounded 2-IO read regardless of value size |
-| P2  | Hash collision / page full | Tenants share pages naturally; double hashing as fallback; double hashing rate = rebalance trigger                                                                                                                                   |
-| P3  | Heap compression           | zstd; CPU is free because no join processing                                                                                                                                                                                         |
-| P4  | Cross-tenant queries       | Out of scope by design — application context always knows the tenant                                                                                                                                                                 |
-| P5  | STRUCT versioning          | `struct_version` (u8) in `Metadata`; lazy migration on read, background rewrite; chained migrations between any two registered versions                                                                                              |
-| P6  | Multi-tenant sharing       | Tenant-defined permissions struct scoping user access (see P14)                                                                                                                                                                      |
-| P7  | Many-to-many relations     | **Anchor Slots** — fixed `(STRUCT_ID, TENANT_ID, SHARD_ID)` address with live data; references never need rewriting. Same mechanism handles S2M and indexes.                                                                         |
-| P8  | Stack data compression     | **Per-STRUCT_ID dictionaries** in memory bounded by `max_dict_memory`; updates journaled, applied to `dictionaries_file` by background task; pages carry dictionary version for backward compatibility                               |
-| P11 | Index maintenance cost     | Per-(STRUCT_ID, TENANT_ID) B+ trees with adaptive conversion from array at threshold; index entries point to anchors so property mutations don't cascade                                                                             |
-| P12 | Adaptive index threshold   | Default 50 items (`MAX_NON_UNIQUE_ELEMENTS`), tunable per-STRUCT_ID via proc-macro attribute; one-way atomic conversion                                                                                                              |
-| P13 | Anchor storage cost        | Accepted as design trade-off (2x live data only, history single-copy); opt-in pointer-only mode available for storage-constrained deployments                                                                                        |
-| P14 | Permissions struct design  | `permission: Option<PermissionRef>` in `Metadata`; `None` is 1 byte under postcard; inline-list (auto-promoting to a small B+ tree) for ad-hoc shares; group reference for large-tenant ACLs                                         |
+| P2  | Hash collision / page full | Tenants share pages naturally; double hashing as fallback; double hashing rate = rebalance trigger                                                                                                                                                                                                                           |
+| P3  | Heap compression           | zstd; CPU is free because no join processing                                                                                                                                                                                                                                                                                 |
+| P4  | Cross-tenant queries       | Out of scope by design — application context always knows the tenant                                                                                                                                                                                                                                                         |
+| P5  | STRUCT versioning          | `struct_version` (u8) in `Metadata`; lazy migration on read, background rewrite; chained migrations between any two registered versions                                                                                                                                                                                      |
+| P6  | Multi-tenant sharing       | Tenant-defined permissions struct scoping user access (see P14)                                                                                                                                                                                                                                                              |
+| P7  | Many-to-many relations     | **Anchor Slots** — fixed `(STRUCT_ID, TENANT_ID, SHARD_ID)` address with live data; references never need rewriting. Same mechanism handles S2M and indexes.                                                                                                                                                                 |
+| P8  | Stack data compression     | **Per-STRUCT_ID dictionaries** in memory bounded by `max_dict_memory`; updates journaled, applied to `dictionaries_file` by background task; pages carry dictionary version for backward compatibility                                                                                                                       |
+| P11 | Index maintenance cost     | Per-(STRUCT_ID, TENANT_ID) B+ trees with adaptive conversion from array at threshold; index entries point to anchors so property mutations don't cascade                                                                                                                                                                     |
+| P12 | Adaptive index threshold   | Default 50 items (`MAX_NON_UNIQUE_ELEMENTS`), tunable per-STRUCT_ID via proc-macro attribute; one-way atomic conversion                                                                                                                                                                                                      |
+| P13 | Anchor storage cost        | Accepted as design trade-off (2x live data only, history single-copy); opt-in pointer-only mode available for storage-constrained deployments                                                                                                                                                                                |
+| P14 | Permissions struct design  | `permission: Option<PermissionRef>` in `Metadata`; `None` is 1 byte under postcard; inline-list (auto-promoting to a small B+ tree) for ad-hoc shares; group reference for large-tenant ACLs                                                                                                                                 |
 
 ---
 
