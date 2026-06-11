@@ -2,14 +2,14 @@
 //!
 //! The monitor sends a [`MetricsRequest`] to each node's `POST /metrics`
 //! endpoint and receives back either a [`QuickNodeMetrics`] or a
-//! [`SlowNodeMetrics`], both postcard-encoded.
+//! [`SlowNodeMetrics`], both wire-encoded.
 
-use serde::{Deserialize, Serialize};
+use wavedb_macros::WaveWire;
 
 use crate::auth::NodeToken;
 
 /// Body of a `POST /metrics` request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct MetricsRequest {
     /// Cluster membership proof (required when the node has a cluster key).
     pub token: Option<NodeToken>,
@@ -34,7 +34,7 @@ pub const MAX_MAP_PAGES: usize = 512;
 pub const PAGE_MAP_VISUAL_FULL: u64 = 2 * 1024 * 1024; // 2 MiB per slot
 
 /// Snapshot of a Quick-Node's operational state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct QuickNodeMetrics {
     /// FNV-1a hash of this node's listen address.
     pub node_id: u64,
@@ -82,7 +82,7 @@ pub struct QuickNodeMetrics {
 }
 
 /// Snapshot of a Slow-Node's operational state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct SlowNodeMetrics {
     /// Total versioned records in the audit store.
     pub record_count: usize,

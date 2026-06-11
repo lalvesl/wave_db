@@ -1,10 +1,10 @@
-//! Postcard-based framing for `WaveDB` network messages.
+//! Wire-format framing for `WaveDB` network messages.
 //!
 //! Every message over the wire (HTTP body or WebSocket text/binary frame) is a
-//! length-prefixed postcard envelope:
+//! length-prefixed wire envelope (see `docs/wire_format.md`):
 //!
 //! ```text
-//! [ u32 le length ] [ postcard bytes … ]
+//! [ u32 le length ] [ wire bytes … ]
 //! ```
 //!
 //! The 4-byte little-endian length field lets streaming parsers on both sides
@@ -14,8 +14,7 @@
 //! buffer management.
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use serde::{Deserialize, Serialize};
-use wavedb_core::Result;
+use wavedb_core::{Result, Wire, wire};
 
 // ── Framing constants ────────────────────────────────────────────────────────
 
@@ -27,7 +26,7 @@ pub const LENGTH_PREFIX_BYTES: usize = 4;
 /// Encode `value` into a framed byte buffer.
 ///
 /// The resulting buffer begins with a 4-byte LE length followed by the
-/// postcard-serialised payload.
+/// wire-serialised payload.
 ///
 /// # Examples
 ///
@@ -38,8 +37,8 @@ pub const LENGTH_PREFIX_BYTES: usize = 4;
 /// let framed = frame::encode(&42u32).unwrap();
 /// assert!(framed.len() >= 4); // 4-byte length prefix + payload
 /// ```
-pub fn encode<T: Serialize>(value: &T) -> Result<Bytes> {
-    let payload = postcard::to_allocvec(value)?;
+pub fn encode<T: Wire>(value: &T) -> Result<Bytes> {
+    let payload = wire::to_wire(value)?;
     let mut buf = BytesMut::with_capacity(LENGTH_PREFIX_BYTES + payload.len());
     #[allow(clippy::cast_possible_truncation)]
     buf.put_u32_le(payload.len() as u32);
@@ -68,9 +67,7 @@ pub fn encode<T: Serialize>(value: &T) -> Result<Bytes> {
 /// assert_eq!(decoded, 100u32);
 /// assert!(buf.is_empty());
 /// ```
-pub fn decode<T: for<'de> Deserialize<'de>>(
-    buf: &mut BytesMut,
-) -> Result<Option<T>> {
+pub fn decode<T: Wire>(buf: &mut BytesMut) -> Result<Option<T>> {
     if buf.len() < LENGTH_PREFIX_BYTES {
         return Ok(None);
     }
@@ -84,7 +81,7 @@ pub fn decode<T: for<'de> Deserialize<'de>>(
 
     buf.advance(LENGTH_PREFIX_BYTES);
     let payload = buf.split_to(len);
-    let value: T = postcard::from_bytes(&payload)?;
+    let value: T = wire::from_wire(&payload)?;
     Ok(Some(value))
 }
 
@@ -92,16 +89,14 @@ pub fn decode<T: for<'de> Deserialize<'de>>(
 ///
 /// Useful when the transport layer has already separated the frame for us
 /// (e.g. WebSocket message boundaries).
-pub fn decode_payload<T: for<'de> Deserialize<'de>>(
-    payload: &[u8],
-) -> Result<T> {
-    Ok(postcard::from_bytes(payload)?)
+pub fn decode_payload<T: Wire>(payload: &[u8]) -> Result<T> {
+    Ok(wire::from_wire(payload)?)
 }
 
 /// Encode `value` without the length prefix (for WebSocket frames, where the
 /// transport layer delimits messages).
-pub fn encode_payload<T: Serialize>(value: &T) -> Result<Bytes> {
-    Ok(Bytes::from(postcard::to_allocvec(value)?))
+pub fn encode_payload<T: Wire>(value: &T) -> Result<Bytes> {
+    Ok(Bytes::from(wire::to_wire(value)?))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -110,7 +105,7 @@ pub fn encode_payload<T: Serialize>(value: &T) -> Result<Bytes> {
 mod tests {
     use super::*;
 
-    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    #[derive(Debug, PartialEq, wavedb_macros::WaveWire)]
     struct Msg {
         x: u32,
         s: String,

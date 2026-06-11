@@ -33,9 +33,12 @@
 //! ## On-disk format
 //!
 //! Snapshots use a **sparse** layout: only pages that contain at least one
-//! entry are written.  Each entry is `(page_index: u64, Page)`.  The file
-//! starts with a 4-byte magic `b"WDBS"` so old dense-format files are
-//! detected on open and reloaded for backward compatibility.
+//! entry are written.  After the 4-byte magic `b"WDBS"`:
+//!
+//! ```text
+//! [page_count u64 le][entry_count u32 le]
+//! [page_index u64 le][page_len u32 le][page wire bytes] × entry_count
+//! ```
 //!
 //! Snapshots are written atomically via `.tmp` → rename so a crash during
 //! flush never leaves a truncated or half-written `data.bin`.
@@ -311,7 +314,20 @@ impl DataFile {
 
         let mut blob = Vec::with_capacity(DISK_FORMAT_MAGIC.len() + 64);
         blob.extend_from_slice(&DISK_FORMAT_MAGIC);
-        blob.extend_from_slice(&postcard::to_allocvec(&(page_count, sparse))?);
+        blob.extend_from_slice(&page_count.to_le_bytes());
+        let entry_count = u32::try_from(sparse.len()).map_err(|_| {
+            crate::StorageError::Other("too many snapshot pages".into())
+        })?;
+        blob.extend_from_slice(&entry_count.to_le_bytes());
+        for &(idx, page) in &sparse {
+            let page_bytes = wavedb_core::wire::to_wire(page)?;
+            let page_len = u32::try_from(page_bytes.len()).map_err(|_| {
+                crate::StorageError::Other("snapshot page too large".into())
+            })?;
+            blob.extend_from_slice(&idx.to_le_bytes());
+            blob.extend_from_slice(&page_len.to_le_bytes());
+            blob.extend_from_slice(&page_bytes);
+        }
 
         let tmp = self.path.with_extension("tmp");
         if let Some(parent) = tmp.parent() {
@@ -333,62 +349,63 @@ impl DataFile {
     /// Replace the in-memory state from the on-disk snapshot.
     ///
     /// Called once at [`Self::open_on_disk`] when the file exists.
-    /// Handles both the current sparse format (magic prefix `b"WDBS"`) and
-    /// the legacy dense format for backward compatibility.
+    /// Only the wire sparse format (magic prefix `b"WDBS"`, see the module
+    /// docs) is supported.
     fn reload_from_disk(&self) -> StorageResult<()> {
         let bytes = std::fs::read(&self.path)?;
         if bytes.is_empty() {
             return Ok(());
         }
 
-        if bytes.starts_with(&DISK_FORMAT_MAGIC) {
-            // Sparse format: (page_count, Vec<(page_idx, Page)>)
-            let payload = &bytes[DISK_FORMAT_MAGIC.len()..];
-            let (page_count, entries): (u64, Vec<(u64, Page)>) =
-                postcard::from_bytes(payload)?;
-            if page_count == 0 {
-                return Ok(());
-            }
-            let mut pages: Vec<Page> =
-                (0..page_count).map(|_| Page::new(self.page_size)).collect();
-            let mut page_bytes: Vec<AtomicU64> =
-                (0..page_count).map(|_| AtomicU64::new(0)).collect();
-            for (idx, page) in entries {
-                let i = usize::try_from(idx)
-                    .map_err(|e| crate::StorageError::Other(e.to_string()))?;
-                if i < pages.len() {
-                    let used: u64 =
-                        page.directory.iter().map(|e| u64::from(e.size)).sum();
-                    page_bytes[i] = AtomicU64::new(used);
-                    pages[i] = page;
-                }
-            }
-            *self.pages.write() = pages;
-            *self.page_bytes.write() = page_bytes;
-            self.page_count.store(page_count, Ordering::Release);
-        } else {
-            // Legacy dense format: (page_count, Vec<Page>)
-            let (page_count, pages): (u64, Vec<Page>) =
-                postcard::from_bytes(&bytes)?;
-            if page_count == 0 || pages.len() as u64 != page_count {
-                return Err(crate::StorageError::Other(format!(
-                    "corrupt snapshot: page_count={} pages.len()={}",
-                    page_count,
-                    pages.len()
-                )));
-            }
-            let page_bytes: Vec<AtomicU64> = pages
-                .iter()
-                .map(|p| {
-                    let used: u64 =
-                        p.directory.iter().map(|e| u64::from(e.size)).sum();
-                    AtomicU64::new(used)
-                })
-                .collect();
-            *self.pages.write() = pages;
-            *self.page_bytes.write() = page_bytes;
-            self.page_count.store(page_count, Ordering::Release);
+        if !bytes.starts_with(&DISK_FORMAT_MAGIC) {
+            return Err(crate::StorageError::Other(
+                "unsupported data snapshot format (pre-wire legacy file)"
+                    .into(),
+            ));
         }
+
+        let payload = &bytes[DISK_FORMAT_MAGIC.len()..];
+        let truncated = || {
+            crate::StorageError::Other("truncated data snapshot".into())
+        };
+        let fixed = payload.get(..12).ok_or_else(truncated)?;
+        let page_count =
+            u64::from_le_bytes(fixed[..8].try_into().expect("8 bytes"));
+        let entry_count =
+            u32::from_le_bytes(fixed[8..12].try_into().expect("4 bytes"));
+        if page_count == 0 {
+            return Ok(());
+        }
+
+        let mut pages: Vec<Page> =
+            (0..page_count).map(|_| Page::new(self.page_size)).collect();
+        let mut page_bytes: Vec<AtomicU64> =
+            (0..page_count).map(|_| AtomicU64::new(0)).collect();
+        let mut pos = 12;
+        for _ in 0..entry_count {
+            let head = payload.get(pos..pos + 12).ok_or_else(truncated)?;
+            let idx =
+                u64::from_le_bytes(head[..8].try_into().expect("8 bytes"));
+            let len = u32::from_le_bytes(
+                head[8..12].try_into().expect("4 bytes"),
+            ) as usize;
+            pos += 12;
+            let body = payload.get(pos..pos + len).ok_or_else(truncated)?;
+            let page: Page = wavedb_core::wire::from_wire(body)?;
+            pos += len;
+
+            let i = usize::try_from(idx)
+                .map_err(|e| crate::StorageError::Other(e.to_string()))?;
+            if i < pages.len() {
+                let used: u64 =
+                    page.directory.iter().map(|e| u64::from(e.size)).sum();
+                page_bytes[i] = AtomicU64::new(used);
+                pages[i] = page;
+            }
+        }
+        *self.pages.write() = pages;
+        *self.page_bytes.write() = page_bytes;
+        self.page_count.store(page_count, Ordering::Release);
         Ok(())
     }
 

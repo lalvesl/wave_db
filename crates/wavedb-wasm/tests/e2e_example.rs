@@ -8,15 +8,13 @@
 #![allow(clippy::future_not_send)]
 
 use wasm_bindgen_test::*;
-use wavedb_wasm::{ExampleReport, example_roundtrip};
+use wavedb_wasm::example_roundtrip;
 
 wasm_bindgen_test_configure!(run_in_browser);
 
 #[wasm_bindgen_test]
 async fn e2e_example_roundtrip() {
-    let value = example_roundtrip().await.expect("example flow failed");
-    let report: ExampleReport =
-        serde_wasm_bindgen::from_value(value).expect("report deserializes");
+    let report = example_roundtrip().await.expect("example flow failed");
 
     // Macro classified the variable-length field.
     assert_eq!(report.heapable_fields, vec!["title".to_string()]);

@@ -216,7 +216,7 @@ pub async fn launch_continuous_with(
 /// Build a deterministic ASCII note string padded to `target_len` bytes.
 ///
 /// Replaces the hand-rolled JSON byte-builder from the previous version —
-/// `Payment.note` is `String` because the record is serde-encoded by the
+/// `Payment.note` is `String` because the record is wire-encoded by the
 /// macro, so we just construct a regular String.
 fn make_padded_note(user_id: u64, seq: u64, target_len: usize) -> String {
     let mut s = format!("u={user_id} seq={seq} ");

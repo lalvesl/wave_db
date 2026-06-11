@@ -19,3 +19,7 @@
   "raw_bytes": 786287,
   "gzip_bytes": 193485
 }
+{"date":"2026-06-11","git_rev":"0e27d97","mode":"cargo","raw_bytes":796501,"gzip_bytes":194537}
+{"date":"2026-06-11","git_rev":"0e27d97","mode":"nix","raw_bytes":106022,"gzip_bytes":44145}
+{"date":"2026-06-11","git_rev":"0e27d97","mode":"nix","raw_bytes":104377,"gzip_bytes":43588}
+{"date":"2026-06-11","git_rev":"0e27d97","mode":"nix","raw_bytes":104377,"gzip_bytes":43588}

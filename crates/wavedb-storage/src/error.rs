@@ -7,9 +7,9 @@ pub enum StorageError {
     #[error("storage I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// Serialization error (postcard).
+    /// Serialization error (wire format).
     #[error("serialization error: {0}")]
-    Serialization(#[from] postcard::Error),
+    Serialization(#[from] wavedb_core::WireError),
 
     /// Page checksum mismatch.
     #[error(

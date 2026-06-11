@@ -88,7 +88,7 @@ pub fn assert_shape<S: WaveDbStruct>(expected: Shape) -> Result<()> {
 
 /// Search for a Unique record via the transport.
 ///
-/// Wire format: server returns `[stored_version_byte, ...postcard_body...]`,
+/// Wire format: server returns `[stored_version_byte, ...wire_body...]`,
 /// or an empty payload when no record exists.  The client decodes the version,
 /// then walks the `MigrationChain` to produce a value of `S` — so reading a
 /// stored v41 record as `Message42` automatically runs the forward migration
@@ -118,7 +118,7 @@ where
 
 /// Query NonUnique records via the transport.
 ///
-/// Wire format: the server returns a postcard-encoded `Vec<(u8, Vec<u8>)>`
+/// Wire format: the server returns a wire-encoded `Vec<(u8, Vec<u8>)>`
 /// where each entry is `(stored_version, record_body)`.  The client walks each
 /// entry's bytes through `MigrationChain::read_as_self` so cross-version
 /// queries (asking for v42 records when some are stored as v41, or vice versa)
@@ -141,7 +141,8 @@ where
         return Ok(Vec::new());
     }
 
-    let raw_entries: Vec<(u8, Vec<u8>)> = postcard::from_bytes(&payload)?;
+    let raw_entries: Vec<(u8, Vec<u8>)> =
+        wavedb_core::wire::from_wire(&payload)?;
     let mut records = Vec::with_capacity(raw_entries.len());
     for (stored_version, body) in raw_entries {
         records.push(S::read_as_self(db, &body, stored_version).await?);
@@ -151,18 +152,18 @@ where
 
 /// Write (create or update) a record via the transport.
 ///
-/// Wire format: the payload is `[S::STRUCT_VERSION, ...postcard_body...]`.
+/// Wire format: the payload is `[S::STRUCT_VERSION, ...wire body...]`.
 /// The version byte travels with the record so future reads can pick the right
 /// chain direction (forward migrate / rollback) regardless of which version
 /// the reader requested.
 pub async fn do_write<S>(db: &Db, record: &S) -> Result<()>
 where
-    S: WaveDbStruct + serde::Serialize + Sync,
+    S: WaveDbStruct + wavedb_core::Wire + Sync,
 {
-    let body: Vec<u8> = postcard::to_allocvec(record)?;
-    let mut payload = Vec::with_capacity(1 + body.len());
+    // Single allocation: version byte + exact wire size.
+    let mut payload = Vec::with_capacity(1 + record.wire_size());
     payload.push(S::STRUCT_VERSION);
-    payload.extend_from_slice(&body);
+    payload.extend_from_slice(&wavedb_core::wire::to_wire(record)?);
     db.send(RequestKind::Write {
         struct_id: S::STRUCT_ID,
         user: db.user(),

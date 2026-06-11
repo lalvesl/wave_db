@@ -28,14 +28,14 @@ use wavedb::prelude::*;
 // ── Schema ────────────────────────────────────────────────────────────────────
 
 #[wave_db(struct_id = 10, NonUnique)]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Order1 {
     pub customer: u64,
     pub amount_cents: u64,
 }
 
 #[wave_db(struct_id = 11, NonUnique)]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct OrderItem1 {
     pub product: u64,
     pub quantity: u32,
@@ -101,7 +101,7 @@ async fn summary_fallback<Db>(
     first_try          = summary_first_try,
     fallback_not_found = summary_fallback,
 )]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct OrderSummary1 {
     pub customer: u64,
     pub amount_cents: u64,

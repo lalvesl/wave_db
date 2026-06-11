@@ -22,12 +22,9 @@ wavedb-storage = { path = "../wavedb-storage", optional = true }
 # wavedb-net is always a dependency (provides request/response types for the
 # erased transport closures).  The `native` feature just adds tokio on top.
 wavedb-net = { path = "../wavedb-net", default-features = false }
-serde.workspace = true
-postcard.workspace = true
 parking_lot.workspace = true
 tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
-postcard.workspace = true
 tempfile.workspace = true

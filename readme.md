@@ -159,13 +159,12 @@ pub struct Metadata {
     /// session bookkeeping during failover.
     pub device_created: u64,
     /// Optional access-control rule. `None` is the common case (only the
-    /// tenant's own users can touch this record); postcard encodes `None`
-    /// in a single byte.
+    /// tenant's own users can touch this record).
     pub permission: Option<PermissionRef>,
 }
 ```
 
-`(struct_version, user)` is 56 bits and packs efficiently alongside `device_created` and the optional permission field through postcard. See _Permissions_ for the shape of `PermissionRef` and _Procedure Macros_ for how `struct_version` is derived.
+`(struct_version, user)` is 56 bits and packs alongside `device_created` and the optional permission field in the wire stack section. See _Permissions_ for the shape of `PermissionRef` and _Procedure Macros_ for how `struct_version` is derived.
 
 ### Schema Versioning & Lazy Migration
 
@@ -218,7 +217,7 @@ Rolling forward or back is then **a one-line edit** — change `Message42` to `M
 
    Rollback is declared on the **older** struct ("I know how to receive a rollback from `NewType` and produce me"), so the inverse operation co-locates with the type it produces. Each struct contributes its **own** edge to the registry — `Message41::register_migration` adds the backward `v42→v41` edge, `Message42::register_migration` adds the forward `v41→v42` edge.
 
-   Both adjacent structs must implement `serde::Serialize` and `serde::Deserialize`; all migration fns must be generic over `Db` so the macro's `__WaveDbDb` parameter resolves at the call site.
+   All `#[wave_db]` structs serialize through WaveDB's own `Wire` format (no serde); all migration fns must be generic over `Db` so the macro's `__WaveDbDb` parameter resolves at the call site.
 
    ```rust
    // ── Migration fns (async, generic over Db) ─────────────────────────────────
@@ -237,7 +236,6 @@ Rolling forward or back is then **a one-line edit** — change `Message42` to `M
        migrate_rollback      = Message42,
        migrate_rollback_with = rollback_v42_to_v41,
    )]
-   #[derive(serde::Serialize, serde::Deserialize)]
    pub struct Message41 { pub body: String, pub author: u64 }
 
    // ── v42 — current head: declares its predecessor; no migrate_rollback ──────
@@ -248,7 +246,6 @@ Rolling forward or back is then **a one-line edit** — change `Message42` to `M
        migrate_from_with = migrate_v41_v42,
        first_try         = v42_first_try,
    )]
-   #[derive(serde::Serialize, serde::Deserialize)]
    pub struct Message42 { pub body: String, pub author: u64, pub edited: bool }
    pub type Message = Message42;
    ```
@@ -273,7 +270,7 @@ Rolling forward or back is then **a one-line edit** — change `Message42` to `M
    | `Self::__wave_db_fallback_not_found<Db>(&Db) -> Result<Option<Self>>` | any struct                              | Post-search fallback.                                                                                                                                                                                           |
 
    **Generated trait impl — the tasty cross-version read:** every `#[wave_db]`-annotated struct also receives an `impl<Db> MigrationChain<Db> for Self`. Its `read_as_self(db, bytes, stored_version)` method picks the right deserialisation path based on how `stored_version` compares to `Self::STRUCT_VERSION`:
-   - `stored_version == Self::STRUCT_VERSION` → postcard-deserialize directly.
+   - `stored_version == Self::STRUCT_VERSION` → wire-decode directly.
    - `stored_version < Self::STRUCT_VERSION` → recursively read as `Self::Source` (via `MigratesFrom`), then run `Self::__wave_db_migrate_from`.
    - `stored_version > Self::STRUCT_VERSION` → recursively read as `Self::Future` (via `RollbackFrom`), then run `Self::__wave_db_migrate_rollback`.
 
@@ -691,7 +688,7 @@ History records live at their natural versioned hash `(STRUCT_ID, TENANT_ID, SHA
 
 WaveDB stores access control **inline in `Metadata`**, scoped per record. The `permission` field is an `Option<PermissionRef>` and behaves as follows:
 
-| Value                                  | Semantics                                                                                                                                                                                             | Storage cost (postcard) |
+| Value                                  | Semantics                                                                                                                                                                                             | Storage cost (wire) |
 | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
 | `None`                                 | Only the tenant's own users can read/write/delete this record (the common case for B2C apps).                                                                                                         | 1 byte                  |
 | `Some(PermissionRef::Inline(list))`    | A small inline ACL — a linked list of user IDs allowed to act on this record. Used for small tenants and short-lived shares. Auto-promotes to a per-record B+ tree once the list crosses a threshold. | 1 byte tag + list bytes |
@@ -978,7 +975,7 @@ The native engine manages pages because it owns the physical layout — the 4KB 
 So the WASM build skips the page layer entirely:
 
 - **Key = the 128-bit Id** (big-endian bytes). Anchors live at their anchor key, versioned records at their full Id, heap-dedup entries at their content hash.
-- **Value = the postcard-encoded record**, compressed exactly as on native.
+- **Value = the wire-encoded record**, compressed exactly as on native.
 - Because `TENANT_ID` occupies the Id's top bits, IndexedDB's ordered keyspace **clusters a tenant's records naturally** — a `getAll(range)` over a tenant/struct prefix is the browser equivalent of reading a hot page.
 - The page-pressure machinery (heapable eviction, double hashing, rebalance) simply does not run client-side. Quota is the browser's job, and the local store is a write-through cache that can always be re-fetched from the cluster.
 
@@ -1114,7 +1111,7 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 | P11 | Index maintenance cost     | Per-(STRUCT_ID, TENANT_ID) B+ trees with adaptive conversion from array at threshold; index entries point to anchors so property mutations don't cascade                                                                                                                                                                     |
 | P12 | Adaptive index threshold   | Default 50 items (`MAX_NON_UNIQUE_ELEMENTS`), tunable per-STRUCT_ID via proc-macro attribute; one-way atomic conversion                                                                                                                                                                                                      |
 | P13 | Anchor storage cost        | Accepted as design trade-off (2x live data only, history single-copy); opt-in pointer-only mode available for storage-constrained deployments                                                                                                                                                                                |
-| P14 | Permissions struct design  | `permission: Option<PermissionRef>` in `Metadata`; `None` is 1 byte under postcard; inline-list (auto-promoting to a small B+ tree) for ad-hoc shares; group reference for large-tenant ACLs                                                                                                                                 |
+| P14 | Permissions struct design  | `permission: Option<PermissionRef>` in `Metadata`; `None` reserves its fixed wire slot; inline-list (auto-promoting to a small B+ tree) for ad-hoc shares; group reference for large-tenant ACLs                                                                                                                                 |
 
 ---
 

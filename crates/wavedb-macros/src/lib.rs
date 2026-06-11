@@ -41,9 +41,12 @@
 mod args;
 mod codegen;
 mod crud;
+mod declare;
+mod descriptor;
 mod migration;
 mod utils;
 mod validation;
+mod wire_derive;
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -59,6 +62,44 @@ use migration::build_migration_impl;
 use quote::format_ident;
 use utils::parse_trailing_version;
 use validation::{validate_migration_attributes, validate_struct_id};
+
+/// Derive `wavedb_core::Wire` — WaveDB's own serialization (see
+/// `docs/wire_format.md`).
+///
+/// Structs flatten field stack slots in declaration order and append heap
+/// payloads in the same order; `STACK_SIZE` is a compile-time constant.
+/// Field-less enums encode as a single tag byte; enums with payload variants
+/// encode as `[tag u8][payload len u32]` in the stack section plus a
+/// self-contained `[stack][heap]` unit in the heap section.
+#[proc_macro_derive(WaveWire)]
+pub fn derive_wave_wire(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::DeriveInput);
+    wire_derive::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Build the static object registry every node compiles in at startup.
+///
+/// ```rust,ignore
+/// declare_objects! {
+///     pub mod app_objects {
+///         orders:   [Order1, Order2],
+///         profiles: [UserProfile1],
+///     }
+/// }
+/// ```
+///
+/// Generates a module with one submodule per struct family (`STRUCT_ID`,
+/// `VERSIONS`, per-family `DESCRIPTORS`), a global `DESCRIPTORS` slice, and
+/// `find(header)` — a constant-comparison-chain lookup keyed on the `u32`
+/// record header (`struct_id << 8 | version`). Duplicate headers and mixed
+/// `struct_id`s within a family are compile errors.
+#[proc_macro]
+pub fn declare_objects(item: TokenStream) -> TokenStream {
+    let decl = parse_macro_input!(item as declare::DeclareObjects);
+    declare::expand(&decl).into()
+}
 
 /// The `#[wave_db(struct_id = N, ...)]` attribute macro.
 ///
@@ -155,6 +196,20 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     // ── Migration code generation ─────────────────────────────────────────────
     let migration_impl = build_migration_impl(name, sid, version, &args);
 
+    // ── Wire impl (own serialization — replaces serde/postcard) ─────────────
+    // Generated directly (not via `#[derive(WaveWire)]`) so consumer crates
+    // don't need a direct wavedb-macros dependency for the derive path.
+    // `input` already carries the injected `id` / `metadata` fields here.
+    let wire_impl = wire_derive::expand_item_struct(&input);
+
+    // ── Object descriptor (static registry metadata) ─────────────────────────
+    let descriptor_const = match &input.fields {
+        syn::Fields::Named(named) => {
+            descriptor::build_descriptor(name, named, &shape)
+        }
+        _ => unreachable!("named fields validated above"),
+    };
+
     // ── Final expansion ──────────────────────────────────────────────────────
     // Typed wrappers (`FooId`, `FooAnchor`) are emitted first so they are in
     // scope for any code in the same module that references them.
@@ -164,6 +219,8 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #auto_derives
         #input
+
+        #wire_impl
 
         impl ::wavedb_core::WaveDbStruct for #name {
             const STRUCT_ID: u32 = #sid;
@@ -177,6 +234,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
             #anchors_impl
             #fields_const
             #field_consts
+            #descriptor_const
         }
 
         #crud_impl

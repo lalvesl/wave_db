@@ -10,8 +10,7 @@ workspace = true
 
 [dependencies]
 wavedb-core = { path = "../wavedb-core" }
-serde.workspace = true
-postcard.workspace = true
+wavedb-macros = { path = "../wavedb-macros" }
 byteorder.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true

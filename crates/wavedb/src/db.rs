@@ -299,7 +299,7 @@ impl Db {
     /// keeps ownership — no `.clone()` boilerplate at the call site.
     pub async fn save<T>(&self, record: &T) -> Result<()>
     where
-        T: WaveDbStruct + serde::Serialize + Sync,
+        T: WaveDbStruct + wavedb_core::Wire + Sync,
     {
         do_write(self, record).await
     }

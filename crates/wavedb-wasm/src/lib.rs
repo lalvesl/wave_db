@@ -194,7 +194,7 @@ mod wasm_impl {
 
         /// Write (create or update) a record.
         ///
-        /// `payload` must be a postcard-encoded struct byte slice.
+        /// `payload` must be a wire-encoded struct byte slice.
         /// Returns the raw response payload, or an error if the write was
         /// rejected (e.g. `b"not_owner"`).
         pub async fn write(
@@ -215,7 +215,7 @@ mod wasm_impl {
 
         /// Search for a Unique record.
         ///
-        /// Returns raw postcard-encoded bytes, or empty if no record exists yet.
+        /// Returns raw wire-encoded bytes, or empty if no record exists yet.
         pub async fn search_unique(
             &self,
             struct_id: u32,
@@ -232,7 +232,7 @@ mod wasm_impl {
 
         /// Query NonUnique records.
         ///
-        /// `filter` is a postcard-encoded `Expr` byte slice; pass an empty
+        /// `filter` is a wire-encoded `Expr` byte slice; pass an empty
         /// slice to return all records.
         pub async fn query_non_unique(
             &self,

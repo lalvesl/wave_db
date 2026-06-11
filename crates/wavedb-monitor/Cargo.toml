@@ -19,8 +19,6 @@ path = "src/lib.rs"
 [dependencies]
 wavedb-net = { path = "../wavedb-net" }
 tokio.workspace = true
-postcard.workspace = true
-serde.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 sysinfo.workspace = true

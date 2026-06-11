@@ -97,6 +97,7 @@ fn build_get_by_anchor(
 /// between unrelated record families are caught at compile time.
 /// `FooAnchor` enforces the anchor-key invariant (`CREATED_AT = 0`) via its
 /// `From<Id>` implementation, which always calls `anchor_key()`.
+#[allow(clippy::too_many_lines)]
 pub fn build_typed_wrappers(
     name: &Ident,
     args: &WaveDbArgs,
@@ -122,11 +123,28 @@ pub fn build_typed_wrappers(
             ::core::cmp::Eq,
             ::core::hash::Hash,
             ::core::default::Default,
-            ::serde::Serialize,
-            ::serde::Deserialize,
         )]
-        #[serde(transparent)]
         #vis struct #id_name(pub ::wavedb_core::Id);
+
+        // Transparent wire encoding: 16 bytes, same as the inner `Id`.
+        #[automatically_derived]
+        impl ::wavedb_core::Wire for #id_name {
+            const STACK_SIZE: usize =
+                <::wavedb_core::Id as ::wavedb_core::Wire>::STACK_SIZE;
+            const FIXED: bool = true;
+            fn heap_size(&self) -> usize { 0 }
+            fn write_stack(
+                &self,
+                w: &mut ::wavedb_core::WireWriter,
+            ) -> ::wavedb_core::WireResult<()> {
+                ::wavedb_core::Wire::write_stack(&self.0, w)
+            }
+            fn read(
+                r: &mut ::wavedb_core::WireReader<'_>,
+            ) -> ::wavedb_core::WireResult<Self> {
+                ::core::result::Result::Ok(Self(::wavedb_core::Wire::read(r)?))
+            }
+        }
 
         impl #id_name {
             /// The zero sentinel — "not set yet".
@@ -176,11 +194,28 @@ pub fn build_typed_wrappers(
             ::core::cmp::Eq,
             ::core::hash::Hash,
             ::core::default::Default,
-            ::serde::Serialize,
-            ::serde::Deserialize,
         )]
-        #[serde(transparent)]
         #vis struct #anchor_name(pub ::wavedb_core::Id);
+
+        // Transparent wire encoding: 16 bytes, same as the inner `Id`.
+        #[automatically_derived]
+        impl ::wavedb_core::Wire for #anchor_name {
+            const STACK_SIZE: usize =
+                <::wavedb_core::Id as ::wavedb_core::Wire>::STACK_SIZE;
+            const FIXED: bool = true;
+            fn heap_size(&self) -> usize { 0 }
+            fn write_stack(
+                &self,
+                w: &mut ::wavedb_core::WireWriter,
+            ) -> ::wavedb_core::WireResult<()> {
+                ::wavedb_core::Wire::write_stack(&self.0, w)
+            }
+            fn read(
+                r: &mut ::wavedb_core::WireReader<'_>,
+            ) -> ::wavedb_core::WireResult<Self> {
+                ::core::result::Result::Ok(Self(::wavedb_core::Wire::read(r)?))
+            }
+        }
 
         impl #anchor_name {
             /// The zero sentinel — "no anchor set".
@@ -370,12 +405,6 @@ pub fn build_auto_derives(attrs: &[Attribute]) -> proc_macro2::TokenStream {
     }
     if !existing_derives.contains("Default") {
         needed.push(quote! { ::core::default::Default });
-    }
-    if !existing_derives.contains("Serialize") {
-        needed.push(quote! { ::serde::Serialize });
-    }
-    if !existing_derives.contains("Deserialize") {
-        needed.push(quote! { ::serde::Deserialize });
     }
     if needed.is_empty() {
         quote! {}

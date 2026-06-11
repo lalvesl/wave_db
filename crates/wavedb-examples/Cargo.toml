@@ -83,8 +83,6 @@ wavedb-monitor = { path = "../wavedb-monitor" }
 wavedb-quick-node = { path = "../wavedb-quick-node" }
 wavedb-slow-node = { path = "../wavedb-slow-node" }
 tokio.workspace = true
-postcard.workspace = true
-serde.workspace = true
 axum = { workspace = true, features = ["ws"] }
 # real_example opens thousands of WS connections + storage files; bump
 # RLIMIT_NOFILE at startup so we don't hit the default 1024 cap.

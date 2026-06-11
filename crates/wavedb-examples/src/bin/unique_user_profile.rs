@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Wire format prepends `STRUCT_VERSION` so the migration chain knows
     // which version each record was written at.  See `do_search_unique`.
     let encode_versioned = |r: &UserProfile| -> Vec<u8> {
-        let body = postcard::to_allocvec(r).expect("encode");
+        let body = wavedb_core::wire::to_wire(r).expect("encode");
         let mut out = Vec::with_capacity(1 + body.len());
         out.push(UserProfile::STRUCT_VERSION);
         out.extend_from_slice(&body);

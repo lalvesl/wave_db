@@ -7,9 +7,9 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A serialization or deserialization failure (postcard).
-    #[error("serialization error: {0}")]
-    Serialization(#[from] postcard::Error),
+    /// A wire-format encode/decode failure.
+    #[error("wire error: {0}")]
+    Wire(#[from] crate::wire::WireError),
 
     /// The `struct_id` value exceeds the 20-bit limit.
     #[error("struct_id {0} does not fit in u20 (max 1048575)")]

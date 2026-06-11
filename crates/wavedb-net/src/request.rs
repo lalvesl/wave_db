@@ -1,9 +1,9 @@
 //! Request and response types for the `WaveDB` transport layer.
 
-use serde::{Deserialize, Serialize};
+use wavedb_macros::WaveWire;
 
 /// The kind of operation being requested.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub enum RequestKind {
     /// Open / establish a session. Returns the owner and backup Quick-Node URLs.
     Connect {
@@ -29,7 +29,7 @@ pub enum RequestKind {
         user: u64,
         /// Tenant scope.
         tenant: u64,
-        /// Serialised filter expression (postcard-encoded).
+        /// Serialised filter expression (wire-encoded).
         filter: Vec<u8>,
     },
     /// Write (create or update) a record.
@@ -40,7 +40,7 @@ pub enum RequestKind {
         user: u64,
         /// Tenant scope.
         tenant: u64,
-        /// postcard-encoded record bytes.
+        /// Wire-encoded record bytes.
         payload: Vec<u8>,
     },
     /// Delete a NonUnique record (tombstone it).
@@ -62,7 +62,7 @@ pub enum RequestKind {
 }
 
 /// A request sent from the client to the Quick-Node.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct TransportRequest {
     /// Monotonically increasing per-session sequence number.
     pub seq: u64,
@@ -78,11 +78,11 @@ impl TransportRequest {
 }
 
 /// A response returned from the Quick-Node to the client.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct TransportResponse {
     /// Echoed sequence number from the corresponding request.
     pub seq: u64,
-    /// Response payload (postcard-encoded, schema depends on the request kind).
+    /// Response payload (wire-encoded, schema depends on the request kind).
     pub payload: Vec<u8>,
     /// Owner Quick-Node URL (only filled on `Connect` responses).
     pub owner_url: Option<String>,
@@ -93,12 +93,12 @@ pub struct TransportResponse {
 }
 
 /// An object-changed notification piggybacked onto a response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct Notification {
     /// The raw 128-bit anchor ID that changed.
     pub anchor_id: u128,
     /// `true` if the object was deleted (tombstone), `false` if updated.
     pub deleted: bool,
-    /// Optional postcard-encoded payload for the new live data (inline-mode anchors).
+    /// Optional wire-encoded payload for the new live data (inline-mode anchors).
     pub payload: Option<Vec<u8>>,
 }

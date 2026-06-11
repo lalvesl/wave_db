@@ -6,16 +6,7 @@
 //! ```
 
 /// The three data shapes recognised by `WaveDB`.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Shape {
     /// Exactly one live record per `(STRUCT_ID, TENANT_ID)`.
     Unique,
@@ -37,9 +28,7 @@ pub enum Shape {
 /// Pack/unpack accessors are `const` so macro-generated code can build
 /// IDs at compile time when needed.
 #[repr(transparent)]
-#[derive(
-    Copy, Clone, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub struct Id(u128);
 
 // Bit-field masks
@@ -263,10 +252,10 @@ mod tests {
     }
 
     #[test]
-    fn postcard_roundtrip() {
+    fn wire_roundtrip() {
         let id = Id::new(42, 7, 100, 999_999);
-        let bytes = postcard::to_allocvec(&id).unwrap();
-        let decoded: Id = postcard::from_bytes(&bytes).unwrap();
+        let bytes = crate::wire::to_wire(&id).unwrap();
+        let decoded: Id = crate::wire::from_wire(&bytes).unwrap();
         assert_eq!(id, decoded);
     }
 }

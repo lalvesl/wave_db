@@ -20,9 +20,8 @@ path = "src/main.rs"
 wavedb-core = { path = "../wavedb-core" }
 wavedb-storage = { path = "../wavedb-storage" }
 wavedb-net = { path = "../wavedb-net" }
+wavedb-macros = { path = "../wavedb-macros" }
 tokio.workspace = true
-serde.workspace = true
-postcard.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true
 axum = { workspace = true, features = ["ws"] }

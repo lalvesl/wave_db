@@ -97,9 +97,9 @@ pub type Message = Message42;
 
 fn encode_versioned<T>(record: &T) -> Vec<u8>
 where
-    T: serde::Serialize + wavedb_core::WaveDbStruct,
+    T: wavedb_core::Wire + wavedb_core::WaveDbStruct,
 {
-    let body = postcard::to_allocvec(record).expect("encode");
+    let body = wavedb_core::wire::to_wire(record).expect("encode");
     let mut out = Vec::with_capacity(1 + body.len());
     out.push(T::STRUCT_VERSION);
     out.extend_from_slice(&body);

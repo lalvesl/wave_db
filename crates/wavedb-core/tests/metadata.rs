@@ -1,12 +1,12 @@
-//! Property tests for Metadata serialization.
+//! Roundtrip tests for Metadata wire serialization.
 
-use wavedb_core::{Metadata, PermissionRef};
+use wavedb_core::{Metadata, PermissionRef, Wire, wire};
 
 #[test]
 fn metadata_default_roundtrip() {
     let m = Metadata::default();
-    let bytes = postcard::to_allocvec(&m).unwrap();
-    let decoded: Metadata = postcard::from_bytes(&bytes).unwrap();
+    let bytes = wire::to_wire(&m).unwrap();
+    let decoded: Metadata = wire::from_wire(&bytes).unwrap();
     assert_eq!(m, decoded);
 }
 
@@ -20,18 +20,18 @@ fn metadata_with_permission_roundtrip() {
         device_created: 5555,
         permission: Some(PermissionRef::Inline(vec![1, 2, 3])),
     };
-    let bytes = postcard::to_allocvec(&m).unwrap();
-    let decoded: Metadata = postcard::from_bytes(&bytes).unwrap();
+    let bytes = wire::to_wire(&m).unwrap();
+    let decoded: Metadata = wire::from_wire(&bytes).unwrap();
     assert_eq!(m, decoded);
 }
 
 #[test]
-fn none_permission_serialises_to_one_byte() {
+fn none_permission_stays_on_stack() {
     let perm: Option<PermissionRef> = None;
-    let bytes = postcard::to_allocvec(&perm).unwrap();
+    let bytes = wire::to_wire(&perm).unwrap();
     assert_eq!(
         bytes.len(),
-        1,
-        "None permission must serialize to exactly 1 byte under postcard"
+        <Option<PermissionRef> as Wire>::STACK_SIZE,
+        "None permission occupies its fixed stack slot and no heap bytes"
     );
 }

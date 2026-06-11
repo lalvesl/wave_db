@@ -1,10 +1,10 @@
 //! Anchor slot types for stable cross-pointer addresses.
 
-use serde::{Deserialize, Serialize};
+use wavedb_macros::WaveWire;
 
 /// 128-bit anchor address.
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash, WaveWire)]
 pub struct AnchorKey(pub u128);
 
 impl AnchorKey {
@@ -25,7 +25,7 @@ impl From<wavedb_core::Id> for AnchorKey {
 }
 
 /// How the primary anchor stores its data.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub enum AnchorMode {
     /// Full live record bytes in the anchor slot.
     Inline {
@@ -40,7 +40,7 @@ pub enum AnchorMode {
 }
 
 /// The kind of data stored in an anchor slot.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub enum AnchorKind {
     /// Primary anchor for a record.
     Primary {
@@ -78,7 +78,7 @@ pub enum AnchorKind {
 }
 
 /// A complete anchor slot.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct AnchorSlot {
     /// What kind of anchor this is.
     pub kind: AnchorKind,
@@ -199,12 +199,12 @@ impl AnchorSlot {
     /// assert_eq!(decoded.inline_bytes().unwrap(), b"data");
     /// ```
     pub fn to_bytes(&self) -> crate::StorageResult<Vec<u8>> {
-        Ok(postcard::to_allocvec(self)?)
+        Ok(wavedb_core::wire::to_wire(self)?)
     }
 
     /// Deserialize from bytes.
     pub fn from_bytes(bytes: &[u8]) -> crate::StorageResult<Self> {
-        Ok(postcard::from_bytes(bytes)?)
+        Ok(wavedb_core::wire::from_wire(bytes)?)
     }
 }
 

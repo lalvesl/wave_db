@@ -1,11 +1,11 @@
 //! Wire types for Quick-Node → Slow-Node flush and history-read requests.
 
-use serde::{Deserialize, Serialize};
+use wavedb_macros::WaveWire;
 use wavedb_net::auth::NodeToken;
 use wavedb_storage::VersionedRecord;
 
 /// A batch of versioned records pushed from a Quick-Node during a history flush.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct FlushBatch {
     /// Monotonic write-sequence number assigned by the Quick-Node.
     pub write_seq: u64,
@@ -18,14 +18,14 @@ pub struct FlushBatch {
 }
 
 /// Acknowledgement returned to the Quick-Node after a successful flush.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct FlushAck {
     /// The write sequence that was durably stored.
     pub write_seq: u64,
 }
 
 /// Request a history read for a specific versioned record ID.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct HistoryReadRequest {
     /// Tenant owning the record.
     pub tenant: u64,
@@ -34,7 +34,7 @@ pub struct HistoryReadRequest {
 }
 
 /// Response to a history-read request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct HistoryReadResponse {
     /// Raw serialized bytes of the [`VersionedRecord`], or empty if not found.
     pub data: Vec<u8>,
@@ -92,15 +92,16 @@ mod tests {
     }
 
     #[test]
-    fn flush_batch_serde_roundtrip() {
+    fn flush_batch_wire_roundtrip() {
         let batch = FlushBatch {
             write_seq: 7,
             tenant: 42,
             records: vec![VersionedRecord::new(1, b"hello".to_vec())],
             token: None,
         };
-        let bytes = postcard::to_allocvec(&batch).unwrap();
-        let decoded: FlushBatch = postcard::from_bytes(&bytes).unwrap();
+        let bytes = wavedb_core::wire::to_wire(&batch).unwrap();
+        let decoded: FlushBatch =
+            wavedb_core::wire::from_wire(&bytes).unwrap();
         assert_eq!(decoded.write_seq, 7);
         assert_eq!(decoded.tenant, 42);
         assert_eq!(decoded.records.len(), 1);

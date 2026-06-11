@@ -2,11 +2,11 @@ use bytes::BytesMut;
 use criterion::{
     BenchmarkId, Criterion, Throughput, criterion_group, criterion_main,
 };
-use serde::{Deserialize, Serialize};
+use wavedb_macros::WaveWire;
 use wavedb_net::{frame, notify::SeenFilter};
 
 /// Payload representative of a typical `WaveDB` network message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 struct BenchPayload {
     anchor_id: u128,
     version: u64,

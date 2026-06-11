@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use wavedb_macros::WaveWire;
 use wavedb_net::auth::NodeToken;
 
 use crate::ring::NodeId;
@@ -35,7 +35,7 @@ use crate::ring::NodeId;
 // ── Wire types ────────────────────────────────────────────────────────────────
 
 /// A gossip message exchanged between Quick-Nodes via `POST /gossip`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct GossipMessage {
     /// Per-node monotonically increasing epoch.  Together with `origin` it
     /// forms the dedup key `(origin, epoch)` — each pair is processed at most
@@ -53,7 +53,7 @@ pub struct GossipMessage {
 }
 
 /// Kind of gossip event.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub enum GossipKind {
     /// Node at [`GossipMessage::addr`] joined the cluster.
     Announce,
@@ -62,7 +62,7 @@ pub enum GossipKind {
 }
 
 /// Response the receiving node sends back to the gossip originator.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub enum GossipResponse {
     /// Simple acknowledgement (returned for [`GossipKind::Withdraw`]).
     Ack,
@@ -137,7 +137,7 @@ impl GossipClient {
         msg: &GossipMessage,
     ) -> Option<GossipResponse> {
         let url = format!("http://{addr}/gossip");
-        let body = postcard::to_allocvec(msg).ok()?;
+        let body = wavedb_core::wire::to_wire(msg).ok()?;
         let resp = self
             .http
             .post(&url)
@@ -150,7 +150,7 @@ impl GossipClient {
             return None;
         }
         let bytes = resp.bytes().await.ok()?;
-        postcard::from_bytes::<GossipResponse>(&bytes).ok()
+        wavedb_core::wire::from_wire::<GossipResponse>(&bytes).ok()
     }
 }
 
@@ -184,7 +184,7 @@ mod tests {
     }
 
     #[test]
-    fn gossip_message_serde_roundtrip() {
+    fn gossip_message_wire_roundtrip() {
         let msg = GossipMessage {
             epoch: 7,
             origin: 42,
@@ -192,20 +192,22 @@ mod tests {
             kind: GossipKind::Announce,
             token: None,
         };
-        let bytes = postcard::to_allocvec(&msg).unwrap();
-        let decoded: GossipMessage = postcard::from_bytes(&bytes).unwrap();
+        let bytes = wavedb_core::wire::to_wire(&msg).unwrap();
+        let decoded: GossipMessage =
+            wavedb_core::wire::from_wire(&bytes).unwrap();
         assert_eq!(decoded.epoch, 7);
         assert_eq!(decoded.origin, 42);
         assert!(matches!(decoded.kind, GossipKind::Announce));
     }
 
     #[test]
-    fn gossip_response_node_list_serde() {
+    fn gossip_response_node_list_wire() {
         let resp = GossipResponse::NodeList {
             nodes: vec![(1, "a:7700".into()), (2, "b:7700".into())],
         };
-        let bytes = postcard::to_allocvec(&resp).unwrap();
-        let decoded: GossipResponse = postcard::from_bytes(&bytes).unwrap();
+        let bytes = wavedb_core::wire::to_wire(&resp).unwrap();
+        let decoded: GossipResponse =
+            wavedb_core::wire::from_wire(&bytes).unwrap();
         if let GossipResponse::NodeList { nodes } = decoded {
             assert_eq!(nodes.len(), 2);
         } else {

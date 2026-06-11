@@ -58,9 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let encode_query = |records: &[Order]| -> Vec<u8> {
         let entries: Vec<(u8, Vec<u8>)> = records
             .iter()
-            .map(|r| (Order::STRUCT_VERSION, postcard::to_allocvec(r).unwrap()))
+            .map(|r| (Order::STRUCT_VERSION, wavedb_core::wire::to_wire(r).unwrap()))
             .collect();
-        postcard::to_allocvec(&entries).unwrap()
+        wavedb_core::wire::to_wire(&entries).unwrap()
     };
 
     let enc_all = encode_query(&orders_all);

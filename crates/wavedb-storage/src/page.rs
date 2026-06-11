@@ -13,10 +13,10 @@
 //! └──────────────────────────────────────────────────┘
 //! ```
 
-use serde::{Deserialize, Serialize};
+use wavedb_macros::WaveWire;
 
 /// Fixed page header at the start of every page.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct PageHeader {
     /// CRC32 checksum of the page body (everything after the header).
     pub checksum: u32,
@@ -53,7 +53,7 @@ impl PageHeader {
 }
 
 /// A directory entry mapping an object ID to its byte range within a page.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct DirEntry {
     /// The 128-bit ID of the stored object.
     pub id: u128,
@@ -69,7 +69,7 @@ impl DirEntry {
 }
 
 /// An in-memory representation of a page.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct Page {
     /// The page's header.
     pub header: PageHeader,

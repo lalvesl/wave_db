@@ -6,7 +6,7 @@
 //! - The server can push additional `TransportResponse`s at any time (e.g.
 //!   object-changed events) without a corresponding client request.
 //!
-//! All messages are postcard-encoded without a length prefix (WebSocket frames
+//! All messages are wire-encoded without a length prefix (WebSocket frames
 //! are inherently delimited).
 //!
 //! # Ordering guarantee

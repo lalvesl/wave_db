@@ -10,6 +10,12 @@ pub trait WaveDbStruct {
     const STRUCT_ID: u32;
     /// The schema version, parsed from the trailing integer of the type name.
     const STRUCT_VERSION: u8;
+    /// Registry search key: `(STRUCT_ID as u24) << 8 | STRUCT_VERSION`.
+    ///
+    /// All nodes look objects up by this `u32` header — see
+    /// [`crate::registry`] and `declare_objects!`.
+    const HEADER: u32 =
+        crate::wire::pack_header(Self::STRUCT_ID, Self::STRUCT_VERSION);
     /// The data shape: `Unique`, `NonUnique`, or `NestedNonUnique`.
     const SHAPE: Shape;
     /// Names of the struct's **heapable** (variable-length) fields —
@@ -65,7 +71,7 @@ pub trait RollbackFrom: WaveDbStruct {
 ///
 /// Every `#[wave_db]`-annotated struct gets a generated impl that:
 ///
-/// - **If `stored_version == Self::STRUCT_VERSION`** → postcard-deserialize directly.
+/// - **If `stored_version == Self::STRUCT_VERSION`** → wire-decode directly.
 /// - **If `stored_version < Self::STRUCT_VERSION`** → recursively read as
 ///   `<Self as MigratesFrom>::Source`, then call `Self::__wave_db_migrate_from`
 ///   to upgrade to `Self`.  Chain end (no `migrate_from` declared) is an error.
@@ -84,11 +90,11 @@ pub trait RollbackFrom: WaveDbStruct {
 /// the chain comes entirely from the type system via `MigratesFrom` /
 /// `RollbackFrom`.
 pub trait MigrationChain<Db>:
-    WaveDbStruct + Sized + Send + for<'de> serde::Deserialize<'de>
+    WaveDbStruct + Sized + Send + crate::Wire
 where
     Db: Send + Sync,
 {
-    /// Read raw postcard bytes at `stored_version` and produce `Self`.
+    /// Read raw wire bytes at `stored_version` and produce `Self`.
     ///
     /// Returns a boxed future to allow mutual recursion across the chain.
     fn read_as_self<'a>(

@@ -6,8 +6,8 @@
 //! purpose-scoped so a gossip token cannot be replayed against the flush endpoint.
 
 use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use wavedb_macros::WaveWire;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -15,7 +15,10 @@ type HmacSha256 = Hmac<Sha256>;
 const WINDOW_SECS: u64 = 30;
 
 /// Identifies which protocol a [`NodeToken`] was minted for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The explicit discriminants feed the HMAC input (`purpose as u8`); the wire
+/// tag is the ordinal index, independent of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, WaveWire)]
 #[repr(u8)]
 pub enum TokenPurpose {
     /// Gossip announce/withdraw between Quick-Nodes.
@@ -30,7 +33,7 @@ pub enum TokenPurpose {
 ///
 /// Carried alongside gossip and flush messages; verified by the receiver using
 /// the shared [`ClusterKey`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, WaveWire)]
 pub struct NodeToken {
     /// FNV-1a hash of the sending node's listen address.
     pub node_id: u64,
@@ -240,11 +243,12 @@ mod tests {
     }
 
     #[test]
-    fn token_serde_roundtrip() {
+    fn token_wire_roundtrip() {
         let k = key();
         let token = k.mint_at(77, TokenPurpose::Flush, 9_999_999);
-        let bytes = postcard::to_allocvec(&token).unwrap();
-        let decoded: NodeToken = postcard::from_bytes(&bytes).unwrap();
+        let bytes = wavedb_core::wire::to_wire(&token).unwrap();
+        let decoded: NodeToken =
+            wavedb_core::wire::from_wire(&bytes).unwrap();
         assert_eq!(decoded, token);
     }
 }

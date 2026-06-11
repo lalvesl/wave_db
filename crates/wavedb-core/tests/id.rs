@@ -33,15 +33,15 @@ proptest! {
     }
 
     #[test]
-    fn id_postcard_roundtrip(
+    fn id_wire_roundtrip(
         t in 0u64..(1u64 << 48),
         s in 0u16..(1u16 << 12),
         sid in 0u32..(1u32 << 20),
         c in 0u64..(1u64 << 48)
     ) {
         let id = Id::new(t, s, sid, c);
-        let bytes = postcard::to_allocvec(&id).unwrap();
-        let decoded: Id = postcard::from_bytes(&bytes).unwrap();
+        let bytes = wavedb_core::wire::to_wire(&id).unwrap();
+        let decoded: Id = wavedb_core::wire::from_wire(&bytes).unwrap();
         prop_assert_eq!(id, decoded);
     }
 

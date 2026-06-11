@@ -97,7 +97,7 @@ struct Inner {
 /// ```rust,ignore
 /// let mock = MockTransport::new();
 /// mock.push(ScriptedReply::connect("ws://owner:7700", "ws://backup:7700"));
-/// mock.push(ScriptedReply::ok(postcard::to_allocvec(&None::<()>).unwrap()));
+/// mock.push(ScriptedReply::ok(wavedb_core::wire::to_wire(&0u8).unwrap()));
 ///
 /// let db = Db::open_with_mock("ws://owner:7700", 1, mock.clone()).await?;
 /// let _: Option<MyStruct> = MyStruct::search(&db).await?;

@@ -51,15 +51,15 @@ fn empty_order() -> Order {
     }
 }
 
-/// Encode a value as postcard bytes.
-fn encode<T: serde::Serialize>(val: &T) -> Vec<u8> {
-    postcard::to_allocvec(val).expect("encode failed")
+/// Encode a value as wire bytes.
+fn encode<T: wavedb_core::Wire>(val: &T) -> Vec<u8> {
+    wavedb_core::wire::to_wire(val).expect("encode failed")
 }
 
 /// Encode a wave_db record with the version-byte prefix used on the wire.
 fn encode_versioned<T>(val: &T) -> Vec<u8>
 where
-    T: serde::Serialize + wavedb_core::WaveDbStruct,
+    T: wavedb_core::Wire + wavedb_core::WaveDbStruct,
 {
     let body = encode(val);
     let mut out = Vec::with_capacity(1 + body.len());
@@ -71,7 +71,7 @@ where
 /// Encode a list of records as a `Vec<(version, body)>` for the query path.
 fn encode_query<T>(records: &[T]) -> Vec<u8>
 where
-    T: serde::Serialize + wavedb_core::WaveDbStruct,
+    T: wavedb_core::Wire + wavedb_core::WaveDbStruct,
 {
     let entries: Vec<(u8, Vec<u8>)> = records
         .iter()

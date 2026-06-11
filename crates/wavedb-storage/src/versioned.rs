@@ -1,9 +1,9 @@
 //! Versioned record storage — the immutable historical data.
 
-use serde::{Deserialize, Serialize};
+use wavedb_macros::WaveWire;
 
 /// A versioned record: the full object data at a specific point in time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub struct VersionedRecord {
     /// The 128-bit ID of this record version.
     pub id: u128,
@@ -33,12 +33,12 @@ impl VersionedRecord {
 
     /// Serialize to bytes.
     pub fn to_bytes(&self) -> crate::StorageResult<Vec<u8>> {
-        Ok(postcard::to_allocvec(self)?)
+        Ok(wavedb_core::wire::to_wire(self)?)
     }
 
     /// Deserialize from bytes.
     pub fn from_bytes(bytes: &[u8]) -> crate::StorageResult<Self> {
-        Ok(postcard::from_bytes(bytes)?)
+        Ok(wavedb_core::wire::from_wire(bytes)?)
     }
 }
 

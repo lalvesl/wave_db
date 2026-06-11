@@ -15,20 +15,20 @@
 //! - `Struct::register_migration(&mut MigrationRegistry)` — call once at
 //!   startup to wire the version edge and type-erased fn pointers into the
 //!   registry.
-//! - `Struct::__erased_migrate_from(&[u8]) -> Result<Vec<u8>>` — postcard
+//! - `Struct::__erased_migrate_from(&[u8]) -> Result<Vec<u8>>` — wire-format
 //!   round-trip wrapper around the user-supplied forward fn.
 //! - `Struct::__erased_migrate_rollback(&[u8]) -> Result<Vec<u8>>` — same for
 //!   the optional rollback fn.
 //!
-//! Both structs (the old and new version) must implement `serde::Serialize` and
-//! `serde::Deserialize` for the erased wrappers to compile.
+//! Both structs (the old and new version) must implement [`crate::Wire`] for
+//! the erased wrappers to compile (`#[wave_db]` generates the impl).
 
 use std::collections::HashMap;
 
 /// A type-erased migration function.
 ///
-/// Takes the postcard-serialized bytes of the source version and returns the
-/// postcard-serialized bytes of the target version.
+/// Takes the wire-serialized bytes of the source version and returns the
+/// wire-serialized bytes of the target version.
 pub type ErasedMigrateFn = fn(&[u8]) -> crate::Result<Vec<u8>>;
 
 /// A registered migration entry holding version refs and type-erased fn pointers.
@@ -47,25 +47,27 @@ pub struct MigrationEntry {
     pub rollback_fn: Option<ErasedMigrateFn>,
 }
 
-/// Serialize a value with postcard for use inside type-erased migration fns.
+/// Serialize a value with the wire format for use inside type-erased
+/// migration fns.
 ///
 /// Generated erased wrappers call this; it is also available for hand-written
 /// Type 2 migration glue code.
-pub fn serialize_for_migration<T: serde::Serialize>(
+pub fn serialize_for_migration<T: crate::Wire>(
     val: &T,
 ) -> crate::Result<Vec<u8>> {
-    postcard::to_allocvec(val)
+    crate::wire::to_wire(val)
         .map_err(|e| crate::Error::MigrationSer(e.to_string()))
 }
 
-/// Deserialize a value with postcard for use inside type-erased migration fns.
+/// Deserialize a value with the wire format for use inside type-erased
+/// migration fns.
 ///
 /// Generated erased wrappers call this; it is also available for hand-written
 /// Type 2 migration glue code.
-pub fn deserialize_for_migration<T: for<'de> serde::Deserialize<'de>>(
+pub fn deserialize_for_migration<T: crate::Wire>(
     bytes: &[u8],
 ) -> crate::Result<T> {
-    postcard::from_bytes(bytes)
+    crate::wire::from_wire(bytes)
         .map_err(|e| crate::Error::MigrationDe(e.to_string()))
 }
 
@@ -120,7 +122,7 @@ impl MigrationPlan {
 /// Builds a directed graph of version transitions and resolves multi-hop
 /// chains via BFS.  When migrations are registered with `register_with_entry`,
 /// the registry also stores type-erased fn pointers so that `migrate_chain`
-/// and `rollback_chain` can execute the full chain on raw postcard bytes.
+/// and `rollback_chain` can execute the full chain on raw wire bytes.
 #[derive(Debug)]
 pub struct MigrationRegistry {
     /// Forward edges: from → [(to, has_rollback)]

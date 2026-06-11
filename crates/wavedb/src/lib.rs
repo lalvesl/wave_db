@@ -40,7 +40,7 @@
 //! - **Authorship** — `user` (u48) and `device_created` capture who wrote each
 //!   version and from which device.
 //! - **Access control** — <code>permission: Option<[PermissionRef]></code>.  `None`
-//!   (the common case) means tenant-wide access; postcard encodes it in 1 byte.
+//!   (the common case) means tenant-wide access.
 //!
 //! ## Operation modes
 //!
@@ -53,8 +53,8 @@
 //! | **save** | `save(self, &db)` | `save(self, &db)` |
 //! | **delete** | — | `delete(self, &db)` |
 //!
-//! Queries use the composable [`Expr`] DSL.  Expressions are serialised
-//! (postcard) and sent to the Quick-Node for server-side evaluation.
+//! Queries use the composable [`Expr`] DSL.  Expressions are serialised with
+//! the wire format and sent to the Quick-Node for server-side evaluation.
 //!
 //! ## Migration model
 //!
@@ -70,11 +70,9 @@
 //! ```ignore
 //! use wavedb::prelude::*;
 //! use wavedb_net::{MockTransport, mock::ScriptedReply};
-//! use serde::{Deserialize, Serialize};
 //!
 //! // One UserProfile per tenant (Unique shape, default).
 //! #[wave_db(struct_id = 1)]
-//! #[derive(Debug, Serialize, Deserialize)]
 //! struct UserProfile1 {
 //!     name: String,
 //!     email: String,
@@ -173,7 +171,7 @@ pub mod prelude {
         query::{Expr, Field},
     };
     pub use wavedb_core::{Id, Metadata, PermissionRef, Shape, WaveDbStruct};
-    pub use wavedb_macros::wave_db;
+    pub use wavedb_macros::{declare_objects, wave_db};
 }
 
 // Pass-through re-exports so advanced users don't have to add sub-crates.

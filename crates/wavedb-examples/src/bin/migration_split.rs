@@ -24,7 +24,7 @@ use wavedb::prelude::*;
 // ── The source: v1 order with embedded shipping fields ───────────────────────
 
 #[wave_db(struct_id = 70, NonUnique)]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Order1 {
     pub customer: u64,
     pub amount_cents: u64,
@@ -89,7 +89,7 @@ async fn shipping_first_try<Db>(
     migrate_from      = Order1,
     migrate_from_with = order_v1_to_v2,
 )]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Order2 {
     pub customer: u64,
     pub amount_cents: u64,
@@ -105,7 +105,7 @@ pub type Order = Order2;
     migrate_from_with = lift_shipping,
     first_try         = shipping_first_try,
 )]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ShippingInfo1 {
     pub order_created_at: u64,
     pub street_hash: u64,

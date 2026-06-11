@@ -60,13 +60,13 @@ pub type Chapter = Chapter1;
 
 fn encode_query<T>(records: &[T]) -> Vec<u8>
 where
-    T: serde::Serialize + wavedb_core::WaveDbStruct,
+    T: wavedb_core::Wire + wavedb_core::WaveDbStruct,
 {
     let entries: Vec<(u8, Vec<u8>)> = records
         .iter()
-        .map(|r| (T::STRUCT_VERSION, postcard::to_allocvec(r).unwrap()))
+        .map(|r| (T::STRUCT_VERSION, wavedb_core::wire::to_wire(r).unwrap()))
         .collect();
-    postcard::to_allocvec(&entries).unwrap()
+    wavedb_core::wire::to_wire(&entries).unwrap()
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────

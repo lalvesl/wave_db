@@ -30,18 +30,41 @@
 //! );
 //! ```
 
-use serde::{Deserialize, Serialize};
+use wavedb_macros::WaveWire;
 
 /// A field name used in an expression.
 pub type FieldName = String;
 
 /// A scalar value that can be compared in an expression.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// Every primitive numeric width gets its own variant so a query value
+/// round-trips at exactly the width the caller wrote — the server compares
+/// against the record's field using the descriptor's
+/// [`FieldKind`](::wavedb_core::FieldKind), no silent promotion.
+#[derive(Debug, Clone, WaveWire, PartialEq)]
 pub enum Value {
+    /// Unsigned 8-bit integer.
+    U8(u8),
+    /// Unsigned 16-bit integer.
+    U16(u16),
+    /// Unsigned 32-bit integer.
+    U32(u32),
     /// Unsigned 64-bit integer.
     U64(u64),
+    /// Unsigned 128-bit integer.
+    U128(u128),
+    /// Signed 8-bit integer.
+    I8(i8),
+    /// Signed 16-bit integer.
+    I16(i16),
+    /// Signed 32-bit integer.
+    I32(i32),
     /// Signed 64-bit integer.
     I64(i64),
+    /// Signed 128-bit integer.
+    I128(i128),
+    /// 32-bit float.
+    F32(f32),
     /// 64-bit float.
     F64(f64),
     /// UTF-8 string.
@@ -52,49 +75,40 @@ pub enum Value {
     Bytes(Vec<u8>),
 }
 
-impl From<u64> for Value {
-    fn from(v: u64) -> Self {
-        Self::U64(v)
-    }
+/// Exact-width `From` impls — `42u16` becomes `Value::U16`, not a promoted
+/// `U64`.
+macro_rules! value_from_exact {
+    ( $( $ty:ty => $variant:ident ),* $(,)? ) => {
+        $(
+            impl From<$ty> for Value {
+                fn from(v: $ty) -> Self {
+                    Self::$variant(v)
+                }
+            }
+        )*
+    };
 }
-impl From<u32> for Value {
-    fn from(v: u32) -> Self {
-        Self::U64(v.into())
-    }
+
+value_from_exact! {
+    u8 => U8,
+    u16 => U16,
+    u32 => U32,
+    u64 => U64,
+    u128 => U128,
+    i8 => I8,
+    i16 => I16,
+    i32 => I32,
+    i64 => I64,
+    i128 => I128,
+    f32 => F32,
+    f64 => F64,
+    bool => Bool,
+    String => Str,
 }
-impl From<u16> for Value {
-    fn from(v: u16) -> Self {
-        Self::U64(v.into())
-    }
-}
-impl From<u8> for Value {
-    fn from(v: u8) -> Self {
-        Self::U64(v.into())
-    }
-}
+
 impl From<usize> for Value {
     fn from(v: usize) -> Self {
         Self::U64(v as u64)
-    }
-}
-impl From<i64> for Value {
-    fn from(v: i64) -> Self {
-        Self::I64(v)
-    }
-}
-impl From<i32> for Value {
-    fn from(v: i32) -> Self {
-        Self::I64(v.into())
-    }
-}
-impl From<i16> for Value {
-    fn from(v: i16) -> Self {
-        Self::I64(v.into())
-    }
-}
-impl From<i8> for Value {
-    fn from(v: i8) -> Self {
-        Self::I64(v.into())
     }
 }
 impl From<isize> for Value {
@@ -102,34 +116,14 @@ impl From<isize> for Value {
         Self::I64(v as i64)
     }
 }
-impl From<f64> for Value {
-    fn from(v: f64) -> Self {
-        Self::F64(v)
-    }
-}
-impl From<f32> for Value {
-    fn from(v: f32) -> Self {
-        Self::F64(v.into())
-    }
-}
 impl From<&str> for Value {
     fn from(v: &str) -> Self {
         Self::Str(v.to_owned())
     }
 }
-impl From<String> for Value {
-    fn from(v: String) -> Self {
-        Self::Str(v)
-    }
-}
 impl From<&String> for Value {
     fn from(v: &String) -> Self {
         Self::Str(v.clone())
-    }
-}
-impl From<bool> for Value {
-    fn from(v: bool) -> Self {
-        Self::Bool(v)
     }
 }
 impl From<Vec<u8>> for Value {
@@ -145,8 +139,8 @@ impl From<&[u8]> for Value {
 
 /// A query expression used to filter `NonUnique` records.
 ///
-/// Expressions are composable and serialisable via postcard.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Expressions are composable and serialised with the wire format.
+#[derive(Debug, Clone, WaveWire, PartialEq)]
 pub enum Expr {
     /// Match all records (no filter).
     All,
@@ -332,14 +326,14 @@ impl Expr {
         Field::new(name)
     }
 
-    /// Serialise this expression to bytes (postcard).
+    /// Serialise this expression to bytes (wire format).
     pub fn to_bytes(&self) -> wavedb_core::Result<Vec<u8>> {
-        Ok(postcard::to_allocvec(self)?)
+        Ok(wavedb_core::wire::to_wire(self)?)
     }
 
-    /// Deserialise an expression from bytes (postcard).
+    /// Deserialise an expression from bytes (wire format).
     pub fn from_bytes(bytes: &[u8]) -> wavedb_core::Result<Self> {
-        Ok(postcard::from_bytes(bytes)?)
+        Ok(wavedb_core::wire::from_wire(bytes)?)
     }
 }
 
@@ -491,5 +485,44 @@ mod tests {
         assert_eq!(Value::from(f64::consts::PI), Value::F64(f64::consts::PI));
         assert_eq!(Value::from("hello"), Value::Str("hello".into()));
         assert_eq!(Value::from(true), Value::Bool(true));
+    }
+
+    #[test]
+    fn value_conversions_are_exact_width() {
+        assert_eq!(Value::from(7u8), Value::U8(7));
+        assert_eq!(Value::from(7u16), Value::U16(7));
+        assert_eq!(Value::from(7u32), Value::U32(7));
+        assert_eq!(Value::from(7u128), Value::U128(7));
+        assert_eq!(Value::from(-7i8), Value::I8(-7));
+        assert_eq!(Value::from(-7i16), Value::I16(-7));
+        assert_eq!(Value::from(-7i32), Value::I32(-7));
+        assert_eq!(Value::from(-7i128), Value::I128(-7));
+        assert_eq!(Value::from(1.5f32), Value::F32(1.5));
+        // Platform-width integers normalise to 64-bit.
+        assert_eq!(Value::from(7usize), Value::U64(7));
+        assert_eq!(Value::from(-7isize), Value::I64(-7));
+    }
+
+    #[test]
+    fn all_numeric_widths_roundtrip() {
+        let exprs = [
+            Expr::eq("a", u8::MAX),
+            Expr::eq("a", u16::MAX),
+            Expr::eq("a", u32::MAX),
+            Expr::eq("a", u64::MAX),
+            Expr::eq("a", u128::MAX),
+            Expr::eq("a", i8::MIN),
+            Expr::eq("a", i16::MIN),
+            Expr::eq("a", i32::MIN),
+            Expr::eq("a", i64::MIN),
+            Expr::eq("a", i128::MIN),
+            Expr::eq("a", f32::MIN_POSITIVE),
+            Expr::eq("a", f64::MAX),
+        ];
+        for expr in exprs {
+            let bytes = expr.to_bytes().unwrap();
+            let decoded = Expr::from_bytes(&bytes).unwrap();
+            assert_eq!(expr, decoded);
+        }
     }
 }

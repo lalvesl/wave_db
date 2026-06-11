@@ -14,13 +14,13 @@
 
 use crate::anchor::{AnchorKey, AnchorSlot};
 use crate::versioned::VersionedRecord;
-use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use wavedb_macros::WaveWire;
 
 /// A single journal entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, WaveWire)]
 pub enum JournalEntry {
     /// Write or update an anchor slot.
     WriteAnchor {
@@ -65,7 +65,7 @@ pub enum JournalEntry {
 }
 
 /// Which file a free-space entry refers to.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, WaveWire)]
 pub enum FileKind {
     /// The data file.
     Data,
@@ -149,7 +149,7 @@ impl Journal {
     /// calls `sync_all()` before returning — the entry is durable on `Ok(())`.
     pub fn append(&mut self, entry: JournalEntry) -> crate::StorageResult<()> {
         if let Some(file) = &mut self.file {
-            let entry_bytes = postcard::to_allocvec(&entry)?;
+            let entry_bytes = wavedb_core::wire::to_wire(&entry)?;
             let len = u32::try_from(entry_bytes.len())
                 .expect("journal entry too large");
             file.write_all(&len.to_le_bytes())?;
@@ -267,13 +267,13 @@ impl Journal {
         Ok(())
     }
 
-    /// Encode entries to bytes (length-prefixed postcard).
+    /// Encode entries to bytes (length-prefixed wire format).
     fn encode_entries(
         entries: &[JournalEntry],
     ) -> crate::StorageResult<Vec<u8>> {
         let mut buf = Vec::new();
         for entry in entries {
-            let entry_bytes = postcard::to_allocvec(entry)?;
+            let entry_bytes = wavedb_core::wire::to_wire(entry)?;
             let len = u32::try_from(entry_bytes.len())
                 .expect("journal entry too large");
             buf.extend_from_slice(&len.to_le_bytes());
@@ -294,7 +294,7 @@ impl Journal {
                 break; // truncated entry — journal was mid-write at crash
             }
             let entry: JournalEntry =
-                postcard::from_bytes(&data[pos..pos + len])?;
+                wavedb_core::wire::from_wire(&data[pos..pos + len])?;
             entries.push(entry);
             pos += len;
         }

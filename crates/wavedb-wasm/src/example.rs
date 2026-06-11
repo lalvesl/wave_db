@@ -12,7 +12,6 @@
 //!    entry point under `wasm-bindgen-test` (run with
 //!    `wasm-pack test --headless --firefox crates/wavedb-wasm`).
 
-use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wavedb::prelude::*;
 use wavedb_core::MigrationChain;
@@ -55,29 +54,38 @@ pub type Note = Note2;
 /// `MigrationChain` is generic over any `Db: Send + Sync`.
 struct NoopDb;
 
-/// What [`example_roundtrip`] verified, returned to JS as a plain object.
-#[derive(Debug, Serialize, Deserialize)]
+/// What [`example_roundtrip`] verified, exported to JS as a class —
+/// no serde involved, wasm-bindgen generates the field getters.
+/// `readonly` keeps the unused setter shims out of the binary.
+#[wasm_bindgen(getter_with_clone)]
+#[derive(Debug, Clone)]
 pub struct ExampleReport {
     /// `HEAPABLE_FIELDS` classified `title` as heapable.
+    #[wasm_bindgen(readonly)]
     pub heapable_fields: Vec<String>,
     /// v1 bytes were read as v2 through the migration chain.
+    #[wasm_bindgen(readonly)]
     pub migrated_from_v1: bool,
     /// The migrated record's `pinned` default.
+    #[wasm_bindgen(readonly)]
     pub pinned_after_migration: bool,
     /// Serialized byte length of a typed-column query expression.
+    #[wasm_bindgen(readonly)]
     pub expr_bytes: u32,
     /// The record survived an IndexedDB put/get keyed by its 128-bit Id.
+    #[wasm_bindgen(readonly)]
     pub idb_roundtrip_ok: bool,
     /// Objects found in the tenant's contiguous key range.
+    #[wasm_bindgen(readonly)]
     pub tenant_objects: u32,
 }
 
 /// End-to-end client flow against the real engine code paths.
 ///
-/// Returns an [`ExampleReport`] (as a JS object) describing each step.
+/// Returns an [`ExampleReport`] describing each step.
 #[wasm_bindgen]
 #[allow(clippy::future_not_send)]
-pub async fn example_roundtrip() -> Result<JsValue, JsValue> {
+pub async fn example_roundtrip() -> Result<ExampleReport, JsValue> {
     let err = |e: &dyn std::fmt::Display| JsValue::from_str(&e.to_string());
 
     // 1. Stackable/heapable descriptor from the macro.
@@ -86,7 +94,7 @@ pub async fn example_roundtrip() -> Result<JsValue, JsValue> {
         .map(ToString::to_string)
         .collect();
 
-    // 2. A stored v1 record: postcard bytes, version byte prepended —
+    // 2. A stored v1 record: wire bytes, version byte prepended —
     //    exactly the wire/storage format.
     let id = Id::new(
         /* tenant */ 42,
@@ -100,7 +108,7 @@ pub async fn example_roundtrip() -> Result<JsValue, JsValue> {
         title: "groceries".to_string(),
         stars: 5,
     };
-    let v1_bytes = postcard::to_allocvec(&v1).map_err(|e| err(&e))?;
+    let v1_bytes = wavedb_core::wire::to_wire(&v1).map_err(|e| err(&e))?;
 
     // 3. Lazy migration on read: ask for Note2, hand it v1 bytes.
     let migrated: Note2 =
@@ -118,7 +126,8 @@ pub async fn example_roundtrip() -> Result<JsValue, JsValue> {
     // 5. Persist the migrated record in IndexedDB at its 128-bit Id —
     //    one key per object, no page emulation.
     let store = IdbStore::open_named("wavedb-example", "kv").await?;
-    let v2_bytes = postcard::to_allocvec(&migrated).map_err(|e| err(&e))?;
+    let v2_bytes =
+        wavedb_core::wire::to_wire(&migrated).map_err(|e| err(&e))?;
     store.put_object(id.raw(), &v2_bytes).await?;
     let read_back = store.get_object(id.raw()).await?;
     let idb_roundtrip_ok = read_back.as_deref() == Some(&v2_bytes[..]);
@@ -129,13 +138,12 @@ pub async fn example_roundtrip() -> Result<JsValue, JsValue> {
         u32::try_from(store.get_tenant_objects(42).await?.len())
             .unwrap_or(u32::MAX);
 
-    let report = ExampleReport {
+    Ok(ExampleReport {
         heapable_fields,
         migrated_from_v1,
         pinned_after_migration,
         expr_bytes,
         idb_roundtrip_ok,
         tenant_objects,
-    };
-    serde_wasm_bindgen::to_value(&report).map_err(|e| err(&e))
+    })
 }

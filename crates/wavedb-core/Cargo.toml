@@ -9,10 +9,9 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-serde.workspace = true
-postcard.workspace = true
 thiserror.workspace = true
 byteorder.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+wavedb-macros = { path = "../wavedb-macros" }
