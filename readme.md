@@ -864,13 +864,26 @@ wasm32, and dispatch through the static registry's monomorphised fn table
 
 ### Node-side enforcement pipeline
 
-An application's Quick-Node binary attaches its registry at construction:
+An application's whole Quick-Node binary is one expression — attaching the
+registry is what turns a generic node into *your* backend:
 
 ```rust
 declare_objects! { pub mod app_objects { payments: [Payment1], … } }
 
-let node = QuickNode::with_registry(config, app_objects::REGISTRY);
+#[tokio::main]
+async fn main() -> wavedb_core::Result<()> {
+    Server::bind("0.0.0.0:7700")
+        .tenant(42)
+        .data_dir("./data")
+        .registry(app_objects::REGISTRY)
+        .serve()
+        .await
+}
 ```
+
+(Advanced setups drop down to `Config` + `QuickNode::with_registry`
+directly; the builder is the 90% path. See `examples/mini_app` for the
+complete app: shared `schema.rs`, this backend, and a native client.)
 
 Every incoming write then passes four gates **before the WAL commit**:
 

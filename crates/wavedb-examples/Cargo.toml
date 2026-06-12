@@ -52,6 +52,22 @@ path = "src/bin/anchors.rs"
 name = "cross_references"
 path = "src/bin/cross_references.rs"
 
+# ── mini_app: smallest complete app — native client + Quick-Node backend ─────
+# One shared schema.rs (Task + validate/preprocess hooks + REGISTRY) compiled
+# into both binaries.  Run the orchestrator: cargo run --bin mini_app
+
+[[bin]]
+name = "mini_app"
+path = "src/bin/mini_app/main.rs"
+
+[[bin]]
+name = "mini_app_backend"
+path = "src/bin/mini_app/backend.rs"
+
+[[bin]]
+name = "mini_app_client"
+path = "src/bin/mini_app/app.rs"
+
 # ── real_example multi-process suite ─────────────────────────────────────────
 
 [[bin]]
