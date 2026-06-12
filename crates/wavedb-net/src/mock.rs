@@ -42,6 +42,9 @@ pub struct ScriptedReply {
     pub owner_url: Option<String>,
     /// Backup URL to include in a `Connect` response.
     pub backup_url: Option<String>,
+    /// Structured node rejection to include in the response
+    /// (simulates schema enforcement on a registry-attached node).
+    pub node_error: Option<crate::request::NodeError>,
 }
 
 impl ScriptedReply {
@@ -52,6 +55,7 @@ impl ScriptedReply {
             error: false,
             owner_url: None,
             backup_url: None,
+            node_error: None,
         }
     }
 
@@ -65,6 +69,7 @@ impl ScriptedReply {
             error: false,
             owner_url: Some(owner_url.into()),
             backup_url: Some(backup_url.into()),
+            node_error: None,
         }
     }
 
@@ -75,6 +80,18 @@ impl ScriptedReply {
             error: true,
             owner_url: None,
             backup_url: None,
+            node_error: None,
+        }
+    }
+
+    /// A reply that simulates a node-side schema rejection.
+    pub const fn node_err(error: crate::request::NodeError) -> Self {
+        Self {
+            payload: Vec::new(),
+            error: false,
+            owner_url: None,
+            backup_url: None,
+            node_error: Some(error),
         }
     }
 }
@@ -171,6 +188,7 @@ impl Transport for MockTransport {
             owner_url: reply.owner_url,
             backup_url: reply.backup_url,
             notifications: Vec::new(),
+            error: reply.node_error,
         })
     }
 
@@ -248,6 +266,7 @@ mod channel {
                 owner_url: None,
                 backup_url: None,
                 notifications: Vec::new(),
+                error: None,
             }
         }
 
@@ -264,6 +283,7 @@ mod channel {
                 owner_url: Some(owner.into()),
                 backup_url: Some(backup.into()),
                 notifications: Vec::new(),
+                error: None,
             }));
         }
 

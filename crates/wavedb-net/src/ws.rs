@@ -310,6 +310,7 @@ async fn handle_ws_connection(stream: TcpStream, state: WsTestServerState) {
                     owner_url: None,
                     backup_url: None,
                     notifications: Vec::new(),
+                    error: None,
                 });
 
         let Ok(resp_bytes) = encode_payload(&resp) else {
@@ -341,6 +342,7 @@ mod tests {
             owner_url: Some("ws://owner:7700".into()),
             backup_url: None,
             notifications: Vec::new(),
+            error: None,
         });
 
         let (client, read_loop) =
@@ -371,6 +373,7 @@ mod tests {
                 owner_url: None,
                 backup_url: None,
                 notifications: Vec::new(),
+                error: None,
             });
         }
 
@@ -406,6 +409,7 @@ mod tests {
                 deleted: false,
                 payload: Some(vec![9, 8, 7]),
             }],
+            error: None,
         });
 
         let (client, read_loop) =

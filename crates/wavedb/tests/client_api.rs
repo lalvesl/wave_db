@@ -312,3 +312,121 @@ async fn transport_error_propagates() {
     let result = UserProfile::search(&db).await;
     assert!(result.is_err());
 }
+
+// ── Data hooks: client-side validate + node rejection mapping ───────────────
+
+fn validate_item(i: &Item1) -> Result<(), ValidationError> {
+    if i.qty == 0 {
+        return Err(ValidationError::field("qty", "must be non-zero"));
+    }
+    Ok(())
+}
+
+#[wave_db(struct_id = 102, NonUnique, validate = validate_item)]
+#[derive(PartialEq, Eq)]
+pub struct Item1 {
+    pub qty: u64,
+}
+pub type Item = Item1;
+
+fn item(qty: u64) -> Item {
+    Item {
+        id: Id::default(),
+        metadata: Metadata::default(),
+        qty,
+    }
+}
+
+/// An invalid record fails in `save` before any bytes hit the transport —
+/// the request log must show the `Connect` only, no `Write`.
+#[tokio::test]
+async fn client_validate_rejects_before_send() {
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+
+    let db = wavedb::Db::open_with_transport(mock.clone(), 7, 42)
+        .await
+        .expect("connect");
+
+    let err = item(0).save(&db).await.expect_err("qty=0 must fail");
+    match err {
+        wavedb_core::Error::Validation { struct_id, source } => {
+            assert_eq!(struct_id, 102);
+            assert_eq!(source.field.as_deref(), Some("qty"));
+        }
+        other => panic!("expected Validation, got {other:?}"),
+    }
+
+    // Only the Connect request was sent — no Write round-trip was paid.
+    let log = mock.log();
+    assert_eq!(log.len(), 1);
+    assert!(matches!(
+        log[0].kind,
+        wavedb_net::request::RequestKind::Connect { .. }
+    ));
+}
+
+/// A structured `NodeError` from the node maps back to the same typed
+/// `Error::Validation` the local pre-send check raises.
+#[tokio::test]
+async fn node_rejection_maps_to_typed_validation_error() {
+    use wavedb_net::request::{ErrorCode, NodeError};
+
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    // The node rejects the (locally valid) record — e.g. a stale client
+    // build whose compiled rules are behind the server's.
+    mock.push(ScriptedReply::node_err(NodeError {
+        code: ErrorCode::ValidationFailed,
+        struct_id: 102,
+        field: Some("qty".into()),
+        message: "exceeds server-side limit".into(),
+    }));
+
+    let db = wavedb::Db::open_with_transport(mock.clone(), 7, 42)
+        .await
+        .expect("connect");
+
+    let err = item(5).save(&db).await.expect_err("node said no");
+    match err {
+        wavedb_core::Error::Validation { struct_id, source } => {
+            assert_eq!(struct_id, 102);
+            assert_eq!(source.field.as_deref(), Some("qty"));
+            assert_eq!(source.message, "exceeds server-side limit");
+        }
+        other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
+/// UnknownHeader from the node surfaces as `Error::UnknownHeader` with the
+/// full packed header.
+#[tokio::test]
+async fn node_unknown_header_maps_to_typed_error() {
+    use wavedb_net::request::{ErrorCode, NodeError};
+
+    let header = wavedb_core::wire::pack_header(102, 1);
+    let mock = MockTransport::new();
+    mock.push(ScriptedReply::connect(
+        "ws://owner:7700",
+        "ws://backup:7700",
+    ));
+    mock.push(ScriptedReply::node_err(NodeError {
+        code: ErrorCode::UnknownHeader,
+        struct_id: header,
+        field: None,
+        message: "not declared".into(),
+    }));
+
+    let db = wavedb::Db::open_with_transport(mock.clone(), 7, 42)
+        .await
+        .expect("connect");
+
+    let err = item(5).save(&db).await.expect_err("unknown header");
+    assert!(matches!(err, wavedb_core::Error::UnknownHeader(h) if h == header));
+}

@@ -13,6 +13,46 @@ pub fn build_shape(args: &WaveDbArgs) -> proc_macro2::TokenStream {
     }
 }
 
+/// `impl WaveDbHooks` — delegates to the `validate = fn` / `preprocess = fn`
+/// attribute paths when declared; otherwise the trait's no-op defaults apply
+/// and the `HAS_*` consts stay `false` so registry dispatch can skip the
+/// decode entirely.
+pub fn build_hooks_impl(
+    name: &Ident,
+    args: &WaveDbArgs,
+) -> proc_macro2::TokenStream {
+    let validate = args.validate.as_ref().map(|path| {
+        quote! {
+            const HAS_VALIDATE: bool = true;
+
+            fn validate(
+                &self,
+            ) -> ::core::result::Result<(), ::wavedb_core::ValidationError>
+            {
+                #path(self)
+            }
+        }
+    });
+    let preprocess = args.preprocess.as_ref().map(|path| {
+        quote! {
+            const HAS_PREPROCESS: bool = true;
+
+            fn preprocess(
+                &mut self,
+            ) -> ::core::result::Result<(), ::wavedb_core::ValidationError>
+            {
+                #path(self)
+            }
+        }
+    });
+    quote! {
+        impl ::wavedb_core::WaveDbHooks for #name {
+            #validate
+            #preprocess
+        }
+    }
+}
+
 fn build_get_by_id(
     name: &Ident,
     args: &WaveDbArgs,

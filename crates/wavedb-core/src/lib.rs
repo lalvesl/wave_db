@@ -16,7 +16,7 @@ pub mod registry;
 mod traits;
 pub mod wire;
 
-pub use error::{Error, Result};
+pub use error::{Error, Result, ValidationError};
 pub use id::{Id, Shape};
 pub use metadata::Metadata;
 pub use migration::{
@@ -24,6 +24,10 @@ pub use migration::{
     VersionRef,
 };
 pub use permission::{PermissionGroupId, PermissionRef};
-pub use registry::{FieldDescriptor, FieldKind, ObjectDescriptor};
-pub use traits::{MigratesFrom, MigrationChain, RollbackFrom, WaveDbStruct};
+pub use registry::{
+    FieldDescriptor, FieldKind, ObjectDescriptor, ObjectRegistry,
+};
+pub use traits::{
+    MigratesFrom, MigrationChain, RollbackFrom, WaveDbHooks, WaveDbStruct,
+};
 pub use wire::{Wire, WireError, WireReader, WireResult, WireWriter};

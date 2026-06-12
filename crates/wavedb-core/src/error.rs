@@ -1,5 +1,53 @@
 //! Workspace-wide error type for `WaveDB`.
 
+/// A data-validation failure raised by an application hook.
+///
+/// Returned by the `validate = fn` / `preprocess = fn` hooks declared in
+/// `#[wave_db(...)]`.  The same hook (and therefore the same error) runs on
+/// the client before a write is sent and on the Quick-Node before the write
+/// is committed — the node is the security boundary, the client run is fast
+/// feedback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationError {
+    /// The offending field, when the failure is attributable to one.
+    /// `String` (not `&'static str`) so a node's rejection survives the
+    /// wire round-trip back to the client intact.
+    pub field: Option<String>,
+    /// Human-readable description of the rule that failed.
+    pub message: String,
+}
+
+impl ValidationError {
+    /// A validation failure not tied to a single field.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            field: None,
+            message: message.into(),
+        }
+    }
+
+    /// A validation failure attributed to one field.
+    #[must_use]
+    pub fn field(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            field: Some(field.into()),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.field {
+            Some(field) => write!(f, "field `{field}`: {}", self.message),
+            None => f.write_str(&self.message),
+        }
+    }
+}
+
+impl std::error::Error for ValidationError {}
+
 /// The unified error type used across all `WaveDB` crates.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -75,6 +123,22 @@ pub enum Error {
     /// Deserialization failed inside a type-erased migration fn.
     #[error("migration deserialization failed: {0}")]
     MigrationDe(String),
+
+    /// A `validate` or `preprocess` hook rejected a record.
+    #[error("validation failed for struct_id {struct_id}: {source}")]
+    Validation {
+        /// The struct family whose hook rejected the record.
+        struct_id: u32,
+        /// The hook's failure detail.
+        source: ValidationError,
+    },
+
+    /// A record header named a `(struct_id, version)` the registry has not
+    /// declared — the node refuses to store bytes it cannot describe.
+    #[error(
+        "unknown record header {0:#010x} — (struct_id, version) not in `declare_objects!`"
+    )]
+    UnknownHeader(u32),
 
     /// A transport-level failure (connection refused, timeout, etc.).
     #[error("transport error: {0}")]

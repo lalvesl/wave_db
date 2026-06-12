@@ -34,3 +34,6 @@ tracing-subscriber = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 reqwest = { workspace = true }
+# Schema-aware handle_write tests declare real #[wave_db] structs.
+wavedb = { path = "../wavedb" }
+tempfile = { workspace = true }

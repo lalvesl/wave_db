@@ -79,6 +79,10 @@ pub struct QuickNodeMetrics {
     /// `data_file_used_pages / data_file_page_count` gives the fill ratio.
     /// 0 when in-memory.
     pub data_file_used_pages: u64,
+    /// Writes rejected by schema enforcement (unknown header, malformed
+    /// payload, `validate` / `preprocess` hook failure).  Always 0 on
+    /// schema-blind nodes (no registry attached).
+    pub rejected_count: u64,
 }
 
 /// Snapshot of a Slow-Node's operational state.

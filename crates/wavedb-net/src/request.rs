@@ -77,6 +77,40 @@ impl TransportRequest {
     }
 }
 
+/// Machine-readable failure category carried in a [`NodeError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, WaveWire)]
+pub enum ErrorCode {
+    /// The record header named a `(struct_id, version)` the node's registry
+    /// has not declared.  For this code, [`NodeError::struct_id`] carries the
+    /// **full u32 header**, not just the family id.
+    UnknownHeader,
+    /// The payload bytes don't decode as the header's declared type.
+    MalformedPayload,
+    /// The struct's `validate` hook rejected the record.
+    ValidationFailed,
+    /// The struct's `preprocess` hook rejected the record.
+    PreprocessFailed,
+    /// The node's storage engine failed to commit the write.
+    Storage,
+}
+
+/// A structured failure returned by a node in place of a response payload.
+///
+/// Carried in [`TransportResponse::error`]; the client maps it back to a
+/// typed [`wavedb_core::Error`] so application code never string-matches.
+#[derive(Debug, Clone, WaveWire)]
+pub struct NodeError {
+    /// Failure category.
+    pub code: ErrorCode,
+    /// Struct family the failure relates to (`0` when not applicable;
+    /// the full header for [`ErrorCode::UnknownHeader`]).
+    pub struct_id: u32,
+    /// Offending field name, when the failure is attributable to one.
+    pub field: Option<String>,
+    /// Human-readable detail.
+    pub message: String,
+}
+
 /// A response returned from the Quick-Node to the client.
 #[derive(Debug, Clone, WaveWire)]
 pub struct TransportResponse {
@@ -90,6 +124,37 @@ pub struct TransportResponse {
     pub backup_url: Option<String>,
     /// Piggyback notifications — object-changed events for the UI (may be empty).
     pub notifications: Vec<Notification>,
+    /// Structured failure — `Some` means the request was rejected and
+    /// `payload` is empty.
+    pub error: Option<NodeError>,
+}
+
+impl TransportResponse {
+    /// A successful response carrying `payload`.
+    #[must_use]
+    pub const fn ok(seq: u64, payload: Vec<u8>) -> Self {
+        Self {
+            seq,
+            payload,
+            owner_url: None,
+            backup_url: None,
+            notifications: Vec::new(),
+            error: None,
+        }
+    }
+
+    /// A rejection response carrying a structured [`NodeError`].
+    #[must_use]
+    pub const fn err(seq: u64, error: NodeError) -> Self {
+        Self {
+            seq,
+            payload: Vec::new(),
+            owner_url: None,
+            backup_url: None,
+            notifications: Vec::new(),
+            error: Some(error),
+        }
+    }
 }
 
 /// An object-changed notification piggybacked onto a response.

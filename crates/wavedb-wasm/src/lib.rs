@@ -337,6 +337,7 @@ mod wasm_impl {
                 owner_url: Some("ws://127.0.0.1:7700".into()),
                 backup_url: None,
                 notifications: Vec::new(),
+                error: None,
             };
             let bytes = encode_payload(&resp).unwrap();
             let decoded: TransportResponse = decode_payload(&bytes).unwrap();

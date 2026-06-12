@@ -170,7 +170,10 @@ pub mod prelude {
         object::{NonUniqueObject, UniqueObject},
         query::{Expr, Field},
     };
-    pub use wavedb_core::{Id, Metadata, PermissionRef, Shape, WaveDbStruct};
+    pub use wavedb_core::{
+        Id, Metadata, PermissionRef, Shape, ValidationError, WaveDbHooks,
+        WaveDbStruct,
+    };
     pub use wavedb_macros::{declare_objects, wave_db};
 }
 

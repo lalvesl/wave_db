@@ -35,6 +35,17 @@
 //! - `migrate_from_with`, `first_try`     → require `migrate_from`
 //! - `migrate_rollback_with`              → requires `migrate_rollback`
 //! - `fallback_not_found`                 → standalone
+//!
+//! # Data hook attributes
+//!
+//! | Attribute | Kind | Runs on | Description |
+//! |-----------|------|---------|-------------|
+//! | `validate = fn` | sync fn | client **and** Quick-Node | `fn(&Self) -> Result<(), ValidationError>` — invariant checks; client run is fast feedback, node run is the security boundary. |
+//! | `preprocess = fn` | sync fn | Quick-Node only | `fn(&mut Self) -> Result<(), ValidationError>` — server-authoritative normalisation / derived fields; runs after `validate`, before the WAL commit. |
+//!
+//! Both are standalone and synchronous (no `Db` access) so the same fn runs
+//! identically on native and wasm32 and dispatches through the static
+//! registry without `dyn`.
 
 #![warn(missing_docs)]
 
@@ -55,7 +66,7 @@ use syn::{ItemStruct, parse_macro_input};
 use args::WaveDbArgs;
 use codegen::{
     build_anchors_impl, build_auto_derives, build_field_consts,
-    build_fields_accessor, build_shape, build_typed_wrappers,
+    build_fields_accessor, build_hooks_impl, build_shape, build_typed_wrappers,
 };
 use crud::build_crud_impl;
 use migration::build_migration_impl;
@@ -196,6 +207,9 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
     // ── Migration code generation ─────────────────────────────────────────────
     let migration_impl = build_migration_impl(name, sid, version, &args);
 
+    // ── Data hooks (validate / preprocess) ───────────────────────────────────
+    let hooks_impl = build_hooks_impl(name, &args);
+
     // ── Wire impl (own serialization — replaces serde/postcard) ─────────────
     // Generated directly (not via `#[derive(WaveWire)]`) so consumer crates
     // don't need a direct wavedb-macros dependency for the derive path.
@@ -239,6 +253,7 @@ pub fn wave_db(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #crud_impl
         #migration_impl
+        #hooks_impl
     };
 
     expanded.into()

@@ -300,6 +300,7 @@ async fn handle_post(
             owner_url: None,
             backup_url: None,
             notifications: Vec::new(),
+            error: None,
         });
 
     encode_payload(&resp).map_or_else(
@@ -366,6 +367,7 @@ mod tests {
             owner_url: Some("http://owner".into()),
             backup_url: Some("http://backup".into()),
             notifications: Vec::new(),
+            error: None,
         }
     }
 
@@ -402,6 +404,7 @@ mod tests {
                 owner_url: None,
                 backup_url: None,
                 notifications: Vec::new(),
+                error: None,
             });
         }
 
@@ -463,6 +466,7 @@ mod tests {
                 deleted: false,
                 payload: Some(vec![1, 2, 3]),
             }],
+            error: None,
         };
         server.state.push_response(resp_with_notification);
 

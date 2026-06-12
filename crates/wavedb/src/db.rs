@@ -10,9 +10,11 @@ use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use wavedb_core::{Id, MigrationChain, Result, WaveDbStruct};
+use wavedb_core::{Id, MigrationChain, Result, ValidationError, WaveDbStruct};
 use wavedb_net::TransportResponse;
-use wavedb_net::request::{RequestKind, TransportRequest};
+use wavedb_net::request::{
+    ErrorCode, NodeError, RequestKind, TransportRequest,
+};
 
 use crate::object::{
     do_delete, do_query_non_unique, do_search_unique, do_write,
@@ -30,6 +32,36 @@ use crate::query::Expr;
 // struct with no generic parameter.
 
 type DisconnectHook = Box<dyn Fn(u64, u64) + Send + Sync + 'static>;
+
+/// Map a node's structured rejection back to the typed workspace error.
+///
+/// Validation and preprocess failures reconstruct the exact
+/// [`wavedb_core::Error::Validation`] the hook produced node-side, so a
+/// record that slipped past a stale client build fails with the same error
+/// type the local pre-send check raises.
+fn node_error_to_core(err: NodeError) -> wavedb_core::Error {
+    match err.code {
+        // For UnknownHeader the node packs the full header into `struct_id`.
+        ErrorCode::UnknownHeader => {
+            wavedb_core::Error::UnknownHeader(err.struct_id)
+        }
+        ErrorCode::ValidationFailed | ErrorCode::PreprocessFailed => {
+            wavedb_core::Error::Validation {
+                struct_id: err.struct_id,
+                source: ValidationError {
+                    field: err.field,
+                    message: err.message,
+                },
+            }
+        }
+        ErrorCode::MalformedPayload | ErrorCode::Storage => {
+            wavedb_core::Error::Other(format!(
+                "node rejected request ({:?}): {}",
+                err.code, err.message
+            ))
+        }
+    }
+}
 
 /// An erased async-send callable.
 ///
@@ -228,10 +260,19 @@ impl Db {
     }
 
     /// Send a typed [`RequestKind`] and return the raw payload bytes.
+    ///
+    /// A structured [`NodeError`](wavedb_net::request::NodeError) in the
+    /// response is mapped back to the matching typed [`wavedb_core::Error`]
+    /// — a node-side `validate` rejection surfaces to application code as
+    /// the **same** `Error::Validation` it would have gotten from the local
+    /// pre-send check.
     pub async fn send(&self, kind: RequestKind) -> Result<Vec<u8>> {
         let seq = self.inner.seq.fetch_add(1, Ordering::Relaxed);
         let req = TransportRequest::new(seq, kind);
         let resp = self.raw_send(req).await?;
+        if let Some(err) = resp.error {
+            return Err(node_error_to_core(err));
+        }
         Ok(resp.payload)
     }
 
@@ -299,7 +340,7 @@ impl Db {
     /// keeps ownership — no `.clone()` boilerplate at the call site.
     pub async fn save<T>(&self, record: &T) -> Result<()>
     where
-        T: WaveDbStruct + wavedb_core::Wire + Sync,
+        T: WaveDbStruct + wavedb_core::WaveDbHooks + wavedb_core::Wire + Sync,
     {
         do_write(self, record).await
     }

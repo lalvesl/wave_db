@@ -28,6 +28,7 @@ use tokio::net::TcpListener;
 use tokio::task::AbortHandle;
 
 use wavedb::Db;
+use wavedb_core::ObjectRegistry;
 use wavedb_net::WsClient;
 use wavedb_quick_node::{
     config::{Config as QuickConfig, OwnershipSpec},
@@ -56,6 +57,10 @@ pub struct ClusterSpec {
     pub force_http: bool,
     /// The tenant that every Quick-Node in this cluster will own.
     pub owned_tenant: u64,
+    /// Static object registry to attach to every Quick-Node
+    /// (`declare_objects!`'s `REGISTRY`).  `None` spawns schema-blind
+    /// nodes (the legacy default).
+    pub registry: Option<&'static ObjectRegistry>,
 }
 
 impl Default for ClusterSpec {
@@ -66,6 +71,7 @@ impl Default for ClusterSpec {
             http_poll_interval: Duration::from_secs(1),
             force_http: false,
             owned_tenant: 42,
+            registry: None,
         }
     }
 }
@@ -186,6 +192,8 @@ pub struct TestCluster {
     pub front_door: String,
     /// Resolved configuration used to spawn this cluster.
     owned_tenant: u64,
+    /// Registry attached to every Quick-Node (kept for restarts).
+    registry: Option<&'static ObjectRegistry>,
     /// Shared HTTP client for slow-node flushes.  Reused across every
     /// `flush_batch` call so connections are pooled — otherwise each
     /// flush opens a fresh TCP socket and we hit `EMFILE` under load.
@@ -272,7 +280,10 @@ impl TestCluster {
                 cluster_key: None,
             };
 
-            let node = Arc::new(QuickNode::new(config.clone()));
+            let node = Arc::new(spec.registry.map_or_else(
+                || QuickNode::new(config.clone()),
+                |reg| QuickNode::with_registry(config.clone(), reg),
+            ));
             let compact_handle =
                 node.start_compaction_loop(config.journal_compact_secs);
             let app = quick_server::router((*node).clone());
@@ -314,6 +325,7 @@ impl TestCluster {
             },
             front_door,
             owned_tenant,
+            registry: spec.registry,
             flush_client,
             _data_dir: data_root,
         }
@@ -383,7 +395,10 @@ impl TestCluster {
             cluster_key: None,
         };
 
-        let node = Arc::new(QuickNode::new(config.clone()));
+        let node = Arc::new(self.registry.map_or_else(
+            || QuickNode::new(config.clone()),
+            |reg| QuickNode::with_registry(config.clone(), reg),
+        ));
         let compact_handle =
             node.start_compaction_loop(config.journal_compact_secs);
         let app = quick_server::router((*node).clone());

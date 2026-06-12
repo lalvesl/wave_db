@@ -8,7 +8,7 @@
 
 use crate::db::Db;
 use crate::query::Expr;
-use wavedb_core::{MigrationChain, Result, Shape, WaveDbStruct};
+use wavedb_core::{MigrationChain, Result, Shape, WaveDbHooks, WaveDbStruct};
 use wavedb_net::request::RequestKind;
 
 /// Behaviour for **Unique** records — exactly one live record per
@@ -156,10 +156,22 @@ where
 /// The version byte travels with the record so future reads can pick the right
 /// chain direction (forward migrate / rollback) regardless of which version
 /// the reader requested.
+///
+/// Runs the struct's `validate` hook **before** anything is encoded or sent —
+/// an invalid record fails locally with [`wavedb_core::Error::Validation`]
+/// and never costs a round-trip.  The Quick-Node re-runs the same hook on
+/// arrival; the client run is convenience, the node run is the boundary.
 pub async fn do_write<S>(db: &Db, record: &S) -> Result<()>
 where
-    S: WaveDbStruct + wavedb_core::Wire + Sync,
+    S: WaveDbStruct + WaveDbHooks + wavedb_core::Wire + Sync,
 {
+    record
+        .validate()
+        .map_err(|source| wavedb_core::Error::Validation {
+            struct_id: S::STRUCT_ID,
+            source,
+        })?;
+
     // Single allocation: version byte + exact wire size.
     let mut payload = Vec::with_capacity(1 + record.wire_size());
     payload.push(S::STRUCT_VERSION);

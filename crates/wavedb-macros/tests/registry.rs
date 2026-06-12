@@ -166,3 +166,160 @@ fn descriptor_matches_wire_reality() {
     let back: Order1 = wavedb_core::wire::from_wire(&bytes).expect("parse");
     assert_eq!(back, rec);
 }
+
+// ── Data hooks: validate / preprocess through the registry ──────────────────
+
+fn validate_gadget(g: &Gadget1) -> Result<(), ValidationError> {
+    if g.qty == 0 {
+        return Err(ValidationError::field("qty", "must be non-zero"));
+    }
+    Ok(())
+}
+
+fn preprocess_gadget(g: &mut Gadget1) -> Result<(), ValidationError> {
+    if g.code.trim().is_empty() {
+        return Err(ValidationError::field("code", "blank after trim"));
+    }
+    g.code = g.code.trim().to_uppercase();
+    Ok(())
+}
+
+#[wave_db(
+    struct_id = 7003,
+    NonUnique,
+    validate = validate_gadget,
+    preprocess = preprocess_gadget,
+)]
+#[derive(PartialEq, Eq)]
+pub struct Gadget1 {
+    pub qty: u64,
+    pub code: String,
+}
+
+/// No hook attributes — exercises the skip-without-decoding path.
+#[wave_db(struct_id = 7004, NonUnique)]
+#[derive(PartialEq, Eq)]
+pub struct Hookless1 {
+    pub n: u32,
+}
+
+declare_objects! {
+    pub mod hooks_registry {
+        gadgets:  [Gadget1],
+        hookless: [Hookless1],
+    }
+}
+
+fn gadget(qty: u64, code: &str) -> Gadget1 {
+    Gadget1 {
+        id: Id::default(),
+        metadata: Metadata::default(),
+        qty,
+        code: code.to_string(),
+    }
+}
+
+#[test]
+#[allow(clippy::assertions_on_constants)]
+fn hooks_consts_reflect_declarations() {
+    assert!(<Gadget1 as WaveDbHooks>::HAS_VALIDATE);
+    assert!(<Gadget1 as WaveDbHooks>::HAS_PREPROCESS);
+    assert!(!<Hookless1 as WaveDbHooks>::HAS_VALIDATE);
+    assert!(!<Hookless1 as WaveDbHooks>::HAS_PREPROCESS);
+}
+
+#[test]
+fn typed_hooks_run_directly() {
+    assert!(gadget(1, "ok").validate().is_ok());
+
+    let err = gadget(0, "ok").validate().expect_err("qty rule");
+    assert_eq!(err.field.as_deref(), Some("qty"));
+
+    let mut g = gadget(3, "  ab12  ");
+    g.preprocess().expect("preprocess");
+    assert_eq!(g.code, "AB12");
+}
+
+#[test]
+fn registry_validate_dispatches_by_header() {
+    let good = wavedb_core::wire::to_wire(&gadget(2, "x")).expect("wire");
+    hooks_registry::validate(Gadget1::HEADER, &good).expect("valid record");
+
+    let bad = wavedb_core::wire::to_wire(&gadget(0, "x")).expect("wire");
+    let err = hooks_registry::validate(Gadget1::HEADER, &bad)
+        .expect_err("qty rule via registry");
+    match err {
+        wavedb_core::Error::Validation { struct_id, source } => {
+            assert_eq!(struct_id, 7003);
+            assert_eq!(source.field.as_deref(), Some("qty"));
+        }
+        other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
+#[test]
+fn registry_preprocess_reencodes_transformed_record() {
+    let bytes =
+        wavedb_core::wire::to_wire(&gadget(2, "  ab12  ")).expect("wire");
+    let out = hooks_registry::preprocess(Gadget1::HEADER, &bytes)
+        .expect("preprocess ok")
+        .expect("hook declared → Some(bytes)");
+    let back: Gadget1 = wavedb_core::wire::from_wire(&out).expect("parse");
+    assert_eq!(back.code, "AB12");
+    assert_eq!(back.qty, 2);
+
+    // Rejecting preprocess surfaces as Error::Validation too.
+    let blank = wavedb_core::wire::to_wire(&gadget(2, "   ")).expect("wire");
+    assert!(matches!(
+        hooks_registry::preprocess(Gadget1::HEADER, &blank),
+        Err(wavedb_core::Error::Validation { .. })
+    ));
+}
+
+#[test]
+fn hookless_types_short_circuit() {
+    // validate: Ok without decoding — even garbage bytes pass, proving the
+    // decode is skipped entirely when no hook is declared.
+    hooks_registry::validate(Hookless1::HEADER, b"garbage")
+        .expect("no hook → no decode → Ok");
+    // preprocess: None (keep original bytes), same skip.
+    assert!(
+        hooks_registry::preprocess(Hookless1::HEADER, b"garbage")
+            .expect("no hook → Ok")
+            .is_none()
+    );
+}
+
+#[test]
+fn unknown_header_is_rejected_by_hooks() {
+    let unknown = 0xFFFF_FF01;
+    assert!(matches!(
+        hooks_registry::validate(unknown, &[]),
+        Err(wavedb_core::Error::UnknownHeader(h)) if h == unknown
+    ));
+    assert!(matches!(
+        hooks_registry::preprocess(unknown, &[]),
+        Err(wavedb_core::Error::UnknownHeader(h)) if h == unknown
+    ));
+}
+
+#[test]
+fn registry_static_exposes_hook_table() {
+    let reg = hooks_registry::REGISTRY;
+    assert_eq!(reg.descriptors.len(), 2);
+    assert!(reg.contains(Gadget1::HEADER));
+    assert!(!reg.contains(0xFFFF_FF01));
+
+    let bad = wavedb_core::wire::to_wire(&gadget(0, "x")).expect("wire");
+    assert!(matches!(
+        reg.validate(Gadget1::HEADER, &bad),
+        Err(wavedb_core::Error::Validation { .. })
+    ));
+    let ok = wavedb_core::wire::to_wire(&gadget(2, " z ")).expect("wire");
+    let out = reg
+        .preprocess(Gadget1::HEADER, &ok)
+        .expect("ok")
+        .expect("declared hook");
+    let back: Gadget1 = wavedb_core::wire::from_wire(&out).expect("parse");
+    assert_eq!(back.code, "Z");
+}

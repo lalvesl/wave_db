@@ -825,6 +825,74 @@ A node arriving at the cluster on a very old version doesn't need a direct migra
 
 ---
 
+## Validation & Preprocessing Hooks
+
+Because client and node compile the **same schema crate**, data rules are
+written once and enforced in both places. Two `#[wave_db]` attributes:
+
+```rust
+fn validate_payment(p: &Payment1) -> Result<(), ValidationError> {
+    if p.amount_cents == 0 {
+        return Err(ValidationError::field("amount_cents", "must be > 0"));
+    }
+    Ok(())
+}
+fn preprocess_payment(p: &mut Payment1) -> Result<(), ValidationError> {
+    p.currency = p.currency.trim().to_uppercase();  // server-authoritative
+    Ok(())
+}
+
+#[wave_db(struct_id = 12, NonUnique,
+          validate = validate_payment, preprocess = preprocess_payment)]
+pub struct Payment1 { pub amount_cents: u64, pub currency: String }
+```
+
+| Hook | Client (pre-send) | Quick-Node (pre-commit) | Purpose |
+| ---- | ----------------- | ----------------------- | ------- |
+| `validate` | ✓ — typed error, **zero round-trip** | ✓ — the security boundary | invariant checks |
+| `preprocess` | ✗ | ✓ — transformed bytes are what's committed | normalisation, derived fields |
+
+The node runs `validate` **before** `preprocess`: validate is the shared
+client/server contract over the bytes the client sent (same fn + same bytes ⇒
+same verdict on both sides), preprocess then transforms already-accepted
+data — and may itself still reject.
+
+Hooks are **synchronous and pure** — they run identically on native and
+wasm32, and dispatch through the static registry's monomorphised fn table
+(no `dyn`, no async machinery in the WASM binary). Hooks that need DB access
+(cross-record checks) are a planned, separate attribute family.
+
+### Node-side enforcement pipeline
+
+An application's Quick-Node binary attaches its registry at construction:
+
+```rust
+declare_objects! { pub mod app_objects { payments: [Payment1], … } }
+
+let node = QuickNode::with_registry(config, app_objects::REGISTRY);
+```
+
+Every incoming write then passes four gates **before the WAL commit**:
+
+1. **Header check** — `(struct_id, version)` must be declared in
+   `declare_objects!`; unknown headers are refused outright.
+2. **Decode check** — the payload must parse as the declared type
+   (malformed bytes never reach storage).
+3. **`validate`** — same fn the client ran; stops clients that bypassed the
+   typed API or run stale rule sets.
+4. **`preprocess`** — the re-encoded result replaces the client's bytes.
+
+Rejections travel back as a structured `NodeError` (code, struct_id, field,
+message) on the response envelope, and the client maps it to the **same
+typed `Error::Validation`** the local pre-send check raises — application
+code handles one error shape regardless of which side rejected. Hook-less
+types skip the decode entirely (compile-time `HAS_VALIDATE` /
+`HAS_PREPROCESS` consts), so the gate costs nothing for structs that don't
+opt in. A node constructed without a registry (`QuickNode::new`) keeps the
+legacy schema-blind behaviour.
+
+---
+
 ## Distributed Architecture
 
 ### Same Binary

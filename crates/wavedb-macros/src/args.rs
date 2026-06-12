@@ -25,6 +25,13 @@ pub struct WaveDbArgs {
     pub first_try: Option<syn::Path>,
     /// Async fn: `async fn<Db>(&Db) -> Result<Option<Self>>` (after DB returns None)
     pub fallback_not_found: Option<syn::Path>,
+    // ── Data hooks ───────────────────────────────────────────────────────────
+    /// Sync fn: `fn(&Self) -> Result<(), ValidationError>` — runs on the
+    /// client before send and on the Quick-Node before commit.
+    pub validate: Option<syn::Path>,
+    /// Sync fn: `fn(&mut Self) -> Result<(), ValidationError>` — runs only on
+    /// the Quick-Node, after `validate`, before the WAL commit.
+    pub preprocess: Option<syn::Path>,
 }
 
 impl WaveDbArgs {
@@ -43,6 +50,8 @@ impl WaveDbArgs {
             migrate_rollback_with: None,
             first_try: None,
             fallback_not_found: None,
+            validate: None,
+            preprocess: None,
         }
     }
 
@@ -95,6 +104,13 @@ impl WaveDbArgs {
         } else if meta.path.is_ident("fallback_not_found") {
             let value = meta.value()?;
             self.fallback_not_found = Some(value.parse()?);
+        // ── Data hook attributes ──────────────────────────────────────────
+        } else if meta.path.is_ident("validate") {
+            let value = meta.value()?;
+            self.validate = Some(value.parse()?);
+        } else if meta.path.is_ident("preprocess") {
+            let value = meta.value()?;
+            self.preprocess = Some(value.parse()?);
         } else {
             return Err(meta.error("unrecognized wave_db attribute"));
         }

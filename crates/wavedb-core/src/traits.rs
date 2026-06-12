@@ -1,6 +1,7 @@
 //! The trait that every `#[wave_db]`-annotated struct implements.
 
 use crate::Shape;
+use crate::error::ValidationError;
 
 /// Trait implemented by the `#[wave_db]` proc-macro on every annotated struct.
 ///
@@ -27,6 +28,64 @@ pub trait WaveDbStruct {
     /// page comes under pressure — the engine never has to guess what a byte
     /// range is.  See the readme section _Stackable vs. heapable_.
     const HEAPABLE_FIELDS: &'static [&'static str] = &[];
+}
+
+/// Application data hooks: validation and server-side preprocessing.
+///
+/// Implemented by the `#[wave_db]` macro for **every** annotated struct.
+/// Without hook attributes both methods are the default no-ops and the
+/// `HAS_*` consts stay `false`, which lets the registry skip the
+/// decode/re-encode round-trip entirely for hook-less types.
+///
+/// ```rust,ignore
+/// fn validate_order(o: &Order1) -> Result<(), ValidationError> {
+///     if o.amount == 0 {
+///         return Err(ValidationError::field("amount", "must be non-zero"));
+///     }
+///     Ok(())
+/// }
+/// fn preprocess_order(o: &mut Order1) -> Result<(), ValidationError> {
+///     o.reference = o.reference.trim().to_uppercase();
+///     Ok(())
+/// }
+///
+/// #[wave_db(struct_id = 2, NonUnique, validate = validate_order, preprocess = preprocess_order)]
+/// pub struct Order1 { pub amount: u64, pub reference: String }
+/// ```
+///
+/// # Where each hook runs
+///
+/// | Hook | Client (pre-send) | Quick-Node (pre-commit) |
+/// |------|-------------------|--------------------------|
+/// | `validate` | ✓ fast feedback, no round-trip | ✓ the security boundary |
+/// | `preprocess` | ✗ | ✓ server-authoritative transform |
+///
+/// The node runs `validate` **before** `preprocess`: `validate` is the shared
+/// client/server contract over the bytes the client sent (same fn + same
+/// bytes ⇒ same verdict on both sides), `preprocess` then transforms already
+/// accepted data — and may itself still reject.
+///
+/// Hooks are **synchronous and pure** by design: they run identically on
+/// native and wasm32 targets and are dispatchable through the static
+/// registry's monomorphised fn table. Hooks that need DB access are a
+/// separate, future attribute family.
+pub trait WaveDbHooks {
+    /// `true` when the struct declared `validate = fn`.
+    const HAS_VALIDATE: bool = false;
+    /// `true` when the struct declared `preprocess = fn`.
+    const HAS_PREPROCESS: bool = false;
+
+    /// Check record invariants. Runs client-side before a write is sent and
+    /// node-side before the write is committed.
+    fn validate(&self) -> Result<(), ValidationError> {
+        Ok(())
+    }
+
+    /// Normalise / derive fields. Runs **only** on the Quick-Node, after
+    /// `validate` and before the WAL commit.
+    fn preprocess(&mut self) -> Result<(), ValidationError> {
+        Ok(())
+    }
 }
 
 /// Compile-time chain link **backward**: `Self` migrates *from* `Source` (older).

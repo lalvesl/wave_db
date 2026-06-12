@@ -112,3 +112,80 @@ impl ObjectDescriptor {
         self.fields.iter().find(|f| f.name == name)
     }
 }
+
+/// The complete static registry handle emitted by `declare_objects!` as
+/// `REGISTRY: &'static ObjectRegistry`.
+///
+/// This is the value an application passes to node constructors so a
+/// schema-generic node binary can dispatch on **the application's** declared
+/// objects: descriptor lookup, wire-level validation, and wire-level
+/// preprocessing.  The fields are plain fn pointers — one indirection at the
+/// node boundary — but each generated fn body is the same monomorphised
+/// constant-comparison chain as `find()`: no `dyn`, no hashing.
+///
+/// Validation/preprocess entries decode the body through the **typed**
+/// `Wire` impl of the matching struct and run its
+/// [`WaveDbHooks`](crate::traits::WaveDbHooks) methods, so application hooks
+/// are written against the real struct, never raw bytes.  Types whose
+/// `HAS_VALIDATE` / `HAS_PREPROCESS` consts are `false` are skipped without
+/// decoding.
+#[derive(Clone, Copy)]
+pub struct ObjectRegistry {
+    /// Every declared object version's descriptor.
+    pub descriptors: &'static [&'static ObjectDescriptor],
+    /// Header-keyed descriptor lookup (`struct_id << 8 | version`).
+    pub find_fn: FindFn,
+    /// Decode `body` as the header's type and run its `validate` hook.
+    ///
+    /// `Err(Error::UnknownHeader)` when the header is not declared.
+    pub validate_fn: ValidateFn,
+    /// Decode `body` as the header's type, run its `preprocess` hook, and
+    /// re-encode.  `Ok(None)` means "unchanged" (no hook declared) — the
+    /// caller keeps the original bytes and skips the re-encode cost.
+    pub preprocess_fn: PreprocessFn,
+}
+
+/// Header-keyed descriptor lookup (`struct_id << 8 | version`).
+pub type FindFn = fn(u32) -> Option<&'static ObjectDescriptor>;
+/// Wire-level `validate` dispatch: `(header, body)`.
+pub type ValidateFn = fn(u32, &[u8]) -> crate::Result<()>;
+/// Wire-level `preprocess` dispatch: `(header, body)` → re-encoded bytes,
+/// or `None` when the type declared no hook.
+pub type PreprocessFn = fn(u32, &[u8]) -> crate::Result<Option<Vec<u8>>>;
+
+impl ObjectRegistry {
+    /// Look up a descriptor by record header.
+    #[must_use]
+    pub fn find(&self, header: u32) -> Option<&'static ObjectDescriptor> {
+        (self.find_fn)(header)
+    }
+
+    /// Whether this registry declares the given header.
+    #[must_use]
+    pub fn contains(&self, header: u32) -> bool {
+        self.find(header).is_some()
+    }
+
+    /// Run the header's `validate` hook against a wire-encoded body.
+    pub fn validate(&self, header: u32, body: &[u8]) -> crate::Result<()> {
+        (self.validate_fn)(header, body)
+    }
+
+    /// Run the header's `preprocess` hook against a wire-encoded body.
+    /// Returns the re-encoded bytes, or `None` when the type has no hook.
+    pub fn preprocess(
+        &self,
+        header: u32,
+        body: &[u8],
+    ) -> crate::Result<Option<Vec<u8>>> {
+        (self.preprocess_fn)(header, body)
+    }
+}
+
+impl std::fmt::Debug for ObjectRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObjectRegistry")
+            .field("declared", &self.descriptors.len())
+            .finish_non_exhaustive()
+    }
+}
