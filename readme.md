@@ -932,10 +932,30 @@ This separation lets each tier specialise its hardware: Quick-Nodes are sized fo
 
 ### Ownership Model
 
-Two ownership scopes, both following the same protocol — **one writer, n replicas**:
+**Ownership is never configured — it is computed.** Every Quick-Node derives
+who owns a `(TENANT_ID, SHARD_ID)` partition from the **consistent-hash
+ring**: same membership view ⇒ same answer on every node, so agreement needs
+no handshake. The "negotiation" between Quick-Nodes is the gossip stream
+that moves the membership:
 
-1. **Tenant ownership** (default for Unique data). Exactly one Quick-Node owns each tenant. Other replicas receive the data for redundancy and read-fallback. If the owner crashes, a friendly replica takes over.
-2. **Shard ownership** (for NonUnique data). The 12-bit `SHARD_ID` space is partitioned into **runtime-negotiated ranges**, with one Quick-Node owning each range for a given tenant. Each NonUnique struct picks a property to hash into its `SHARD_ID` so the hash is the routing key. The range subdivision granularity adapts to the tenant's NonUnique cardinality — a tenant with millions of orders has many shards split across many nodes; a tenant with dozens has few shards on one node.
+- **Join:** a node announces itself (gossip `Announce`) and immediately owns
+  its ring share; the ring's consistent hashing keeps reassignment minimal.
+- **Solo:** a single node *is* the ring, so it owns every tenant — a
+  one-node deployment needs zero ownership setup.
+- **Graceful leave:** drain → gossip `Withdraw` → ring drops the node.
+- **Crash:** the heartbeat (periodic announce, default 1 s) evicts a peer
+  after 3 consecutive failures; ownership re-derives to the survivors
+  instantly. No records move — the replicas already hold the data.
+
+Two ownership scopes ride on this, both **one writer, n replicas**:
+
+1. **Tenant ownership** (default for Unique data, shard `0`). Exactly one
+   Quick-Node owns each tenant.
+2. **Shard ownership** (for NonUnique data). The 12-bit `SHARD_ID` space
+   subdivides a tenant across nodes; each NonUnique struct picks a property
+   to hash into its `SHARD_ID` so the hash is the routing key. (The engine
+   currently routes at tenant granularity — shard `0`; per-shard granularity
+   is the planned refinement of the same ring lookup.)
 
 In both cases the **owner is the only writer**. It is responsible for:
 
@@ -945,7 +965,7 @@ In both cases the **owner is the only writer**. It is responsible for:
 
 ### Replication Policy
 
-Each `(TENANT_ID, SHARD_ID)` partition lives on **at least 2 Quick-Nodes** by default (configurable via `MIN_REPLICAS`). The placement algorithm picks **physically distant nodes** — different sub-networks, different racks — so a single sub-network failure cannot take both copies offline.
+Each `(TENANT_ID, SHARD_ID)` partition lives on **at least 2 Quick-Nodes** by default (`MIN_REPLICAS`): the ring owner plus the next distinct nodes clockwise on the ring. After the owner's WAL commit, it pushes the committed bytes to its replica set (`POST /replicate`, fire-and-forget with per-peer ack watermarks) — the client's confirmation never waits on replicas; durability to the caller is the owner's journal, redundancy is asynchronous. Replicas store the owner's canonical (already validated + preprocessed) bytes verbatim and **never accept client writes** for the partition. Rack-aware placement (physically distant replicas — different sub-networks, different racks) is the planned refinement of the same walk.
 
 ### Routing & Failover
 

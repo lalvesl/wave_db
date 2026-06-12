@@ -10,7 +10,6 @@
 //! #[tokio::main]
 //! async fn main() -> wavedb_core::Result<()> {
 //!     Server::bind("127.0.0.1:7700")
-//!         .tenant(42)
 //!         .data_dir("./data")
 //!         .registry(app_objects::REGISTRY)
 //!         .serve()
@@ -19,9 +18,11 @@
 //! ```
 //!
 //! Defaults: no peers, no Slow-Node, in-memory storage (no `data_dir`),
-//! schema-blind (no `registry`).  Each `.tenant(n)` grants ownership of
-//! that tenant's full shard range.  Anything beyond this surface (cluster
-//! keys, custom shard ranges, …) drops down to [`Config`] +
+//! schema-blind (no `registry`).  **No tenant configuration**: partition
+//! ownership is derived from the consistent-hash ring at runtime — a solo
+//! node owns everything, and nodes joining via `.peers(…)` + gossip take
+//! over their ring share automatically.  Anything beyond this surface
+//! (cluster keys, transfer pins, …) drops down to [`Config`] +
 //! [`QuickNode`] directly — the builder is the 90% path, not a wall.
 
 use std::net::SocketAddr;
@@ -29,7 +30,7 @@ use std::path::PathBuf;
 
 use tokio::net::TcpListener;
 
-use crate::config::{Config, OwnershipSpec};
+use crate::config::Config;
 use crate::node::QuickNode;
 use crate::server::router;
 use wavedb_core::ObjectRegistry;
@@ -38,7 +39,6 @@ use wavedb_core::ObjectRegistry;
 #[derive(Debug)]
 pub struct Server {
     listen: String,
-    tenants: Vec<u64>,
     data_dir: PathBuf,
     registry: Option<&'static ObjectRegistry>,
     peers: String,
@@ -52,20 +52,11 @@ impl Server {
     pub fn bind(listen: impl Into<String>) -> Self {
         Self {
             listen: listen.into(),
-            tenants: Vec::new(),
             data_dir: PathBuf::new(),
             registry: None,
             peers: String::new(),
             slow_node: None,
         }
-    }
-
-    /// Own `tenant` (its full shard range).  Call once per tenant served
-    /// by this node.
-    #[must_use]
-    pub fn tenant(mut self, tenant: u64) -> Self {
-        self.tenants.push(tenant);
-        self
     }
 
     /// Persist to `dir` (journal + data + heap files, WAL durability).
@@ -120,15 +111,6 @@ impl Server {
             listen: addr.to_string(),
             peers: self.peers,
             slow_node: self.slow_node,
-            owns: self
-                .tenants
-                .iter()
-                .map(|&tenant| OwnershipSpec {
-                    tenant,
-                    shard_start: 0,
-                    shard_end: 4095,
-                })
-                .collect(),
             bloom_interval_secs: 60,
             journal_compact_secs: 30,
             data_dir: self.data_dir,
@@ -140,9 +122,12 @@ impl Server {
             None => QuickNode::new(config),
         };
 
-        // Handle dropped on purpose: the loop self-terminates when the
-        // node's inner state drops (it holds only a Weak ref).
+        // Handles dropped on purpose: both loops self-terminate when the
+        // node's inner state drops (they hold only a Weak ref).
         let _ = node.start_compaction_loop(30);
+        // Liveness: announce every second; a peer missing 3 rounds is
+        // evicted and its partitions re-derive to the survivors.
+        let _ = node.start_heartbeat_loop(std::time::Duration::from_secs(1), 3);
         if has_peers {
             let gossip = node.clone();
             tokio::spawn(async move { gossip.announce_self().await });
@@ -157,7 +142,7 @@ impl Server {
     }
 
     /// Bind and serve until the process is stopped.  The one-expression
-    /// backend: `Server::bind(…).tenant(…).registry(…).serve().await`.
+    /// backend: `Server::bind(…).registry(…).serve().await`.
     pub async fn serve(self) -> wavedb_core::Result<()> {
         self.start().await?.wait().await
     }

@@ -7,7 +7,6 @@
 //! | `WAVE_QN_LISTEN`    | Socket address to listen on (host:port)           |
 //! | `WAVE_QN_PEERS`     | Comma-separated peer quick-node addresses         |
 //! | `WAVE_SLOW_ADDR`    | Slow-node address (host:port, no scheme)          |
-//! | `WAVE_TENANT`       | Tenant ID (u64) that this node owns               |
 //! | `WAVE_QN_DATA_DIR`  | Directory for journal/heap/data files             |
 //!
 //! Run via `nix run .#real_example` — do not invoke directly.
@@ -17,11 +16,7 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 
-use wavedb_quick_node::{
-    config::{Config, OwnershipSpec},
-    node::QuickNode,
-    server,
-};
+use wavedb_quick_node::{config::Config, node::QuickNode, server};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,10 +24,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "127.0.0.1:0".to_string());
     let peers = std::env::var("WAVE_QN_PEERS").unwrap_or_default();
     let slow_node = std::env::var("WAVE_SLOW_ADDR").ok();
-    let tenant: u64 = std::env::var("WAVE_TENANT")
-        .unwrap_or_else(|_| "100".to_string())
-        .parse()
-        .unwrap_or(100);
     let data_dir = std::env::var("WAVE_QN_DATA_DIR").map_or_else(
         |_| {
             std::env::temp_dir()
@@ -47,11 +38,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listen: listen.clone(),
         peers,
         slow_node,
-        owns: vec![OwnershipSpec {
-            tenant,
-            shard_start: 0,
-            shard_end: 4095,
-        }],
         bloom_interval_secs: 60,
         journal_compact_secs: 30,
         data_dir,

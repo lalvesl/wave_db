@@ -51,6 +51,22 @@ fix that, but nothing consumes it yet. Every milestone below is some form of
 > A Quick-Node that knows the schema can evaluate queries, enforce shapes,
 > and maintain anchors. Without this, nothing else matters.
 
+> **Landed early (2026-06-12), pulled out of M1:**
+> - **M1.1 partially** — `wavedb_quick_node::Server` builder
+>   (`Server::bind(…).registry(REGISTRY).serve()`), the library-mode
+>   entrypoint; the generic `main.rs` binary still exists for schema-less
+>   smoke tests.
+> - **Ring-derived runtime ownership** — `Config.owns`/`--owns` deleted;
+>   `QuickNode::owns()` computes ownership from the consistent-hash ring
+>   (solo node owns everything), gossip moves membership, heartbeat
+>   (1 s × 3 strikes) evicts crashed peers, ownership re-derives to
+>   survivors. `OwnershipMap` remains as transfer-pin override only.
+> - **Replica fan-out** — owner pushes committed bytes to the next
+>   `MIN_REPLICAS - 1` ring nodes (`POST /replicate`, HMAC purpose
+>   `Replicate`, ack-fed watermarks); replicas store verbatim, never accept
+>   client writes. e2e: `e2e_ownership.rs` (solo-owns-all, single-writer
+>   agreement, redirect, replica copy, crash takeover).
+
 1. **Library-mode node entrypoints.** Split `main.rs` from node logic:
    - `wavedb_quick_node::run(config, &'static ObjectRegistry) -> Result<()>`
    - `wavedb_slow_node::run(config, &'static ObjectRegistry) -> Result<()>`

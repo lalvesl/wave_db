@@ -36,7 +36,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // on its WAVE_READY line.
     let mut backend = Command::new(sibling_bin("mini_app_backend"))
         .env("WAVE_LISTEN", "127.0.0.1:0")
-        .env("WAVE_TENANT", "42")
         .env("WAVE_DATA_DIR", &data_dir)
         .stdout(Stdio::piped())
         .spawn()

@@ -73,6 +73,37 @@ impl ConsistentRing {
             .map(|(_, &id)| id)
     }
 
+    /// Return the replica set for `(tenant, shard)`: the owner followed by
+    /// the next distinct physical nodes clockwise on the ring, up to `n`
+    /// nodes total.
+    ///
+    /// Index 0 is always the owner ([`Self::owner_of`]).  With fewer than
+    /// `n` physical nodes the set is simply every node, owner first — a
+    /// solo node returns `[self]`.  This is the placement rule behind
+    /// `MIN_REPLICAS`: one writer, the rest hold copies for redundancy.
+    pub fn replicas_of(
+        &self,
+        tenant: u64,
+        shard: u16,
+        n: usize,
+    ) -> Vec<NodeId> {
+        let mut out: Vec<NodeId> = Vec::with_capacity(n.min(self.addrs.len()));
+        if n == 0 || self.ring.is_empty() {
+            return out;
+        }
+        let key = partition_hash(tenant, shard);
+        // Clockwise walk starting at the partition key, wrapping once.
+        for (_, &id) in self.ring.range(key..).chain(self.ring.iter()) {
+            if !out.contains(&id) {
+                out.push(id);
+                if out.len() == n || out.len() == self.addrs.len() {
+                    break;
+                }
+            }
+        }
+        out
+    }
+
     /// Return the socket address of `id`, if known.
     pub fn addr_of(&self, id: NodeId) -> Option<&str> {
         self.addrs.get(&id).map(String::as_str)
@@ -205,6 +236,44 @@ mod tests {
             h = (h ^ u64::from(b)).wrapping_mul(FNV_PRIME);
         }
         h
+    }
+
+    #[test]
+    fn replicas_solo_node_is_just_the_owner() {
+        let mut ring = ConsistentRing::new();
+        ring.add_node(1, "a");
+        assert_eq!(ring.replicas_of(42, 0, 3), vec![1]);
+    }
+
+    #[test]
+    fn replicas_owner_first_then_distinct_successor() {
+        let id1 = fnv_addr("10.0.0.1:7700");
+        let id2 = fnv_addr("10.0.0.2:7700");
+        let mut ring = ConsistentRing::new();
+        ring.add_node(id1, "node1");
+        ring.add_node(id2, "node2");
+
+        for tenant in 0..8u64 {
+            let owner = ring.owner_of(tenant, 0).unwrap();
+            let replicas = ring.replicas_of(tenant, 0, 2);
+            assert_eq!(replicas.len(), 2);
+            assert_eq!(replicas[0], owner, "owner must lead the replica set");
+            assert_ne!(replicas[0], replicas[1], "replicas must be distinct");
+        }
+    }
+
+    #[test]
+    fn replicas_n_one_equals_owner_of() {
+        let id1 = fnv_addr("10.0.0.1:7700");
+        let id2 = fnv_addr("10.0.0.2:7700");
+        let mut ring = ConsistentRing::new();
+        ring.add_node(id1, "node1");
+        ring.add_node(id2, "node2");
+        assert_eq!(
+            ring.replicas_of(7, 0, 1),
+            vec![ring.owner_of(7, 0).unwrap()]
+        );
+        assert!(ring.replicas_of(7, 0, 0).is_empty());
     }
 
     #[test]

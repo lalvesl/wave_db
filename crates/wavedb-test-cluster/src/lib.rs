@@ -31,9 +31,7 @@ use wavedb::Db;
 use wavedb_core::ObjectRegistry;
 use wavedb_net::WsClient;
 use wavedb_quick_node::{
-    config::{Config as QuickConfig, OwnershipSpec},
-    node::QuickNode,
-    server as quick_server,
+    config::Config as QuickConfig, node::QuickNode, server as quick_server,
 };
 use wavedb_slow_node::{server as slow_server, store::HistoryStore};
 use wavedb_storage::NodeStorage;
@@ -88,6 +86,9 @@ pub struct QuickNodeHandle {
     /// runtime state without going through the network.
     pub node: Arc<QuickNode>,
     abort: AbortHandle,
+    /// Liveness heartbeat task — aborted with the node so a killed node
+    /// stops announcing and gets evicted by survivors.
+    heartbeat: AbortHandle,
     #[allow(dead_code)]
     _compact_task: Option<AbortHandle>,
 }
@@ -269,11 +270,6 @@ impl TestCluster {
                 listen: addr.to_string(),
                 peers: peers.join(","),
                 slow_node: Some(slow_addr.to_string()),
-                owns: vec![OwnershipSpec {
-                    tenant: spec.owned_tenant,
-                    shard_start: 0,
-                    shard_end: 4095,
-                }],
                 bloom_interval_secs: 60,
                 journal_compact_secs: 30,
                 data_dir: node_dir,
@@ -286,6 +282,9 @@ impl TestCluster {
             ));
             let compact_handle =
                 node.start_compaction_loop(config.journal_compact_secs);
+            // Fast heartbeat so crash-failover tests converge in ~300 ms.
+            let heartbeat =
+                node.start_heartbeat_loop(Duration::from_millis(100), 3);
             let app = quick_server::router((*node).clone());
             let task = tokio::spawn(async move {
                 axum::serve(listener, app).await.unwrap();
@@ -295,6 +294,7 @@ impl TestCluster {
                 addr,
                 node,
                 abort: task.abort_handle(),
+                heartbeat,
                 _compact_task: compact_handle,
             });
         }
@@ -333,6 +333,25 @@ impl TestCluster {
 
     // ── Client helpers ────────────────────────────────────────────────────
 
+    /// Index of the Quick-Node that currently owns `tenant` per the ring.
+    ///
+    /// Ownership is ring-derived and all live nodes share one membership
+    /// view, so asking any node gives the cluster's answer.  Panics when
+    /// no spawned node owns the tenant (cluster fully down).
+    pub fn owner_idx(&self, tenant: u64) -> usize {
+        self.quick_nodes
+            .iter()
+            .position(|h| h.is_alive() && h.node.owns(tenant, 0))
+            .expect("no live quick-node owns this tenant")
+    }
+
+    /// Open a [`Db`] connected to the ring owner of `tenant` — writes are
+    /// accepted without a redirect hop.
+    pub async fn open_user_at_owner(&self, user_id: u64, tenant: u64) -> Db {
+        let idx = self.owner_idx(tenant);
+        self.open_user_via(user_id, tenant, idx).await
+    }
+
     /// Open a [`Db`] connected to `quick_nodes[0]` via WebSocket.
     pub async fn open_user(&self, user_id: u64, tenant: u64) -> Db {
         self.open_user_via(user_id, tenant, 0).await
@@ -363,6 +382,9 @@ impl TestCluster {
     /// receive errors on their next send.
     pub async fn kill_quick_node(&mut self, idx: usize) {
         self.quick_nodes[idx].abort.abort();
+        // Stop its heartbeat too — a dead node must go silent so the
+        // survivors evict it from the ring.
+        self.quick_nodes[idx].heartbeat.abort();
         // Brief pause so the OS reclaims the port.
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -384,11 +406,6 @@ impl TestCluster {
             listen: new_addr.to_string(),
             peers: String::new(),
             slow_node: Some(self.slow_node.addr.to_string()),
-            owns: vec![OwnershipSpec {
-                tenant: self.owned_tenant,
-                shard_start: 0,
-                shard_end: 4095,
-            }],
             bloom_interval_secs: 60,
             journal_compact_secs: 30,
             data_dir: node_dir,
@@ -401,6 +418,8 @@ impl TestCluster {
         ));
         let compact_handle =
             node.start_compaction_loop(config.journal_compact_secs);
+        let heartbeat =
+            node.start_heartbeat_loop(Duration::from_millis(100), 3);
         let app = quick_server::router((*node).clone());
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -408,6 +427,7 @@ impl TestCluster {
 
         self.quick_nodes[idx] = QuickNodeHandle {
             addr: new_addr,
+            heartbeat,
             node,
             abort: task.abort_handle(),
             _compact_task: compact_handle,

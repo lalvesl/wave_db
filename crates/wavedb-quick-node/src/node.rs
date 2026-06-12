@@ -14,8 +14,10 @@ use crate::config::Config;
 use crate::gossip::{
     GossipClient, GossipKind, GossipMessage, GossipResponse, GossipState,
 };
-use crate::ownership::{OwnershipMap, ShardRange, TransferTracker};
-use crate::replication::ReplicationWatermark;
+use crate::ownership::{OwnershipMap, TransferTracker};
+use crate::replication::{
+    ReplicaRecord, ReplicateAck, ReplicateBatch, ReplicationWatermark,
+};
 use crate::ring::{ConsistentRing, NodeId};
 use wavedb_core::{Id, ObjectRegistry};
 use wavedb_net::EventBus;
@@ -27,6 +29,13 @@ use wavedb_net::request::{
     ErrorCode, NodeError, RequestKind, TransportRequest, TransportResponse,
 };
 use wavedb_storage::{NodeStorage, tuple4_page};
+
+/// Target copy count per partition.
+///
+/// One ring owner + `MIN_REPLICAS - 1` replicas holding the data for
+/// redundancy (readme: `MIN_REPLICAS`, default 2).  With fewer physical
+/// nodes the replica set is simply every node.
+pub const MIN_REPLICAS: usize = 2;
 
 // ── QuickNode ─────────────────────────────────────────────────────────────────
 
@@ -66,6 +75,10 @@ struct QuickNodeInner {
     /// Writes rejected by schema enforcement (unknown header, malformed
     /// payload, `validate` / `preprocess` hook failures).
     rejected_count: AtomicU64,
+    /// Records stored on this node as a replica copy (via `/replicate`).
+    replicated_count: AtomicU64,
+    /// HTTP client for owner → replica fan-out posts.
+    replicate_http: reqwest::Client,
     /// Per-page byte totals for hash-map style page occupancy.
     /// Write N goes to slot `N % MAX_MAP_PAGES`.
     page_bytes: Vec<AtomicU64>,
@@ -132,13 +145,9 @@ impl QuickNode {
         let mut ring = ConsistentRing::new();
         ring.add_node(node_id, config.listen.clone());
 
+        // Ownership is ring-derived; the map starts empty and only holds
+        // explicit transfer pins (see `QuickNode::owns`).
         let ownership = OwnershipMap::new();
-        for spec in &config.owns {
-            ownership.add(
-                spec.tenant,
-                ShardRange::new(spec.shard_start, spec.shard_end),
-            );
-        }
 
         let replication = ReplicationWatermark::new();
         for peer_addr in config.peer_addrs() {
@@ -184,6 +193,11 @@ impl QuickNode {
                 read_count: AtomicU64::new(0),
                 write_bytes: AtomicU64::new(0),
                 rejected_count: AtomicU64::new(0),
+                replicated_count: AtomicU64::new(0),
+                replicate_http: reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .expect("reqwest client"),
                 page_bytes: (0..MAX_MAP_PAGES)
                     .map(|_| AtomicU64::new(0))
                     .collect(),
@@ -245,6 +259,99 @@ impl QuickNode {
         Some(handle)
     }
 
+    /// Spawn the liveness heartbeat: every `interval`, announce this node to
+    /// each known peer.  A peer that fails `strikes` consecutive announces
+    /// is **evicted from the ring** — at which point the ring re-derives
+    /// ownership and the next node clockwise takes over the dead node's
+    /// partitions.  This is the crash-failover half of runtime ownership
+    /// negotiation (graceful departures use drain → gossip Withdraw).
+    ///
+    /// An evicted node that was merely partitioned re-adds itself with its
+    /// own next announce — membership converges from the gossip stream.
+    pub fn start_heartbeat_loop(
+        &self,
+        interval: std::time::Duration,
+        strikes: u32,
+    ) -> tokio::task::AbortHandle {
+        let inner = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            let mut misses: std::collections::HashMap<NodeId, u32> =
+                std::collections::HashMap::new();
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(inner) = inner.upgrade() else { break };
+                if inner.draining.load(Ordering::Relaxed) {
+                    break;
+                }
+                let node = Self { inner };
+                node.heartbeat_tick(&mut misses, strikes).await;
+            }
+        })
+        .abort_handle()
+    }
+
+    /// One heartbeat round: announce to every peer, evict peers that have
+    /// missed `strikes` rounds in a row.
+    async fn heartbeat_tick(
+        &self,
+        misses: &mut std::collections::HashMap<NodeId, u32>,
+        strikes: u32,
+    ) {
+        let peers: Vec<(NodeId, String)> = {
+            let ring = self.inner.ring.read();
+            ring.nodes()
+                .filter(|&id| id != self.inner.node_id)
+                .filter_map(|id| ring.addr_of(id).map(|a| (id, a.to_string())))
+                .collect()
+        };
+
+        for (peer_id, addr) in peers {
+            let epoch = self.inner.gossip.next_epoch();
+            self.inner.gossip.mark_seen(self.inner.node_id, epoch);
+            let msg =
+                GossipMessage {
+                    epoch,
+                    origin: self.inner.node_id,
+                    addr: self.inner.listen_addr.clone(),
+                    kind: GossipKind::Announce,
+                    token: self.inner.auth_key.as_ref().map(|k| {
+                        k.mint(self.inner.node_id, TokenPurpose::Gossip)
+                    }),
+                };
+            if self.inner.gossip_client.send(&addr, &msg).await.is_some() {
+                misses.remove(&peer_id);
+            } else {
+                {
+                    let n = misses.entry(peer_id).or_insert(0);
+                    *n += 1;
+                    if *n >= strikes {
+                        misses.remove(&peer_id);
+                        self.evict_peer(peer_id);
+                        tracing::warn!(
+                            peer = peer_id,
+                            after_misses = strikes,
+                            "heartbeat: peer evicted from ring — ownership re-derives",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Remove a dead peer from the ring and replication table.  Partitions
+    /// it owned re-derive to the surviving nodes on the next `owns()` call —
+    /// no records move; replicas already hold the data.
+    fn evict_peer(&self, peer: NodeId) {
+        self.inner.ring.write().remove_node(peer);
+        self.inner.replication.remove_peer(peer);
+    }
+
+    /// Test-only: inject a ring member directly (bypasses gossip).
+    #[cfg(test)]
+    pub(crate) fn ring_write_add_for_tests(&self, id: NodeId, addr: &str) {
+        self.inner.ring.write().add_node(id, addr);
+    }
+
     // ── Accessors ─────────────────────────────────────────────────────────
 
     /// This node's stable identifier.
@@ -258,8 +365,23 @@ impl QuickNode {
     }
 
     /// Returns `true` if this node owns the given `(tenant, shard)` partition.
+    ///
+    /// Ownership is **derived from the consistent-hash ring**, not from
+    /// configuration: every node computes the same owner from the same ring
+    /// membership, so agreement needs no extra handshake.  Membership moves
+    /// via gossip (announce / withdraw), which is what makes ownership a
+    /// runtime-negotiated property — a node joining or leaving reassigns
+    /// partitions automatically.  A solo node is the entire ring and
+    /// therefore owns everything.
+    ///
+    /// An explicit entry in the [`OwnershipMap`] (a transfer pin) overrides
+    /// the ring while a range move is in flight.
     pub fn owns(&self, tenant: u64, shard: u16) -> bool {
-        self.inner.ownership.owns(tenant, shard)
+        if self.inner.ownership.owns(tenant, shard) {
+            return true;
+        }
+        self.inner.ring.read().owner_of(tenant, shard)
+            == Some(self.inner.node_id)
     }
 
     /// Reference to the partition ownership map.
@@ -352,6 +474,10 @@ impl QuickNode {
             data_file_page_count,
             data_file_used_pages,
             rejected_count: self.inner.rejected_count.load(Ordering::Relaxed),
+            replicated_count: self
+                .inner
+                .replicated_count
+                .load(Ordering::Relaxed),
         }
     }
 
@@ -446,8 +572,8 @@ impl QuickNode {
         if self.inner.draining.load(Ordering::Acquire) {
             return self.draining_resp(seq);
         }
-        if !self.inner.ownership.owns(tenant, 0) {
-            return self.not_owner_resp(seq);
+        if !self.owns(tenant, 0) {
+            return self.not_owner_resp(seq, tenant);
         }
         self.inner.read_count.fetch_add(1, Ordering::Relaxed);
         // Phase 14 wires the storage engine lookup here.
@@ -472,8 +598,8 @@ impl QuickNode {
         if self.inner.draining.load(Ordering::Acquire) {
             return self.draining_resp(seq);
         }
-        if !self.inner.ownership.owns(tenant, 0) {
-            return self.not_owner_resp(seq);
+        if !self.owns(tenant, 0) {
+            return self.not_owner_resp(seq, tenant);
         }
         TransportResponse {
             seq,
@@ -496,8 +622,8 @@ impl QuickNode {
         if self.inner.draining.load(Ordering::Acquire) {
             return self.draining_resp(seq);
         }
-        if !self.inner.ownership.owns(tenant, 0) {
-            return self.not_owner_resp(seq);
+        if !self.owns(tenant, 0) {
+            return self.not_owner_resp(seq, tenant);
         }
 
         // ── Schema enforcement (registry-attached nodes only) ────────────
@@ -603,18 +729,18 @@ impl QuickNode {
         let _ = user; // user is no longer part of the slot key — preserved in payload.
         self.inner.page_bytes[page_idx]
             .fetch_add(payload_len, Ordering::Relaxed);
-        for peer_id in self.peer_ids() {
-            self.inner.replication.record_send(peer_id, write_seq);
-        }
 
-        TransportResponse {
-            seq,
-            payload: Vec::new(),
-            owner_url: None,
-            backup_url: None,
-            notifications: Vec::new(),
-            error: None,
-        }
+        // ── Replica fan-out ──────────────────────────────────────────────
+        // Push the committed bytes to the next ring nodes so the data
+        // survives this node: one writer (us, per the ring), n copies.
+        self.replicate_to_peers(
+            tenant,
+            write_seq,
+            id.raw(),
+            committed.into_owned(),
+        );
+
+        TransportResponse::ok(seq, Vec::new())
     }
 
     fn handle_delete(
@@ -627,8 +753,8 @@ impl QuickNode {
         if self.inner.draining.load(Ordering::Acquire) {
             return self.draining_resp(seq);
         }
-        if !self.inner.ownership.owns(tenant, 0) {
-            return self.not_owner_resp(seq);
+        if !self.owns(tenant, 0) {
+            return self.not_owner_resp(seq, tenant);
         }
         TransportResponse {
             seq,
@@ -829,11 +955,15 @@ impl QuickNode {
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
-    fn not_owner_resp(&self, seq: u64) -> TransportResponse {
+    fn not_owner_resp(&self, seq: u64, tenant: u64) -> TransportResponse {
         TransportResponse {
             seq,
             payload: b"not_owner".to_vec(),
-            owner_url: self.route_to_owner_hint(),
+            // Real owner per the ring — the client should re-dial this URL.
+            owner_url: self
+                .route_to(tenant, 0)
+                .map(|addr| format!("ws://{addr}/ws"))
+                .or_else(|| self.route_to_owner_hint()),
             backup_url: None,
             notifications: Vec::new(),
             error: None,
@@ -868,11 +998,107 @@ impl QuickNode {
             .and_then(|id| ring.addr_of(id).map(|a| format!("ws://{a}")))
     }
 
-    fn peer_ids(&self) -> Vec<NodeId> {
-        let ring = self.inner.ring.read();
-        ring.nodes()
-            .filter(|&id| id != self.inner.node_id)
-            .collect()
+    // ── Replica fan-out ──────────────────────────────────────────────────
+
+    /// Push a committed write to this partition's replica set (the next
+    /// [`MIN_REPLICAS`] minus one distinct ring nodes after us).
+    ///
+    /// Fire-and-forget per peer: the client's ack never waits on replicas
+    /// — durability to the caller is the owner's WAL, redundancy is
+    /// asynchronous.  Each successful peer ack advances the
+    /// [`ReplicationWatermark`].
+    fn replicate_to_peers(
+        &self,
+        tenant: u64,
+        write_seq: u64,
+        record_id: u128,
+        data: Vec<u8>,
+    ) {
+        // Snapshot the replica addresses under the lock, then release it
+        // before any awaiting happens.
+        let peers: Vec<(NodeId, String)> = {
+            let ring = self.inner.ring.read();
+            ring.replicas_of(tenant, 0, MIN_REPLICAS)
+                .into_iter()
+                .filter(|&id| id != self.inner.node_id)
+                .filter_map(|id| ring.addr_of(id).map(|a| (id, a.to_string())))
+                .collect()
+        };
+        if peers.is_empty() {
+            return; // solo node — the ring is just us, nothing to copy to
+        }
+
+        let batch =
+            ReplicateBatch {
+                origin: self.inner.node_id,
+                write_seq,
+                records: vec![ReplicaRecord {
+                    id: record_id,
+                    data,
+                }],
+                token: self.inner.auth_key.as_ref().map(|k| {
+                    k.mint(self.inner.node_id, TokenPurpose::Replicate)
+                }),
+            };
+        let Ok(body) = wavedb_net::frame::encode_payload(&batch) else {
+            tracing::error!("replicate batch encode failed");
+            return;
+        };
+
+        for (peer_id, addr) in peers {
+            self.inner.replication.add_peer(peer_id);
+            self.inner.replication.record_send(peer_id, write_seq);
+            let http = self.inner.replicate_http.clone();
+            let watermark = self.inner.replication.clone();
+            let body = body.clone();
+            tokio::spawn(async move {
+                let url = format!("http://{addr}/replicate");
+                match http.post(&url).body(body).send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        if let Ok(bytes) = resp.bytes().await {
+                            if let Ok(ack) = wavedb_net::frame::decode_payload::<
+                                ReplicateAck,
+                            >(
+                                &bytes
+                            ) {
+                                watermark.record_ack(peer_id, ack.write_seq);
+                            }
+                        }
+                    }
+                    Ok(resp) => tracing::warn!(
+                        peer = peer_id,
+                        status = %resp.status(),
+                        "replica rejected batch",
+                    ),
+                    Err(e) => tracing::warn!(
+                        peer = peer_id,
+                        error = %e,
+                        "replica unreachable",
+                    ),
+                }
+            });
+        }
+    }
+
+    /// Store a batch received from a partition owner (`POST /replicate`).
+    ///
+    /// No ownership gate and no hooks here on purpose: the bytes are the
+    /// owner's canonical, already-validated, already-preprocessed payload
+    /// — a replica stores them verbatim.
+    pub fn apply_replica(&self, batch: &ReplicateBatch) -> ReplicateAck {
+        if let Some(storage) = self.inner.storage.as_ref() {
+            for rec in &batch.records {
+                if let Err(e) = storage.commit_write(rec.id, rec.data.clone()) {
+                    tracing::error!(error = %e, id = rec.id, "replica WAL commit failed");
+                }
+            }
+        }
+        self.inner
+            .replicated_count
+            .fetch_add(batch.records.len() as u64, Ordering::Relaxed);
+        ReplicateAck {
+            write_seq: batch.write_seq,
+        }
     }
 
     /// Listen addresses of all known peers (excludes self).
@@ -991,21 +1217,19 @@ pub fn addr_to_node_id(addr: &str) -> NodeId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::OwnershipSpec;
 
     /// In-memory test config — uses an empty `data_dir` so `QuickNode::new`
     /// skips opening real storage files.  Tests that need on-disk storage
     /// should construct their own `Config` with a `tempdir().path()`.
-    fn cfg(tenant: u64, start: u16, end: u16) -> Config {
+    ///
+    /// Ownership is ring-derived now: a solo test node owns **every**
+    /// partition.  The legacy `(tenant, start, end)` parameters are
+    /// accepted and ignored so older call sites read naturally.
+    fn cfg(_tenant: u64, _start: u16, _end: u16) -> Config {
         Config {
             listen: "127.0.0.1:7700".into(),
             peers: String::new(),
             slow_node: None,
-            owns: vec![OwnershipSpec {
-                tenant,
-                shard_start: start,
-                shard_end: end,
-            }],
             bloom_interval_secs: 1,
             journal_compact_secs: 30,
             // Empty path → in-memory mode (no storage files opened).
@@ -1017,12 +1241,22 @@ mod tests {
     }
 
     #[test]
-    fn node_owns_configured_partition() {
+    fn solo_node_owns_every_partition() {
+        // Ring-derived ownership: a solo node IS the ring, so it owns
+        // every tenant and shard without any configuration.
         let node = QuickNode::new(cfg(42, 0, 511));
         assert!(node.owns(42, 0));
-        assert!(node.owns(42, 511));
-        assert!(!node.owns(42, 512));
-        assert!(!node.owns(99, 0));
+        assert!(node.owns(42, 4095));
+        assert!(node.owns(99, 0));
+        assert!(node.owns(u64::from(u32::MAX), 7));
+    }
+
+    /// Find a tenant whose ring owner is `peer` rather than the local node.
+    fn tenant_owned_by_peer(node: &QuickNode, peer: NodeId) -> u64 {
+        let ring = node.inner.ring.read();
+        (0..10_000u64)
+            .find(|&t| ring.owner_of(t, 0) == Some(peer))
+            .expect("some tenant must hash to the peer")
     }
 
     #[tokio::test]
@@ -1055,19 +1289,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_unowned_partition_returns_not_owner() {
+    async fn write_to_peer_owned_partition_returns_not_owner() {
         let node = QuickNode::new(cfg(42, 0, 511));
+        // Join a second node so the ring splits ownership.
+        let peer = addr_to_node_id("10.9.9.9:7700");
+        node.inner.ring.write().add_node(peer, "10.9.9.9:7700");
+        let tenant = tenant_owned_by_peer(&node, peer);
+
         let req = TransportRequest::new(
             1,
             RequestKind::Write {
                 struct_id: 1,
                 user: 7,
-                tenant: 99,
+                tenant,
                 payload: Vec::new(),
             },
         );
         let resp = node.handle(req).await;
         assert_eq!(resp.payload, b"not_owner");
+        // The redirect hint points at the real owner.
+        assert_eq!(resp.owner_url.as_deref(), Some("ws://10.9.9.9:7700/ws"),);
     }
 
     #[tokio::test]

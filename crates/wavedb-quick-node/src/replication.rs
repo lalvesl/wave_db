@@ -1,8 +1,13 @@
-//! Replication watermark tracking.
+//! Replication: owner → replica write fan-out and watermark tracking.
 //!
-//! Each Quick-Node replicates writes to one or more peers.  The watermark
-//! records — per peer — the highest write sequence number that peer has
-//! acknowledged.  This is used to:
+//! After the ring-designated **owner** commits a write, it pushes the
+//! committed bytes to the next [`crate::node::MIN_REPLICAS`] minus one distinct
+//! nodes clockwise on the ring (`POST /replicate`).  Replicas store the
+//! owner's canonical bytes for redundancy but never accept client writes
+//! for that partition — one writer, n copies.
+//!
+//! The watermark records — per peer — the highest write sequence number
+//! that peer has acknowledged.  This is used to:
 //!
 //! - Determine which writes are considered durably replicated.
 //! - Drive catch-up replication when a peer reconnects after a gap.
@@ -13,8 +18,43 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
+use wavedb_macros::WaveWire;
+use wavedb_net::auth::NodeToken;
 
 use crate::ring::NodeId;
+
+// ── Wire types for the /replicate endpoint ────────────────────────────────────
+
+/// One committed record pushed from the owner to a replica.
+#[derive(Debug, Clone, WaveWire)]
+pub struct ReplicaRecord {
+    /// The record's raw 128-bit ID.
+    pub id: u128,
+    /// The exact committed payload (`[version u8][wire body]`) — already
+    /// validated and preprocessed on the owner, stored verbatim here.
+    pub data: Vec<u8>,
+}
+
+/// Body of a `POST /replicate` request.
+#[derive(Debug, Clone, WaveWire)]
+pub struct ReplicateBatch {
+    /// Sender (owner) node ID, for ack bookkeeping on the receiver's logs.
+    pub origin: NodeId,
+    /// The owner's local write sequence covered by this batch.
+    pub write_seq: u64,
+    /// Records to store.
+    pub records: Vec<ReplicaRecord>,
+    /// Cluster membership proof (required when a cluster key is configured).
+    pub token: Option<NodeToken>,
+}
+
+/// Body of a `POST /replicate` response.
+#[derive(Debug, Clone, WaveWire)]
+pub struct ReplicateAck {
+    /// Echo of [`ReplicateBatch::write_seq`] — feeds
+    /// [`ReplicationWatermark::record_ack`] on the owner.
+    pub write_seq: u64,
+}
 
 // ── Per-peer state ────────────────────────────────────────────────────────────
 

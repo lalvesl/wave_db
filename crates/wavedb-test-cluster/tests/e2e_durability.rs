@@ -227,19 +227,23 @@ async fn surviving_node_keeps_data_after_peer_dies() {
     })
     .await;
     let tenant = cluster.owned_tenant();
+    // The ring decides who owns the tenant; load the owner and kill the
+    // OTHER node, so the loaded data must survive untouched.
+    let owner = cluster.owner_idx(tenant);
+    let peer = 1 - owner;
 
-    // Load the survivor (node 1) and capture its committed count.
-    let expected = drive_concurrent_writes(&cluster, 1, 12, 100).await; // 1_200 writes
-    let survivor_seq = cluster.quick_nodes[1].node.replication().current_seq();
+    let expected = drive_concurrent_writes(&cluster, owner, 12, 100).await; // 1_200 writes
+    let survivor_seq =
+        cluster.quick_nodes[owner].node.replication().current_seq();
     assert_eq!(survivor_seq, expected);
 
-    // Kill the peer (node 0) abruptly.
-    cluster.kill_quick_node(0).await;
-    assert!(!cluster.quick_nodes[0].is_alive());
-    assert!(cluster.quick_nodes[1].is_alive());
+    // Kill the peer abruptly.
+    cluster.kill_quick_node(peer).await;
+    assert!(!cluster.quick_nodes[peer].is_alive());
+    assert!(cluster.quick_nodes[owner].is_alive());
 
-    // Survivor still serves a fresh write…
-    let db = cluster.open_user_via(999, tenant, 1).await;
+    // Survivor (the owner) still serves a fresh write…
+    let db = cluster.open_user_via(999, tenant, owner).await;
     let resp = db
         .send(RequestKind::Write {
             struct_id: STRUCT_ID,
@@ -253,7 +257,7 @@ async fn surviving_node_keeps_data_after_peer_dies() {
     drop(db);
 
     // …and none of its previously-committed records vanished.
-    let recoverable = cluster.quick_nodes[1].recoverable_versioned(
+    let recoverable = cluster.quick_nodes[owner].recoverable_versioned(
         tenant,
         STRUCT_ID,
         survivor_seq,

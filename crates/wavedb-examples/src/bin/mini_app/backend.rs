@@ -12,7 +12,8 @@
 //! to prove the *preprocessed* bytes are what's stored.)
 //!
 //! Run via `cargo run --bin mini_app` — not directly.  The orchestrator
-//! sets `WAVE_LISTEN` / `WAVE_TENANT` / `WAVE_DATA_DIR`.
+//! sets `WAVE_LISTEN` / `WAVE_DATA_DIR`.  No tenant configuration: a solo
+//! node is the whole ring and owns every partition at runtime.
 
 use std::io::Write as _;
 
@@ -25,14 +26,8 @@ mod schema;
 async fn main() -> wavedb_core::Result<()> {
     let listen = std::env::var("WAVE_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:0".to_string());
-    let tenant: u64 = std::env::var("WAVE_TENANT")
-        .ok()
-        .and_then(|t| t.parse().ok())
-        .unwrap_or(42);
-
-    let mut server = Server::bind(listen)
-        .tenant(tenant)
-        .registry(schema::app_objects::REGISTRY);
+    let mut server =
+        Server::bind(listen).registry(schema::app_objects::REGISTRY);
     if let Ok(dir) = std::env::var("WAVE_DATA_DIR") {
         server = server.data_dir(dir);
     }

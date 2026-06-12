@@ -38,7 +38,8 @@ async fn connect_returns_owner_url() {
 #[tokio::test]
 async fn write_to_owned_partition_succeeds() {
     let cluster = TestCluster::spawn(ClusterSpec::default()).await;
-    let db = cluster.open_user(1, 42).await;
+    // Ring decides the owner; connect there.
+    let db = cluster.open_user_at_owner(1, 42).await;
 
     let payload = db
         .send(RequestKind::Write {
@@ -56,19 +57,24 @@ async fn write_to_owned_partition_succeeds() {
 }
 
 #[tokio::test]
-async fn write_to_unowned_partition_rejected() {
+async fn write_to_peer_owned_partition_rejected() {
     let cluster = TestCluster::spawn(ClusterSpec {
-        owned_tenant: 42,
+        num_quick_nodes: 2,
         ..Default::default()
     })
     .await;
-    let db = cluster.open_user(1, 42).await;
+
+    // Find a tenant the ring assigns to node 1, then write it via node 0.
+    let foreign = (0..10_000u64)
+        .find(|&t| !cluster.quick_nodes[0].node.owns(t, 0))
+        .expect("ring must give node 1 some tenants");
+    let db = cluster.open_user_via(1, foreign, 0).await;
 
     let payload = db
         .send(RequestKind::Write {
             struct_id: 1,
             user: 1,
-            tenant: 999, // not owned
+            tenant: foreign,
             payload: Vec::new(),
         })
         .await
@@ -80,34 +86,41 @@ async fn write_to_unowned_partition_rejected() {
 }
 
 #[tokio::test]
-async fn kill_primary_backup_still_serves_requests() {
+async fn kill_owner_survivor_takes_over_and_serves() {
     let mut cluster = TestCluster::spawn(ClusterSpec {
         num_quick_nodes: 2,
         ..Default::default()
     })
     .await;
+    let tenant = cluster.owned_tenant();
+    let owner = cluster.owner_idx(tenant);
+    let survivor = 1 - owner;
 
-    // Verify node 0 is alive and serving.
-    assert!(cluster.quick_nodes[0].is_alive());
+    cluster.kill_quick_node(owner).await;
+    assert!(!cluster.quick_nodes[owner].is_alive());
+    assert!(cluster.quick_nodes[survivor].is_alive());
 
-    // Kill node 0.
-    cluster.kill_quick_node(0).await;
-    assert!(!cluster.quick_nodes[0].is_alive());
+    // The survivor's heartbeat evicts the corpse (100 ms × 3 strikes in
+    // the harness) and ownership re-derives from the ring.
+    let mut took_over = false;
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if cluster.quick_nodes[survivor].node.owns(tenant, 0) {
+            took_over = true;
+            break;
+        }
+    }
+    assert!(took_over, "survivor must inherit the dead owner's tenants");
 
-    // Node 1 (backup) should still be alive.
-    assert!(cluster.quick_nodes[1].is_alive());
-
-    // A new client connected directly to node 1 should still work.
-    let db = cluster.open_user_via(1, 42, 1).await;
-    assert_eq!(db.tenant(), 42);
-    assert_eq!(db.user(), 1);
+    let db = cluster.open_user_via(1, tenant, survivor).await;
+    assert_eq!(db.tenant(), tenant);
 
     let payload = db
         .send(RequestKind::Write {
             struct_id: 1,
             user: 1,
-            tenant: 42,
-            payload: b"via_backup".to_vec(),
+            tenant,
+            payload: b"via_survivor".to_vec(),
         })
         .await
         .unwrap();
@@ -117,26 +130,38 @@ async fn kill_primary_backup_still_serves_requests() {
 }
 
 #[tokio::test]
-async fn three_node_cluster_all_accept_writes() {
+async fn three_node_cluster_exactly_one_writer_per_tenant() {
     let cluster = TestCluster::spawn(ClusterSpec {
         num_quick_nodes: 3,
         ..Default::default()
     })
     .await;
+    let tenant = cluster.owned_tenant();
 
+    // One writer, n replicas: exactly one of the three accepts the write,
+    // the others bounce with a redirect.
+    let mut accepted = 0u32;
     for i in 0..3 {
-        let db = cluster.open_user_via(1, 42, i).await;
+        let db = cluster.open_user_via(1, tenant, i).await;
         let payload = db
             .send(RequestKind::Write {
                 struct_id: 1,
                 user: 1,
-                tenant: 42,
+                tenant,
                 payload: format!("from_node_{i}").into_bytes(),
             })
             .await
             .unwrap();
-        assert_ne!(payload, b"not_owner", "node {i} must own the partition");
+        if payload != b"not_owner" {
+            accepted += 1;
+            assert_eq!(
+                i,
+                cluster.owner_idx(tenant),
+                "the accepting node must be the ring owner"
+            );
+        }
     }
+    assert_eq!(accepted, 1, "exactly one node may accept writes");
 
     cluster.shutdown().await;
 }
@@ -144,7 +169,8 @@ async fn three_node_cluster_all_accept_writes() {
 #[tokio::test]
 async fn search_unique_on_owned_partition_succeeds() {
     let cluster = TestCluster::spawn(ClusterSpec::default()).await;
-    let db = cluster.open_user(1, 42).await;
+    // Ring decides the owner; connect there.
+    let db = cluster.open_user_at_owner(1, 42).await;
 
     let payload = db
         .send(RequestKind::SearchUnique {

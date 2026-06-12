@@ -27,6 +27,8 @@ pub enum TokenPurpose {
     Flush = 0x02,
     /// Metrics poll from the monitor to any node.
     Monitor = 0x03,
+    /// Owner → replica write fan-out between Quick-Nodes.
+    Replicate = 0x04,
 }
 
 /// A short-lived HMAC-SHA256 proof of cluster membership.

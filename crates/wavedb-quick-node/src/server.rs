@@ -24,6 +24,7 @@ use wavedb_net::request::{TransportRequest, TransportResponse};
 
 use crate::gossip::{GossipMessage, GossipResponse};
 use crate::node::QuickNode;
+use crate::replication::ReplicateBatch;
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,7 @@ pub fn router(node: QuickNode) -> Router {
         .route("/", post(handle_http))
         .route("/ws", get(handle_ws_upgrade))
         .route("/gossip", post(handle_gossip))
+        .route("/replicate", post(handle_replicate))
         .route("/drain", post(handle_drain))
         .route("/metrics", post(handle_metrics))
         .with_state(Arc::new(node))
@@ -134,6 +136,42 @@ async fn handle_gossip(
         })
 }
 
+// ── Replicate handler ─────────────────────────────────────────────────────────
+
+/// `POST /replicate` — store records pushed by a partition owner.
+///
+/// Node-to-node only; verified against the cluster key (purpose
+/// `Replicate`) when one is configured.  Replicas store the owner's
+/// canonical bytes verbatim — no ownership gate, no hooks.
+async fn handle_replicate(
+    State(node): State<Arc<QuickNode>>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, Bytes::new());
+    }
+    let batch: ReplicateBatch = match decode_payload(&body) {
+        Ok(b) => b,
+        Err(_) => return (StatusCode::BAD_REQUEST, Bytes::new()),
+    };
+
+    if let Some(key) = node.auth_key() {
+        let valid = batch
+            .token
+            .as_ref()
+            .is_some_and(|t| key.verify(t, TokenPurpose::Replicate));
+        if !valid {
+            return (StatusCode::FORBIDDEN, Bytes::new());
+        }
+    }
+
+    let ack = node.apply_replica(&batch);
+    encode_payload(&ack)
+        .map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+            (StatusCode::OK, b)
+        })
+}
+
 // ── Drain handler ─────────────────────────────────────────────────────────────
 
 /// `POST /drain` — trigger a graceful drain of this Quick-Node.
@@ -183,7 +221,7 @@ async fn handle_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, OwnershipSpec};
+    use crate::config::Config;
     use tokio::net::TcpListener;
     use wavedb_net::Transport;
     use wavedb_net::request::RequestKind;
@@ -193,11 +231,6 @@ mod tests {
             listen: "127.0.0.1:0".into(),
             peers: String::new(),
             slow_node: None,
-            owns: vec![OwnershipSpec {
-                tenant: 42,
-                shard_start: 0,
-                shard_end: 4095,
-            }],
             bloom_interval_secs: 1,
             journal_compact_secs: 0,
             // Empty path → in-memory storage; tests don't assert disk state.
@@ -206,21 +239,21 @@ mod tests {
         })
     }
 
-    async fn start_server() -> (std::net::SocketAddr, tokio::task::AbortHandle)
-    {
+    async fn start_server()
+    -> (std::net::SocketAddr, tokio::task::AbortHandle, QuickNode) {
         let node = make_node();
-        let app = router(node);
+        let app = router(node.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        (addr, handle.abort_handle())
+        (addr, handle.abort_handle(), node)
     }
 
     #[tokio::test]
     async fn http_connect_returns_owner_url() {
-        let (addr, _srv) = start_server().await;
+        let (addr, _srv, _node) = start_server().await;
 
         let req = TransportRequest::new(
             1,
@@ -248,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_idle_tick_returns_empty_200() {
-        let (addr, _srv) = start_server().await;
+        let (addr, _srv, _node) = start_server().await;
 
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}/"))
@@ -264,7 +297,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_malformed_body_returns_400() {
-        let (addr, _srv) = start_server().await;
+        let (addr, _srv, _node) = start_server().await;
 
         let resp = reqwest::Client::new()
             .post(format!("http://{addr}/"))
@@ -279,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn ws_connect_roundtrip() {
-        let (addr, _srv) = start_server().await;
+        let (addr, _srv, _node) = start_server().await;
 
         // Brief pause so the server task has a chance to start.
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -305,7 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn ws_write_owned_partition_succeeds() {
-        let (addr, _srv) = start_server().await;
+        let (addr, _srv, _node) = start_server().await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let (client, rl) =
@@ -329,9 +362,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ws_write_unowned_partition_returns_not_owner() {
-        let (addr, _srv) = start_server().await;
+    async fn ws_write_peer_owned_partition_returns_not_owner() {
+        let (addr, _srv, node) = start_server().await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Join a fake second node so the ring splits ownership, then pick
+        // a tenant the peer owns.
+        let peer = crate::node::addr_to_node_id("10.9.9.9:7700");
+        node.ring_write_add_for_tests(peer, "10.9.9.9:7700");
+        let tenant = (0..10_000u64)
+            .find(|&t| !node.owns(t, 0))
+            .expect("some tenant must hash to the peer");
 
         let (client, rl) =
             wavedb_net::WsClient::connect(format!("ws://{addr}/ws"))
@@ -344,7 +385,7 @@ mod tests {
             RequestKind::Write {
                 struct_id: 1,
                 user: 1,
-                tenant: 99, // not owned
+                tenant,
                 payload: Vec::new(),
             },
         );

@@ -83,6 +83,9 @@ pub struct QuickNodeMetrics {
     /// payload, `validate` / `preprocess` hook failure).  Always 0 on
     /// schema-blind nodes (no registry attached).
     pub rejected_count: u64,
+    /// Records stored on this node as replica copies pushed by partition
+    /// owners (`POST /replicate`).
+    pub replicated_count: u64,
 }
 
 /// Snapshot of a Slow-Node's operational state.
