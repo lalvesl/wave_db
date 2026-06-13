@@ -522,6 +522,11 @@ impl QuickNode {
                 .inner
                 .replicated_count
                 .load(Ordering::Relaxed),
+            data_dir: self
+                .inner
+                .storage
+                .as_ref()
+                .map_or_else(String::new, |s| s.data_dir.display().to_string()),
         }
     }
 

@@ -206,6 +206,13 @@ fn show_quick_storage(
         kv(ui, "est. memory", human_bytes(m.estimated_memory_bytes));
         ui.add_space(6.0);
         if m.has_storage {
+            if !m.data_dir.is_empty() {
+                // Path can be long — wrap instead of overflowing the card.
+                ui.horizontal_wrapped(|ui| {
+                    typography::muted_text(ui, "location");
+                    ui.label(egui::RichText::new(&m.data_dir).monospace());
+                });
+            }
             kv(ui, "journal.log (WAL)", human_bytes(m.journal_bytes));
             kv(ui, "data.bin (pages)", human_bytes(m.data_file_bytes));
             kv(ui, "heap.bin (blobs)", human_bytes(m.heap_bytes));

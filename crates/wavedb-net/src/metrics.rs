@@ -80,6 +80,9 @@ pub struct QuickNodeMetrics {
     /// Records stored on this node as replica copies pushed by partition
     /// owners (`POST /replicate`).
     pub replicated_count: u64,
+    /// Absolute on-disk data directory (journal/heap/data files live here).
+    /// Empty when the node runs in-memory.
+    pub data_dir: String,
 }
 
 /// Snapshot of a Slow-Node's operational state.
