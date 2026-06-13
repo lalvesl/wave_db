@@ -47,6 +47,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node = Arc::new(QuickNode::new(config));
     // Start background compaction loop.
     let _compact = node.start_compaction_loop(30);
+    // Ship committed history to the Slow-Node every 5 s (no-op without
+    // WAVE_SLOW_ADDR). Without this the records pile up in flush_pending and
+    // never reach the slow node — the audit trail stays empty.
+    let _flush = node.start_flush_loop(5);
     // Announce self to peers.
     let node_gossip = node.clone();
     tokio::spawn(async move {
