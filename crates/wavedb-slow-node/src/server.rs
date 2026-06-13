@@ -15,6 +15,7 @@ use axum::routing::post;
 use bytes::Bytes;
 
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
+use wavedb_net::browse::{BrowseRequest, BrowseResponse};
 use wavedb_net::frame::{decode_payload, encode_payload};
 use wavedb_net::metrics::{MetricsRequest, SlowNodeMetrics};
 
@@ -43,6 +44,7 @@ pub fn router(store: HistoryStore, auth_key: Option<ClusterKey>) -> Router {
         .route("/flush", post(handle_flush))
         .route("/history", post(handle_history))
         .route("/metrics", post(handle_metrics))
+        .route("/browse", post(handle_browse))
         .with_state(state)
 }
 
@@ -143,6 +145,56 @@ async fn handle_metrics(
         index_bytes: state.store.index_bytes(),
     };
     encode_payload(&snapshot)
+        .map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
+            (StatusCode::OK, b)
+        })
+}
+
+// ── Browse handler ────────────────────────────────────────────────────────────
+
+/// Default / hard cap on record summaries per browse response.
+const BROWSE_MAX_RECORDS: usize = 4096;
+
+/// `POST /browse` — list tenants and record metadata for the monitor.
+///
+/// Same authorization gate as `/metrics`: requires a `Monitor`-purpose
+/// token when a cluster key is configured.  Returns metadata only — record
+/// payloads stay behind `/history`.
+async fn handle_browse(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if body.is_empty() {
+        return (StatusCode::BAD_REQUEST, Bytes::new());
+    }
+    let req: BrowseRequest = match decode_payload(&body) {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::BAD_REQUEST, Bytes::new()),
+    };
+
+    if let Some(key) = &state.auth_key {
+        let valid = req
+            .token
+            .as_ref()
+            .is_some_and(|t| key.verify(t, TokenPurpose::Monitor));
+        if !valid {
+            return (StatusCode::FORBIDDEN, Bytes::new());
+        }
+    }
+
+    let max = match req.max_records as usize {
+        0 => BROWSE_MAX_RECORDS,
+        n => n.min(BROWSE_MAX_RECORDS),
+    };
+    let (records, truncated) = req.tenant.map_or((Vec::new(), false), |t| {
+        state.store.record_summaries(t, max)
+    });
+    let resp = BrowseResponse {
+        tenants: state.store.tenant_summaries(),
+        records,
+        truncated,
+    };
+    encode_payload(&resp)
         .map_or((StatusCode::INTERNAL_SERVER_ERROR, Bytes::new()), |b| {
             (StatusCode::OK, b)
         })
@@ -362,6 +414,177 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    }
+
+    // ── Browse ───────────────────────────────────────────────────────────────
+
+    async fn post_browse(
+        addr: std::net::SocketAddr,
+        req: &BrowseRequest,
+    ) -> reqwest::Response {
+        let body = encode_payload(req).unwrap();
+        reqwest::Client::new()
+            .post(format!("http://{addr}/browse"))
+            .header("Content-Type", "application/octet-stream")
+            .body(body.to_vec())
+            .send()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn browse_lists_tenants_and_records() {
+        let store = HistoryStore::in_memory();
+        store
+            .apply_flush(FlushBatch {
+                write_seq: 1,
+                tenant: 42,
+                records: vec![
+                    VersionedRecord::new(100, b"abcd1234".to_vec()),
+                    VersionedRecord::new(101, b"xy".to_vec()),
+                ],
+                token: None,
+            })
+            .unwrap();
+        store
+            .apply_flush(FlushBatch {
+                write_seq: 1,
+                tenant: 7,
+                records: vec![VersionedRecord::new(200, b"z".to_vec())],
+                token: None,
+            })
+            .unwrap();
+
+        let app = router(store, None);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = post_browse(
+            addr,
+            &BrowseRequest {
+                token: None,
+                tenant: Some(42),
+                max_records: 0,
+            },
+        )
+        .await;
+        assert!(resp.status().is_success());
+
+        let bytes = resp.bytes().await.unwrap();
+        let browse: BrowseResponse = decode_payload(&bytes).unwrap();
+
+        assert_eq!(browse.tenants.len(), 2);
+        assert_eq!(browse.tenants[0].tenant, 7);
+        assert_eq!(browse.tenants[1].tenant, 42);
+        assert_eq!(browse.tenants[1].record_count, 2);
+
+        assert_eq!(browse.records.len(), 2);
+        assert_eq!(browse.records[0].id, 100);
+        assert_eq!(browse.records[0].data_bytes, 8);
+        // First 4 LE bytes of b"abcd" decode as the envelope header.
+        assert_eq!(browse.records[0].header, u32::from_le_bytes(*b"abcd"));
+        assert!(!browse.truncated);
+    }
+
+    #[tokio::test]
+    async fn browse_respects_record_cap() {
+        let store = HistoryStore::in_memory();
+        let records = (0..10u128)
+            .map(|i| VersionedRecord::new(i, b"data".to_vec()))
+            .collect();
+        store
+            .apply_flush(FlushBatch {
+                write_seq: 1,
+                tenant: 1,
+                records,
+                token: None,
+            })
+            .unwrap();
+
+        let app = router(store, None);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let _srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = post_browse(
+            addr,
+            &BrowseRequest {
+                token: None,
+                tenant: Some(1),
+                max_records: 3,
+            },
+        )
+        .await;
+        let bytes = resp.bytes().await.unwrap();
+        let browse: BrowseResponse = decode_payload(&bytes).unwrap();
+
+        assert_eq!(browse.records.len(), 3);
+        assert!(browse.truncated);
+    }
+
+    #[tokio::test]
+    async fn browse_without_token_when_key_set_returns_403() {
+        let key = ClusterKey::from_hex(
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        )
+        .unwrap();
+        let (addr, _srv) = start_server_with_key(Some(key)).await;
+
+        let resp = post_browse(
+            addr,
+            &BrowseRequest {
+                token: None,
+                tenant: None,
+                max_records: 0,
+            },
+        )
+        .await;
+        assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn browse_with_monitor_token_succeeds() {
+        let key = ClusterKey::from_hex(
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        )
+        .unwrap();
+        let (addr, _srv) = start_server_with_key(Some(key.clone())).await;
+
+        let resp = post_browse(
+            addr,
+            &BrowseRequest {
+                token: Some(key.mint(0, TokenPurpose::Monitor)),
+                tenant: None,
+                max_records: 0,
+            },
+        )
+        .await;
+        assert!(resp.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn browse_with_wrong_purpose_token_returns_403() {
+        let key = ClusterKey::from_hex(
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        )
+        .unwrap();
+        let (addr, _srv) = start_server_with_key(Some(key.clone())).await;
+
+        let resp = post_browse(
+            addr,
+            &BrowseRequest {
+                token: Some(key.mint(0, TokenPurpose::Flush)),
+                tenant: None,
+                max_records: 0,
+            },
+        )
+        .await;
         assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
     }
 }

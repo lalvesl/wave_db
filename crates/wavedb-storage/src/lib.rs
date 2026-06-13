@@ -15,6 +15,7 @@ pub mod file;
 pub mod hash;
 pub mod heap;
 pub mod index;
+pub mod live;
 pub mod node_storage;
 pub mod page;
 pub mod permissions;
@@ -30,6 +31,7 @@ pub use heap::{
     dedup_store, release_owner,
 };
 pub use index::{AdaptiveIndex, IndexBackend, IndexKey};
+pub use live::{LIVE_SEGMENT_CAP, LIVE_TRACKER_SHARD};
 pub use node_storage::NodeStorage;
 pub use page::{Page, PageHeader};
 pub use pipeline::journal::Journal;

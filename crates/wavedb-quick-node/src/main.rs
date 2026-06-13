@@ -35,6 +35,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(&listen).await?;
     info!(%listen, "listening for connections");
 
+    // Background: journal compaction + history flush to the Slow-Node
+    // (each a no-op when storage / slow-node isn't configured).
+    let _ = node.start_compaction_loop(30);
+    let _ = node.start_flush_loop(5);
+
     // Background: periodic bloom-filter publish tick.
     let node_bg = node.clone();
     tokio::spawn(async move {

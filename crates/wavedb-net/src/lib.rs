@@ -14,6 +14,7 @@
 #![warn(missing_docs)]
 
 pub mod auth;
+pub mod browse;
 pub mod frame;
 pub mod metrics;
 pub mod mock;

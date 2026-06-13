@@ -21,6 +21,10 @@ wavedb-core = { path = "../wavedb-core" }
 wavedb-storage = { path = "../wavedb-storage" }
 wavedb-net = { path = "../wavedb-net" }
 wavedb-macros = { path = "../wavedb-macros" }
+# History flush speaks the Slow-Node's wire types (`FlushBatch` / `FlushAck`)
+# — imported from the lib target rather than mirrored, so the shapes can't
+# drift apart.
+wavedb-slow-node = { path = "../wavedb-slow-node" }
 tokio.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true

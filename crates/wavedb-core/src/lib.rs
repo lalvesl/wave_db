@@ -7,11 +7,16 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
+// `#[derive(WaveWire)]` emits absolute `::wavedb_core::` paths; this alias
+// makes them resolve when the derive is used inside this crate itself.
+extern crate self as wavedb_core;
+
 mod error;
 mod id;
 mod metadata;
 pub mod migration;
 mod permission;
+pub mod query;
 pub mod registry;
 mod traits;
 pub mod wire;

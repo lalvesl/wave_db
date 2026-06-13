@@ -100,7 +100,9 @@ impl NodeStorage {
     /// remaining variants describe free-space / dictionary bookkeeping and need
     /// no data-file mutation on recovery.
     fn recover_from_journal(&self) -> StorageResult<()> {
+        use crate::live::LIVE_TRACKER_SHARD;
         use crate::pipeline::journal::JournalEntry;
+        use std::collections::BTreeMap;
 
         // Snapshot the entries under the lock, then release it before touching
         // the data file (whose writes may rebalance and take their own locks).
@@ -113,11 +115,29 @@ impl NodeStorage {
         };
 
         let mut replayed = 0usize;
+        // Live-tracker rebuild input: replayed record IDs per (struct, tenant).
+        let mut touched: BTreeMap<(u32, u64), Vec<u128>> = BTreeMap::new();
         for entry in &entries {
             if let JournalEntry::WriteVersioned { record } = entry {
                 self.data_file.write_versioned(record)?;
                 replayed += 1;
+                let id = wavedb_core::Id::from_raw(record.id);
+                // Tracker segments are never journalled; guard anyway so a
+                // future journalled segment can't index itself.
+                if id.shard_id() != LIVE_TRACKER_SHARD {
+                    touched
+                        .entry((id.struct_id(), id.tenant_id()))
+                        .or_default()
+                        .push(record.id);
+                }
             }
+        }
+
+        // Converge each touched tracker: the on-disk list may or may not
+        // already contain the replayed IDs depending on where the crash
+        // landed — the rebuild unions and dedupes either way.
+        for ((struct_id, tenant), ids) in &touched {
+            self.data_file.live_rebuild(*struct_id, *tenant, ids)?;
         }
 
         if replayed > 0 {
@@ -176,6 +196,25 @@ impl NodeStorage {
     ) -> StorageResult<()> {
         let rec = crate::versioned::VersionedRecord::new(id, payload);
         self.commit_versioned_write(&rec)
+    }
+
+    /// Commit a record **and** append it to its `(struct, tenant)` live
+    /// tracker — the discoverable-write path used by request handlers.
+    ///
+    /// The WAL covers the record; the tracker update is direct.  If the
+    /// process dies between the two, journal recovery re-derives the
+    /// tracker entry (see [`DataFile::live_rebuild`]).
+    ///
+    /// [`DataFile::live_rebuild`]: crate::file::data::DataFile::live_rebuild
+    pub fn commit_write_live(
+        &self,
+        id: u128,
+        payload: Vec<u8>,
+    ) -> StorageResult<()> {
+        self.commit_write(id, payload)?;
+        let parsed = wavedb_core::Id::from_raw(id);
+        self.data_file
+            .live_append(parsed.struct_id(), parsed.tenant_id(), id)
     }
 
     /// Store a heapable value with **content-addressed dedup**.
@@ -373,6 +412,41 @@ mod tests {
         assert!(storage.release_heapable(content_hash, owner_b).unwrap());
         assert!(storage.read_heapable(content_hash).unwrap().is_none());
         assert_eq!(storage.heap_file.lock().take_freed().len(), 1);
+    }
+
+    #[test]
+    fn recovery_rebuilds_live_tracker_from_journal() {
+        // Crash window: records were WAL-committed and live-appended, then
+        // the process died before any snapshot.  Reopen must rebuild both
+        // the records AND the tracker — without duplicating tracker entries
+        // that did make it to disk.
+        let dir = tempfile::tempdir().unwrap();
+        let ids: Vec<wavedb_core::Id> = (1..=10)
+            .map(|seq| wavedb_core::Id::new(7, 0, 11, seq))
+            .collect();
+
+        {
+            let storage = NodeStorage::open(dir.path()).unwrap();
+            for id in &ids {
+                storage
+                    .commit_write_live(id.raw(), b"payload".to_vec())
+                    .unwrap();
+            }
+            // No snapshot — simulated crash.
+        }
+
+        let reopened = NodeStorage::open(dir.path()).unwrap();
+        let live = reopened.data_file.live_ids(11, 7).unwrap();
+        assert_eq!(
+            live,
+            ids.iter().map(|i| i.raw()).collect::<Vec<_>>(),
+            "tracker must converge to exactly the committed ids, in order"
+        );
+
+        // A third open (journal now compacted) must not change the list.
+        drop(reopened);
+        let again = NodeStorage::open(dir.path()).unwrap();
+        assert_eq!(again.data_file.live_ids(11, 7).unwrap().len(), ids.len());
     }
 
     #[test]

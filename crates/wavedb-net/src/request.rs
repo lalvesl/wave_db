@@ -92,6 +92,9 @@ pub enum ErrorCode {
     PreprocessFailed,
     /// The node's storage engine failed to commit the write.
     Storage,
+    /// The node cannot serve this request as asked — e.g. a filtered
+    /// query against a schema-blind node (no registry to evaluate fields).
+    Unsupported,
 }
 
 /// A structured failure returned by a node in place of a response payload.

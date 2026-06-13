@@ -1,10 +1,43 @@
 # TO DO
 
-- Falta de clareza sobre aquizição de dados por clients;
+- Client-side `not_owner` redirect: `Db::send` should re-dial the
+  `owner_url` hint instead of surfacing the redirect payload (today the
+  caller must connect at the owner; see `open_user_at_owner` in e2e tests);
+- Update-in-place semantics: a `save` with a non-zero `id` should rotate
+  that record's version instead of minting a new element (today every save
+  is a create — the live tracker grows per save for NonUnique shapes);
+- Prune flushed history from the hot tier after `sync_to_slow` acks
+  (records currently stay in `data.bin`; flush ships copies, doesn't
+  release space yet);
 
 # DOING
 
 # DONE
+
+- Falta de clareza sobre aquizição de dados por clients;
+  → Landed as Phase 14, the storage-backed read path. The response
+  contracts the client already documented are now served for real:
+  `SearchUnique` → `[stored_version][wire body]` (empty = not found);
+  `QueryNonUnique` → wire `Vec<(stored_version, body)>`; `Delete` →
+  tombstone (live-tracker removal; the versioned record stays as history).
+  Pieces: per-`(STRUCT_ID, TENANT_ID)` **live tracker** in the page file
+  (chained head + sealed segments of 256 ids, `SHARD_ID 0xFFF` reserved,
+  crash recovery rebuilds via journal replay union); `Page::upsert` +
+  in-place compaction (hash-page rewrites used to append duplicate
+  directory entries and leak the page); `Expr`/`Value`/`Field` moved to
+  `wavedb_core::query` with a node-side `eval` over descriptor offsets
+  (numeric widening across widths, string/bytes via forward+backward heap
+  walks around opaque heapables like the injected `metadata`); registry
+  nodes stamp the engine-assigned `Id` into the stored body so query
+  results are deletable; Unique shapes rotate a single live entry, and
+  schema-blind nodes serve `Expr::All` but answer filtered queries with
+  the new `ErrorCode::Unsupported`. `sync_to_slow` is real: per-tenant
+  pending buffer → `FlushBatch` POSTs (HMAC `Flush` tokens, ≤512
+  records/batch, failed batches re-queued in order) on a 5 s loop
+  (`start_flush_loop`, wired in `Server::start` + the binary) and on
+  drain. 463 tests across 64 suites, incl. `e2e_read_path.rs` driving the
+  full client loop (`save` → typed/filtered `query` → `delete` by stamped
+  id → flush lands in the Slow-Node store).
 
 - Validation of data from client-side and preprocessing from backend;
   → Landed as: `#[wave_db(validate = fn, preprocess = fn)]` data hooks

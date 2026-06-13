@@ -143,6 +143,74 @@ impl HistoryStore {
         tenants.len()
     }
 
+    /// Per-tenant aggregates for the monitor browse endpoint, ascending by
+    /// tenant ID.
+    pub fn tenant_summaries(&self) -> Vec<wavedb_net::browse::TenantSummary> {
+        let guard = self.inner.lock();
+        let mut by_tenant: HashMap<u64, (u64, u64)> = HashMap::new();
+        for ((tenant, _), bytes) in &guard.index {
+            let entry = by_tenant.entry(*tenant).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 += bytes.len() as u64;
+        }
+        drop(guard);
+        let mut out: Vec<_> = by_tenant
+            .into_iter()
+            .map(|(tenant, (record_count, total_bytes))| {
+                wavedb_net::browse::TenantSummary {
+                    tenant,
+                    record_count,
+                    total_bytes,
+                }
+            })
+            .collect();
+        out.sort_unstable_by_key(|s| s.tenant);
+        out
+    }
+
+    /// Record summaries for one tenant, ascending by record ID, capped at
+    /// `max`.  The second tuple element is `true` when the cap truncated the
+    /// listing.
+    ///
+    /// The summary carries the record envelope header (first 4 LE bytes of
+    /// the payload) so the monitor can group records by struct family
+    /// without shipping payload bytes.
+    pub fn record_summaries(
+        &self,
+        tenant: u64,
+        max: usize,
+    ) -> (Vec<wavedb_net::browse::RecordSummary>, bool) {
+        let guard = self.inner.lock();
+        let mut records: Vec<_> = guard
+            .index
+            .iter()
+            .filter(|((t, _), _)| *t == tenant)
+            .filter_map(|((_, id), bytes)| {
+                let rec = VersionedRecord::from_bytes(bytes).ok()?;
+                let header = rec
+                    .data
+                    .first_chunk::<4>()
+                    .map_or(0, |b| u32::from_le_bytes(*b));
+                // new_modification_id carries the flush write_seq (packed
+                // u64-in-u128 at flush time, upper bits always zero).
+                #[allow(clippy::cast_possible_truncation)]
+                let write_seq = rec.new_modification_id as u64;
+                Some(wavedb_net::browse::RecordSummary {
+                    id: *id,
+                    data_bytes: u32::try_from(rec.data.len())
+                        .unwrap_or(u32::MAX),
+                    write_seq,
+                    header,
+                })
+            })
+            .collect();
+        drop(guard);
+        records.sort_unstable_by_key(|r| r.id);
+        let truncated = records.len() > max;
+        records.truncate(max);
+        (records, truncated)
+    }
+
     /// Cumulative number of flush batches successfully applied.
     pub fn flush_count(&self) -> u64 {
         self.flush_count.load(Ordering::Relaxed)
@@ -222,6 +290,76 @@ mod tests {
         store.apply_flush(batch(2, 3, 2, b"")).unwrap();
         assert_eq!(store.high_water(1), 10);
         assert_eq!(store.high_water(2), 3);
+    }
+
+    #[test]
+    fn tenant_summaries_aggregate_per_tenant() {
+        let store = HistoryStore::in_memory();
+        store.apply_flush(batch(2, 1, 10, b"four")).unwrap();
+        store.apply_flush(batch(2, 2, 11, b"bytes!")).unwrap();
+        store.apply_flush(batch(9, 1, 20, b"x")).unwrap();
+
+        let summaries = store.tenant_summaries();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].tenant, 2);
+        assert_eq!(summaries[0].record_count, 2);
+        assert_eq!(summaries[1].tenant, 9);
+        assert_eq!(summaries[1].record_count, 1);
+    }
+
+    #[test]
+    fn record_summaries_sorted_and_capped() {
+        let store = HistoryStore::in_memory();
+        let records = vec![
+            VersionedRecord::new(30, b"ccc".to_vec()),
+            VersionedRecord::new(10, b"a".to_vec()),
+            VersionedRecord::new(20, b"bb".to_vec()),
+        ];
+        store
+            .apply_flush(FlushBatch {
+                write_seq: 5,
+                tenant: 1,
+                records,
+                token: None,
+            })
+            .unwrap();
+
+        let (all, truncated) = store.record_summaries(1, 10);
+        assert!(!truncated);
+        assert_eq!(
+            all.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
+        assert_eq!(all[0].data_bytes, 1);
+        assert_eq!(all[0].write_seq, 5);
+
+        let (capped, truncated) = store.record_summaries(1, 2);
+        assert!(truncated);
+        assert_eq!(capped.len(), 2);
+    }
+
+    #[test]
+    fn record_summaries_header_from_payload_prefix() {
+        let store = HistoryStore::in_memory();
+        // Payload long enough to carry an envelope header.
+        let mut data = 0x0102_0304_u32.to_le_bytes().to_vec();
+        data.extend_from_slice(b"rest");
+        store
+            .apply_flush(FlushBatch {
+                write_seq: 1,
+                tenant: 3,
+                records: vec![
+                    VersionedRecord::new(1, data),
+                    // Too short for a header — must report 0.
+                    VersionedRecord::new(2, b"ab".to_vec()),
+                ],
+                token: None,
+            })
+            .unwrap();
+
+        let (recs, _) = store.record_summaries(3, 10);
+        assert_eq!(recs[0].header, 0x0102_0304);
+        assert_eq!(recs[1].header, 0);
     }
 
     #[test]

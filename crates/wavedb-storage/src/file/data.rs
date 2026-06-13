@@ -504,13 +504,19 @@ impl DataFile {
         let n = self.page_count.load(Ordering::Acquire);
         let primary = Self::page_index(key, n);
         let mut pages = self.pages.write();
-        if pages[primary].insert(raw, bytes) {
+        // upsert, not insert: a rewrite of the same key must replace the
+        // stored bytes — anchors and live-trackers are rewritten on every
+        // mutation, and `Page::lookup` returns the first directory match.
+        if pages[primary].upsert(raw, bytes) {
             self.bump_page_bytes(primary, bytes.len() as u64);
             return Ok(());
         }
         let alt = Self::fallback_index(primary, key, n);
-        if pages[alt].insert(raw, bytes) {
+        if pages[alt].upsert(raw, bytes) {
             self.bump_page_bytes(alt, bytes.len() as u64);
+            // The key may still shadow a stale copy on the full primary
+            // page — drop it so primary-first lookups see the fresh value.
+            pages[primary].remove(raw);
             return Ok(());
         }
         Err(crate::StorageError::PageFull(alt as u64))

@@ -54,12 +54,12 @@ fn node_error_to_core(err: NodeError) -> wavedb_core::Error {
                 },
             }
         }
-        ErrorCode::MalformedPayload | ErrorCode::Storage => {
-            wavedb_core::Error::Other(format!(
-                "node rejected request ({:?}): {}",
-                err.code, err.message
-            ))
-        }
+        ErrorCode::MalformedPayload
+        | ErrorCode::Storage
+        | ErrorCode::Unsupported => wavedb_core::Error::Other(format!(
+            "node rejected request ({:?}): {}",
+            err.code, err.message
+        )),
     }
 }
 

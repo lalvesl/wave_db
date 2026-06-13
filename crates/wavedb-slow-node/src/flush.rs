@@ -24,21 +24,10 @@ pub struct FlushAck {
     pub write_seq: u64,
 }
 
-/// Request a history read for a specific versioned record ID.
-#[derive(Debug, Clone, WaveWire)]
-pub struct HistoryReadRequest {
-    /// Tenant owning the record.
-    pub tenant: u64,
-    /// 128-bit versioned record ID.
-    pub record_id: u128,
-}
-
-/// Response to a history-read request.
-#[derive(Debug, Clone, WaveWire)]
-pub struct HistoryReadResponse {
-    /// Raw serialized bytes of the [`VersionedRecord`], or empty if not found.
-    pub data: Vec<u8>,
-}
+// History-read wire types moved to `wavedb-net::browse` so monitor tools
+// can speak `/history` without depending on this crate; re-exported here
+// to keep existing imports working.
+pub use wavedb_net::browse::{HistoryReadRequest, HistoryReadResponse};
 
 /// Watermark tracking the highest durably-acked write sequence per tenant.
 #[derive(Debug, Default)]

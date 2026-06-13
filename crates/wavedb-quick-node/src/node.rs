@@ -19,7 +19,8 @@ use crate::replication::{
     ReplicaRecord, ReplicateAck, ReplicateBatch, ReplicationWatermark,
 };
 use crate::ring::{ConsistentRing, NodeId};
-use wavedb_core::{Id, ObjectRegistry};
+use wavedb_core::query::Expr;
+use wavedb_core::{Id, ObjectRegistry, Shape};
 use wavedb_net::EventBus;
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
 use wavedb_net::metrics::{
@@ -28,7 +29,8 @@ use wavedb_net::metrics::{
 use wavedb_net::request::{
     ErrorCode, NodeError, RequestKind, TransportRequest, TransportResponse,
 };
-use wavedb_storage::{NodeStorage, tuple4_page};
+use wavedb_slow_node::flush::FlushBatch;
+use wavedb_storage::{NodeStorage, VersionedRecord, tuple4_page};
 
 /// Target copy count per partition.
 ///
@@ -36,6 +38,26 @@ use wavedb_storage::{NodeStorage, tuple4_page};
 /// redundancy (readme: `MIN_REPLICAS`, default 2).  With fewer physical
 /// nodes the replica set is simply every node.
 pub const MIN_REPLICAS: usize = 2;
+
+/// Records per `POST /flush` batch when shipping history to the Slow-Node.
+const FLUSH_BATCH_MAX: usize = 512;
+
+/// A storage-engine failure mapped to the structured wire error.
+fn storage_err(
+    seq: u64,
+    struct_id: u32,
+    e: &wavedb_storage::StorageError,
+) -> TransportResponse {
+    TransportResponse::err(
+        seq,
+        NodeError {
+            code: ErrorCode::Storage,
+            struct_id,
+            field: None,
+            message: e.to_string(),
+        },
+    )
+}
 
 // ── QuickNode ─────────────────────────────────────────────────────────────────
 
@@ -90,6 +112,12 @@ struct QuickNodeInner {
     /// — journal append + fsync **before** the handler returns Ok to the
     /// client.  This is the WAL durability contract.
     storage: Option<Arc<NodeStorage>>,
+    /// Records committed since the last history flush, per tenant —
+    /// drained by [`QuickNode::sync_to_slow`] into `POST /flush` batches.
+    /// Only populated when a Slow-Node is configured.
+    flush_pending: parking_lot::Mutex<
+        std::collections::HashMap<u64, Vec<VersionedRecord>>,
+    >,
     /// The application's static object registry (`declare_objects!`'s
     /// `REGISTRY`).  When present, every incoming write is checked against
     /// the schema: unknown `(struct_id, version)` headers are rejected, the
@@ -203,6 +231,9 @@ impl QuickNode {
                     .collect(),
                 start_time: Instant::now(),
                 storage,
+                flush_pending: parking_lot::Mutex::new(
+                    std::collections::HashMap::new(),
+                ),
                 registry,
             }),
         }
@@ -510,7 +541,7 @@ impl QuickNode {
                 user,
                 tenant,
                 filter,
-            } => self.handle_query(req.seq, struct_id, user, tenant, filter),
+            } => self.handle_query(req.seq, struct_id, user, tenant, &filter),
             // Write dispatches via spawn_blocking so the journal fsync doesn't
             // pin a Tokio worker thread.  Without this, 3900 concurrent clients
             // block all workers and the /metrics HTTP handler never gets CPU.
@@ -565,7 +596,7 @@ impl QuickNode {
     fn handle_search_unique(
         &self,
         seq: u64,
-        _struct_id: u32,
+        struct_id: u32,
         _user: u64,
         tenant: u64,
     ) -> TransportResponse {
@@ -576,24 +607,46 @@ impl QuickNode {
             return self.not_owner_resp(seq, tenant);
         }
         self.inner.read_count.fetch_add(1, Ordering::Relaxed);
-        // Phase 14 wires the storage engine lookup here.
-        TransportResponse {
-            seq,
-            payload: Vec::new(),
-            owner_url: None,
-            backup_url: None,
-            notifications: Vec::new(),
-            error: None,
+
+        // In-memory nodes (no `data_dir`) have nothing to look up.
+        let Some(storage) = self.inner.storage.as_ref() else {
+            return TransportResponse::ok(seq, Vec::new());
+        };
+
+        // The live tracker's newest entry IS the live Unique record —
+        // older entries are prior versions left behind by anchor rotation.
+        let live = match storage.data_file.live_ids(struct_id, tenant) {
+            Ok(ids) => ids,
+            Err(e) => return storage_err(seq, struct_id, &e),
+        };
+        let Some(&newest) = live.last() else {
+            return TransportResponse::ok(seq, Vec::new());
+        };
+
+        match storage.data_file.read_versioned(Id::from_raw(newest)) {
+            // Stored payload is already the client wire shape:
+            // `[STRUCT_VERSION u8][wire body]`.
+            Ok(Some(rec)) => TransportResponse::ok(seq, rec.data),
+            Ok(None) => {
+                tracing::warn!(
+                    struct_id,
+                    tenant,
+                    id = newest,
+                    "live tracker points at a missing record"
+                );
+                TransportResponse::ok(seq, Vec::new())
+            }
+            Err(e) => storage_err(seq, struct_id, &e),
         }
     }
 
     fn handle_query(
         &self,
         seq: u64,
-        _struct_id: u32,
+        struct_id: u32,
         _user: u64,
         tenant: u64,
-        _filter: Vec<u8>,
+        filter: &[u8],
     ) -> TransportResponse {
         if self.inner.draining.load(Ordering::Acquire) {
             return self.draining_resp(seq);
@@ -601,13 +654,82 @@ impl QuickNode {
         if !self.owns(tenant, 0) {
             return self.not_owner_resp(seq, tenant);
         }
-        TransportResponse {
-            seq,
-            payload: Vec::new(),
-            owner_url: None,
-            backup_url: None,
-            notifications: Vec::new(),
-            error: None,
+        self.inner.read_count.fetch_add(1, Ordering::Relaxed);
+
+        let Ok(expr) = Expr::from_bytes(filter) else {
+            return TransportResponse::err(
+                seq,
+                NodeError {
+                    code: ErrorCode::MalformedPayload,
+                    struct_id,
+                    field: None,
+                    message: "query filter does not decode as an Expr".into(),
+                },
+            );
+        };
+
+        let Some(storage) = self.inner.storage.as_ref() else {
+            return TransportResponse::ok(seq, Vec::new());
+        };
+
+        // Field comparisons need the descriptor's offsets; a schema-blind
+        // node can only serve unfiltered scans.
+        if self.inner.registry.is_none() && expr != Expr::All {
+            return TransportResponse::err(
+                seq,
+                NodeError {
+                    code: ErrorCode::Unsupported,
+                    struct_id,
+                    field: None,
+                    message: "filtered queries require a schema registry; \
+                              this node is schema-blind"
+                        .into(),
+                },
+            );
+        }
+
+        let live = match storage.data_file.live_ids(struct_id, tenant) {
+            Ok(ids) => ids,
+            Err(e) => return storage_err(seq, struct_id, &e),
+        };
+
+        // Response wire shape: Vec<(stored_version, record_body)>.
+        let mut entries: Vec<(u8, Vec<u8>)> = Vec::new();
+        for id in live {
+            let rec = match storage.data_file.read_versioned(Id::from_raw(id)) {
+                Ok(Some(rec)) => rec,
+                Ok(None) => continue, // raced with a delete — skip
+                Err(e) => return storage_err(seq, struct_id, &e),
+            };
+            let Some((&version, body)) = rec.data.split_first() else {
+                continue; // schema-blind era record with no version byte
+            };
+            let keep = match (&expr, self.inner.registry) {
+                (Expr::All, _) => true,
+                (_, Some(reg)) => reg
+                    .find(wavedb_core::wire::pack_header(struct_id, version))
+                    .is_some_and(|desc| {
+                        wavedb_core::query::eval(desc, body, &expr)
+                    }),
+                // Unreachable: schema-blind + non-All rejected above.
+                (_, None) => false,
+            };
+            if keep {
+                entries.push((version, body.to_vec()));
+            }
+        }
+
+        match wavedb_core::wire::to_wire(&entries) {
+            Ok(payload) => TransportResponse::ok(seq, payload),
+            Err(e) => TransportResponse::err(
+                seq,
+                NodeError {
+                    code: ErrorCode::Storage,
+                    struct_id,
+                    field: None,
+                    message: format!("query response encode: {e}"),
+                },
+            ),
         }
     }
 
@@ -689,6 +811,12 @@ impl QuickNode {
         let write_seq = self.inner.replication.next_seq();
         let id = Id::new(tenant, 0, struct_id, write_seq);
 
+        // Stamp the engine-assigned Id into the record's own `id` field so
+        // query/search results carry their real address (clients send it
+        // zeroed and use the returned value for `delete`).  Registry mode
+        // only — the field offset comes from the descriptor.
+        let committed = self.stamp_engine_id(struct_id, id, committed);
+
         // ── Write-Ahead Logging commit ───────────────────────────────────
         //
         // When the node has on-disk storage attached, the write is only
@@ -711,6 +839,20 @@ impl QuickNode {
                         message: e.to_string(),
                     },
                 );
+            }
+            // Make the committed record discoverable.  An index failure is
+            // logged, not returned: the WAL already holds the record, and
+            // journal recovery re-derives the tracker entry on restart.
+            self.index_committed(storage, id, &committed);
+
+            // Queue for the next history flush to the Slow-Node.
+            if self.inner.config.slow_node.is_some() {
+                self.inner
+                    .flush_pending
+                    .lock()
+                    .entry(tenant)
+                    .or_default()
+                    .push(VersionedRecord::new(id.raw(), committed.to_vec()));
             }
         }
 
@@ -746,7 +888,7 @@ impl QuickNode {
     fn handle_delete(
         &self,
         seq: u64,
-        _id: u128,
+        id: u128,
         _user: u64,
         tenant: u64,
     ) -> TransportResponse {
@@ -756,14 +898,35 @@ impl QuickNode {
         if !self.owns(tenant, 0) {
             return self.not_owner_resp(seq, tenant);
         }
-        TransportResponse {
-            seq,
-            payload: Vec::new(),
-            owner_url: None,
-            backup_url: None,
-            notifications: Vec::new(),
-            error: None,
+
+        let parsed = Id::from_raw(id);
+        // The tenant rides in the Id's top bits — a session may only
+        // tombstone records inside its own partition.
+        if parsed.tenant_id() != tenant {
+            return TransportResponse::err(
+                seq,
+                NodeError {
+                    code: ErrorCode::MalformedPayload,
+                    struct_id: parsed.struct_id(),
+                    field: None,
+                    message: "record id does not belong to this tenant".into(),
+                },
+            );
         }
+
+        // Delete = drop from the live tracker.  The versioned record stays
+        // stored (history is append-only); it just stops being served.
+        // Unknown ids are fine — delete is idempotent.
+        if let Some(storage) = self.inner.storage.as_ref() {
+            if let Err(e) =
+                storage
+                    .data_file
+                    .live_remove(parsed.struct_id(), tenant, id)
+            {
+                return storage_err(seq, parsed.struct_id(), &e);
+            }
+        }
+        TransportResponse::ok(seq, Vec::new())
     }
 
     #[allow(clippy::unused_self)]
@@ -934,23 +1097,189 @@ impl QuickNode {
         );
     }
 
-    /// Flush in-memory writes to the configured Slow-Node.
+    /// Flush records committed since the last sync to the configured
+    /// Slow-Node, one `POST /flush` batch per tenant chunk.
     ///
-    /// Phase 14: replace with actual record serialisation and batch POST.
-    #[allow(clippy::unused_async)]
-    async fn sync_to_slow(&self) {
+    /// Failures re-queue the records for the next attempt — history
+    /// shipping is at-least-once; the Slow-Node's `(tenant, id)` index
+    /// makes re-delivery idempotent.
+    pub async fn sync_to_slow(&self) {
         let Some(slow_addr) = self.inner.config.slow_node.as_deref() else {
             return;
         };
-        // Phase 14: collect pending in-memory records and send them in a
-        // FlushBatch to `http://{slow_addr}/flush`.  For now we just log the
-        // intent so the operator knows the hook is in place.
+
+        let pending: Vec<(u64, Vec<VersionedRecord>)> = {
+            let mut map = self.inner.flush_pending.lock();
+            map.drain().collect()
+        };
+        if pending.is_empty() {
+            return;
+        }
+
         let write_seq = self.inner.replication.current_seq();
-        tracing::info!(
-            slow_node = slow_addr,
-            write_seq,
-            "drain: Phase-14 sync_to_slow (no-op until storage engine wired)"
-        );
+        let url = format!("http://{slow_addr}/flush");
+
+        for (tenant, records) in pending {
+            let mut failed: Vec<VersionedRecord> = Vec::new();
+            for chunk in records.chunks(FLUSH_BATCH_MAX) {
+                let batch = FlushBatch {
+                    write_seq,
+                    tenant,
+                    records: chunk.to_vec(),
+                    token: self.inner.auth_key.as_ref().map(|k| {
+                        k.mint(self.inner.node_id, TokenPurpose::Flush)
+                    }),
+                };
+                let Ok(body) = wavedb_net::frame::encode_payload(&batch) else {
+                    tracing::error!(tenant, "flush batch encode failed");
+                    failed.extend_from_slice(chunk);
+                    continue;
+                };
+
+                let sent = self
+                    .inner
+                    .replicate_http
+                    .post(&url)
+                    .header("Content-Type", "application/octet-stream")
+                    .body(body.to_vec())
+                    .send()
+                    .await;
+                match sent {
+                    Ok(resp) if resp.status().is_success() => {
+                        tracing::debug!(
+                            tenant,
+                            records = chunk.len(),
+                            "history flushed to slow node"
+                        );
+                    }
+                    Ok(resp) => {
+                        tracing::warn!(
+                            tenant,
+                            status = %resp.status(),
+                            "slow node rejected flush — re-queueing"
+                        );
+                        failed.extend_from_slice(chunk);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            tenant,
+                            error = %e,
+                            "slow node unreachable — re-queueing flush"
+                        );
+                        failed.extend_from_slice(chunk);
+                    }
+                }
+            }
+            if !failed.is_empty() {
+                let mut map = self.inner.flush_pending.lock();
+                let entry = map.entry(tenant).or_default();
+                // Failed (older) records go before anything written since
+                // the drain above, preserving per-tenant commit order.
+                failed.append(entry);
+                *entry = failed;
+                drop(map);
+            }
+        }
+    }
+
+    /// Spawn the periodic history-flush task: every `interval_secs`,
+    /// [`Self::sync_to_slow`].  Returns `None` when no Slow-Node is
+    /// configured or `interval_secs == 0`.  The task exits when the node
+    /// drops or starts draining (drain runs its own final sync).
+    pub fn start_flush_loop(
+        &self,
+        interval_secs: u64,
+    ) -> Option<tokio::task::AbortHandle> {
+        if interval_secs == 0 || self.inner.config.slow_node.is_none() {
+            return None;
+        }
+        let inner = Arc::downgrade(&self.inner);
+        let interval = std::time::Duration::from_secs(interval_secs);
+        let handle = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(inner) = inner.upgrade() else { break };
+                if inner.draining.load(Ordering::Relaxed) {
+                    break;
+                }
+                let node = Self { inner };
+                node.sync_to_slow().await;
+            }
+        })
+        .abort_handle();
+        Some(handle)
+    }
+
+    /// Overwrite the record's embedded `id` field with the engine-assigned
+    /// Id (registry mode; no-op for schema-blind nodes or layouts without
+    /// a 16-byte `id` field).
+    fn stamp_engine_id<'a>(
+        &self,
+        struct_id: u32,
+        id: Id,
+        committed: std::borrow::Cow<'a, [u8]>,
+    ) -> std::borrow::Cow<'a, [u8]> {
+        let Some(reg) = self.inner.registry else {
+            return committed;
+        };
+        let mut owned = committed.into_owned();
+        let id_field = owned.split_first().and_then(|(&version, _)| {
+            reg.find(wavedb_core::wire::pack_header(struct_id, version))
+                .and_then(|desc| desc.field("id"))
+        });
+        if let Some(fd) = id_field {
+            let start = 1 + fd.stack_offset;
+            if fd.stack_size == 16 && owned.len() >= start + 16 {
+                owned[start..start + 16]
+                    .copy_from_slice(&id.raw().to_le_bytes());
+            }
+        }
+        std::borrow::Cow::Owned(owned)
+    }
+
+    /// Append (or, for Unique shapes, rotate) the committed record's entry
+    /// in its `(struct, tenant)` live tracker.
+    ///
+    /// `payload` is the stored bytes (`[version][body]`); with a registry
+    /// attached the version resolves the shape, so Unique structs keep a
+    /// single live entry while everything else appends.  Schema-blind
+    /// nodes always append — the newest entry still serves `SearchUnique`
+    /// correctly.
+    fn index_committed(&self, storage: &NodeStorage, id: Id, payload: &[u8]) {
+        let unique = self
+            .inner
+            .registry
+            .and_then(|reg| {
+                payload.split_first().and_then(|(&version, _)| {
+                    reg.find(wavedb_core::wire::pack_header(
+                        id.struct_id(),
+                        version,
+                    ))
+                })
+            })
+            .is_some_and(|desc| desc.shape == Shape::Unique);
+
+        let result = if unique {
+            storage.data_file.live_set_single(
+                id.struct_id(),
+                id.tenant_id(),
+                id.raw(),
+            )
+        } else {
+            storage.data_file.live_append(
+                id.struct_id(),
+                id.tenant_id(),
+                id.raw(),
+            )
+        };
+        if let Err(e) = result {
+            tracing::error!(
+                error = %e,
+                id = ?id,
+                "live tracker update failed — record committed but \
+                 undiscoverable until journal recovery"
+            );
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────
@@ -1090,7 +1419,11 @@ impl QuickNode {
             for rec in &batch.records {
                 if let Err(e) = storage.commit_write(rec.id, rec.data.clone()) {
                     tracing::error!(error = %e, id = rec.id, "replica WAL commit failed");
+                    continue;
                 }
+                // Replicas index too, so the partition stays queryable
+                // when the ring re-derives ownership to this node.
+                self.index_committed(storage, Id::from_raw(rec.id), &rec.data);
             }
         }
         self.inner
@@ -1675,6 +2008,400 @@ mod tests {
             let resp = node.handle(write_req(1, 9999, vec![0xFF, 0xEE])).await;
             assert!(resp.error.is_none());
             assert_eq!(node.metrics().write_count, 1);
+        }
+    }
+
+    // ── Read path (Phase 14: storage-backed search / query / delete) ─────
+
+    mod read_path {
+        use super::*;
+        use wavedb::prelude::*;
+        use wavedb_net::request::ErrorCode;
+
+        #[wave_db(struct_id = 7300, NonUnique)]
+        pub struct Widget1 {
+            pub qty: u64,
+            pub label: String,
+        }
+
+        #[wave_db(struct_id = 7301)]
+        pub struct Profile1 {
+            pub display_name: String,
+        }
+
+        declare_objects! {
+            pub mod read_objects {
+                widgets: [Widget1],
+                profiles: [Profile1],
+            }
+        }
+
+        fn storage_node() -> (QuickNode, tempfile::TempDir) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut config = cfg(1, 0, 4095);
+            config.data_dir = dir.path().to_path_buf();
+            (QuickNode::new(config), dir)
+        }
+
+        fn registry_storage_node() -> (QuickNode, tempfile::TempDir) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut config = cfg(1, 0, 4095);
+            config.data_dir = dir.path().to_path_buf();
+            (
+                QuickNode::with_registry(config, read_objects::REGISTRY),
+                dir,
+            )
+        }
+
+        fn widget_payload(qty: u64, label: &str) -> Vec<u8> {
+            let w = Widget1 {
+                id: wavedb_core::Id::default(),
+                metadata: wavedb_core::Metadata::default(),
+                qty,
+                label: label.to_string(),
+            };
+            let body = wavedb_core::wire::to_wire(&w).expect("wire");
+            let mut payload = Vec::with_capacity(1 + body.len());
+            payload.push(Widget1::STRUCT_VERSION);
+            payload.extend_from_slice(&body);
+            payload
+        }
+
+        fn profile_payload(display_name: &str) -> Vec<u8> {
+            let p = Profile1 {
+                id: wavedb_core::Id::default(),
+                metadata: wavedb_core::Metadata::default(),
+                display_name: display_name.to_string(),
+            };
+            let body = wavedb_core::wire::to_wire(&p).expect("wire");
+            let mut payload = Vec::with_capacity(1 + body.len());
+            payload.push(Profile1::STRUCT_VERSION);
+            payload.extend_from_slice(&body);
+            payload
+        }
+
+        async fn write(
+            node: &QuickNode,
+            seq: u64,
+            struct_id: u32,
+            payload: Vec<u8>,
+        ) {
+            let resp = node
+                .handle(TransportRequest::new(
+                    seq,
+                    RequestKind::Write {
+                        struct_id,
+                        user: 7,
+                        tenant: 1,
+                        payload,
+                    },
+                ))
+                .await;
+            assert!(resp.error.is_none(), "write {seq} failed");
+        }
+
+        async fn query(
+            node: &QuickNode,
+            struct_id: u32,
+            expr: &Expr,
+        ) -> TransportResponse {
+            node.handle(TransportRequest::new(
+                90,
+                RequestKind::QueryNonUnique {
+                    struct_id,
+                    user: 7,
+                    tenant: 1,
+                    filter: expr.to_bytes().expect("filter"),
+                },
+            ))
+            .await
+        }
+
+        fn decode_entries(payload: &[u8]) -> Vec<(u8, Vec<u8>)> {
+            wavedb_core::wire::from_wire(payload).expect("entries decode")
+        }
+
+        #[tokio::test]
+        async fn schema_blind_write_then_query_all() {
+            let (node, _dir) = storage_node();
+            write(&node, 1, 9000, vec![1, 0xAA]).await;
+            write(&node, 2, 9000, vec![1, 0xBB, 0xCC]).await;
+
+            let resp = query(&node, 9000, &Expr::all()).await;
+            assert!(resp.error.is_none());
+            let entries = decode_entries(&resp.payload);
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0], (1, vec![0xAA]));
+            assert_eq!(entries[1], (1, vec![0xBB, 0xCC]));
+            assert_eq!(node.metrics().read_count, 1);
+        }
+
+        #[tokio::test]
+        async fn search_unique_returns_latest_write() {
+            let (node, _dir) = storage_node();
+            write(&node, 1, 9001, vec![1, 0x01]).await;
+            write(&node, 2, 9001, vec![2, 0x02]).await;
+
+            let resp = node
+                .handle(TransportRequest::new(
+                    3,
+                    RequestKind::SearchUnique {
+                        struct_id: 9001,
+                        user: 7,
+                        tenant: 1,
+                    },
+                ))
+                .await;
+            assert!(resp.error.is_none());
+            // Payload is the stored wire shape: [version][body], newest write.
+            assert_eq!(resp.payload, vec![2, 0x02]);
+        }
+
+        #[tokio::test]
+        async fn search_unique_empty_when_never_written() {
+            let (node, _dir) = storage_node();
+            let resp = node
+                .handle(TransportRequest::new(
+                    1,
+                    RequestKind::SearchUnique {
+                        struct_id: 9002,
+                        user: 7,
+                        tenant: 1,
+                    },
+                ))
+                .await;
+            assert!(resp.error.is_none());
+            assert!(resp.payload.is_empty());
+        }
+
+        #[tokio::test]
+        async fn delete_removes_record_from_query() {
+            let (node, _dir) = storage_node();
+            write(&node, 1, 9003, vec![1, 0xAA]).await;
+            write(&node, 2, 9003, vec![1, 0xBB]).await;
+
+            // Schema-blind clients can't read ids out of payloads; take it
+            // from the tracker directly (unit-test access).
+            let storage = node.storage().expect("storage").clone();
+            let ids = storage.data_file.live_ids(9003, 1).unwrap();
+            assert_eq!(ids.len(), 2);
+
+            let resp = node
+                .handle(TransportRequest::new(
+                    3,
+                    RequestKind::Delete {
+                        id: ids[0],
+                        user: 7,
+                        tenant: 1,
+                    },
+                ))
+                .await;
+            assert!(resp.error.is_none());
+
+            let resp = query(&node, 9003, &Expr::all()).await;
+            let entries = decode_entries(&resp.payload);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].1, vec![0xBB]);
+        }
+
+        #[tokio::test]
+        async fn delete_rejects_foreign_tenant_id() {
+            let (node, _dir) = storage_node();
+            // Id whose tenant bits (99) don't match the session tenant (1).
+            let foreign = Id::new(99, 0, 9003, 5).raw();
+            let resp = node
+                .handle(TransportRequest::new(
+                    1,
+                    RequestKind::Delete {
+                        id: foreign,
+                        user: 7,
+                        tenant: 1,
+                    },
+                ))
+                .await;
+            assert_eq!(
+                resp.error.expect("must reject").code,
+                ErrorCode::MalformedPayload
+            );
+        }
+
+        #[tokio::test]
+        async fn filtered_query_on_schema_blind_node_is_unsupported() {
+            let (node, _dir) = storage_node();
+            write(&node, 1, 9004, vec![1, 0xAA]).await;
+
+            let resp = query(&node, 9004, &Expr::gt("qty", 10u64)).await;
+            assert_eq!(
+                resp.error.expect("must reject").code,
+                ErrorCode::Unsupported
+            );
+        }
+
+        #[tokio::test]
+        async fn registry_filtered_query_matches_fields() {
+            let (node, _dir) = registry_storage_node();
+            write(&node, 1, 7300, widget_payload(5, "small")).await;
+            write(&node, 2, 7300, widget_payload(50, "big")).await;
+            write(&node, 3, 7300, widget_payload(500, "huge")).await;
+
+            let resp = query(&node, 7300, &Expr::gt("qty", 10u64)).await;
+            assert!(resp.error.is_none());
+            let entries = decode_entries(&resp.payload);
+            assert_eq!(entries.len(), 2);
+
+            let decoded: Vec<Widget1> = entries
+                .iter()
+                .map(|(_, body)| {
+                    wavedb_core::wire::from_wire(body).expect("widget")
+                })
+                .collect();
+            assert_eq!(decoded[0].qty, 50);
+            assert_eq!(decoded[1].qty, 500);
+
+            // Compound filter over a heap (String) field.
+            let expr =
+                Expr::and(Expr::gt("qty", 10u64), Expr::eq("label", "huge"));
+            let resp = query(&node, 7300, &expr).await;
+            let entries = decode_entries(&resp.payload);
+            assert_eq!(entries.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn registry_write_stamps_engine_id_into_body() {
+            let (node, _dir) = registry_storage_node();
+            write(&node, 1, 7300, widget_payload(5, "x")).await;
+
+            let resp = query(&node, 7300, &Expr::all()).await;
+            let entries = decode_entries(&resp.payload);
+            let w: Widget1 =
+                wavedb_core::wire::from_wire(&entries[0].1).unwrap();
+            assert_ne!(w.id, wavedb_core::Id::ZERO, "id must be stamped");
+            assert_eq!(w.id.tenant_id(), 1);
+            assert_eq!(w.id.struct_id(), 7300);
+
+            // The stamped id round-trips through Delete.
+            let resp = node
+                .handle(TransportRequest::new(
+                    2,
+                    RequestKind::Delete {
+                        id: w.id.raw(),
+                        user: 7,
+                        tenant: 1,
+                    },
+                ))
+                .await;
+            assert!(resp.error.is_none());
+            let resp = query(&node, 7300, &Expr::all()).await;
+            assert!(decode_entries(&resp.payload).is_empty());
+        }
+
+        #[tokio::test]
+        async fn unique_shape_keeps_single_live_entry() {
+            let (node, _dir) = registry_storage_node();
+            write(&node, 1, 7301, profile_payload("first")).await;
+            write(&node, 2, 7301, profile_payload("second")).await;
+
+            // The Unique tracker rotates instead of growing.
+            let storage = node.storage().expect("storage").clone();
+            assert_eq!(storage.data_file.live_ids(7301, 1).unwrap().len(), 1);
+
+            let resp = node
+                .handle(TransportRequest::new(
+                    3,
+                    RequestKind::SearchUnique {
+                        struct_id: 7301,
+                        user: 7,
+                        tenant: 1,
+                    },
+                ))
+                .await;
+            let (&version, body) = resp.payload.split_first().expect("payload");
+            assert_eq!(version, Profile1::STRUCT_VERSION);
+            let p: Profile1 = wavedb_core::wire::from_wire(body).unwrap();
+            assert_eq!(p.display_name, "second");
+        }
+
+        #[tokio::test]
+        async fn in_memory_node_reads_stay_empty() {
+            // No data_dir → no storage → reads answer empty, never error.
+            let node = QuickNode::new(cfg(1, 0, 4095));
+            write(&node, 1, 9005, vec![1, 0xAA]).await;
+
+            let resp = node
+                .handle(TransportRequest::new(
+                    2,
+                    RequestKind::SearchUnique {
+                        struct_id: 9005,
+                        user: 7,
+                        tenant: 1,
+                    },
+                ))
+                .await;
+            assert!(resp.error.is_none());
+            assert!(resp.payload.is_empty());
+
+            let resp = query(&node, 9005, &Expr::all()).await;
+            assert!(resp.error.is_none());
+            assert!(resp.payload.is_empty());
+        }
+
+        #[tokio::test]
+        #[allow(clippy::significant_drop_tightening)]
+        async fn sync_to_slow_flushes_pending_records() {
+            use wavedb_net::frame::decode_payload;
+
+            // Stub Slow-Node: accepts /flush, records batches.
+            let received = std::sync::Arc::new(parking_lot::Mutex::new(Vec::<
+                FlushBatch,
+            >::new(
+            )));
+            let state = received.clone();
+            let app = axum::Router::new().route(
+                "/flush",
+                axum::routing::post(move |body: bytes::Bytes| {
+                    let state = state.clone();
+                    async move {
+                        let batch: FlushBatch =
+                            decode_payload(&body).expect("batch");
+                        let ack = wavedb_slow_node::flush::FlushAck {
+                            write_seq: batch.write_seq,
+                        };
+                        state.lock().push(batch);
+                        wavedb_net::frame::encode_payload(&ack)
+                            .unwrap()
+                            .to_vec()
+                    }
+                }),
+            );
+            let listener =
+                tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let slow_addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let mut config = cfg(1, 0, 4095);
+            config.data_dir = dir.path().to_path_buf();
+            config.slow_node = Some(slow_addr.to_string());
+            let node = QuickNode::new(config);
+
+            write(&node, 1, 9006, vec![1, 0xAA]).await;
+            write(&node, 2, 9006, vec![1, 0xBB]).await;
+
+            node.sync_to_slow().await;
+
+            {
+                let batches = received.lock();
+                assert_eq!(batches.len(), 1, "one tenant → one batch");
+                assert_eq!(batches[0].tenant, 1);
+                assert_eq!(batches[0].records.len(), 2);
+                assert_eq!(batches[0].records[0].data, vec![1, 0xAA]);
+            }
+
+            // Pending buffer drained — a second sync sends nothing.
+            node.sync_to_slow().await;
+            assert_eq!(received.lock().len(), 1);
         }
     }
 }

@@ -122,9 +122,12 @@ impl Server {
             None => QuickNode::new(config),
         };
 
-        // Handles dropped on purpose: both loops self-terminate when the
+        // Handles dropped on purpose: the loops self-terminate when the
         // node's inner state drops (they hold only a Weak ref).
         let _ = node.start_compaction_loop(30);
+        // History shipping: drain committed records to the Slow-Node so
+        // the hot tier can release them.  No-op without `.slow_node(…)`.
+        let _ = node.start_flush_loop(5);
         // Liveness: announce every second; a peer missing 3 rounds is
         // evicted and its partitions re-derive to the survivors.
         let _ = node.start_heartbeat_loop(std::time::Duration::from_secs(1), 3);
