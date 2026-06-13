@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const NUM_QUICK_NODES: usize = 3;
-const NUM_CLIENTS: usize = 500;
+const NUM_CLIENTS: usize = 50;
 const TENANT: u64 = 100;
 
 // ── Port allocation ───────────────────────────────────────────────────────────
@@ -268,19 +268,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join(",");
     let slow_http_url = format!("http://{slow_addr}");
 
-    let mut monitor_child = Command::new(sibling_bin("re_monitor"))
-        .env("WAVE_QN_HTTP_URLS", &qn_http_urls)
-        .env("WAVE_SLOW_HTTP_URL", &slow_http_url)
-        .env("WAVE_REFRESH_MS", "400")
-        // Monitor inherits stdin/stdout for the TUI.
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn re_monitor");
+    // WAVE_MONITOR=gui opens the desktop GUI on the Data tab (watch the
+    // record graph grow under load); anything else keeps the terminal TUI.
+    let monitor_mode =
+        std::env::var("WAVE_MONITOR").unwrap_or_else(|_| "tui".to_string());
 
-    println!("  ✓ monitor started — TUI will take over the terminal");
-    println!("    (press q in the TUI to stop the scenario)");
+    let mut monitor_child = if monitor_mode == "gui" {
+        let child = Command::new(sibling_bin("wavedb-monitor-gui"))
+            .args([
+                "--quick-nodes",
+                &qn_http_urls,
+                "--slow-nodes",
+                &slow_http_url,
+                "--refresh-ms",
+                "400",
+                "--tab",
+                "data",
+            ])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn wavedb-monitor-gui");
+        println!("  ✓ GUI monitor started — opens on the Data tab");
+        println!("    (close the window to stop the scenario)");
+        child
+    } else {
+        let child = Command::new(sibling_bin("re_monitor"))
+            .env("WAVE_QN_HTTP_URLS", &qn_http_urls)
+            .env("WAVE_SLOW_HTTP_URL", &slow_http_url)
+            .env("WAVE_REFRESH_MS", "400")
+            // Monitor inherits stdin/stdout for the TUI.
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn re_monitor");
+        println!("  ✓ monitor started — TUI will take over the terminal");
+        println!("    (press q in the TUI to stop the scenario)");
+        child
+    };
     println!();
 
     // ── Spawn 500 client processes ────────────────────────────────────────────
@@ -358,9 +385,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("  ✓ All {NUM_CLIENTS} client processes spawned and connecting…");
 
-    // ── Wait for monitor to exit (user presses q) ─────────────────────────────
-    sep("Running — TUI monitor active");
-    println!("  The TUI monitor is now live. Press q to stop the scenario.");
+    // ── Wait for monitor to exit ──────────────────────────────────────────────
+    if monitor_mode == "gui" {
+        sep("Running — GUI monitor active");
+        println!(
+            "  The GUI monitor is live on the Data tab. Close the window to \
+             stop the scenario."
+        );
+    } else {
+        sep("Running — TUI monitor active");
+        println!(
+            "  The TUI monitor is now live. Press q to stop the scenario."
+        );
+    }
     println!();
 
     let t_start = Instant::now();

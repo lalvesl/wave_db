@@ -208,6 +208,125 @@
           }/bin/real_example";
         };
 
+        # ── real_example_gui: the load test, monitored by the desktop GUI ───────
+        #
+        # Same 500-client payment-gateway scenario as real_example, but the
+        # monitor is the egui desktop GUI opened on the Data tab — watch the
+        # record graph, throughput, and page maps move live under load. Close
+        # the GUI window to stop the scenario.
+        #
+        #   nix run .#real_example_gui
+        apps.real_example_gui = {
+          type = "app";
+          program = "${
+            pkgs.writeShellApplication {
+              name = "real_example_gui";
+              runtimeInputs = [ rustToolchain pkgs.coreutils ];
+              text = ''
+                set -euo pipefail
+
+                echo "── Building real_example + GUI binaries ─────────────────────────"
+                cargo build --release \
+                  --bin real_example \
+                  --bin re_slow_node \
+                  --bin re_quick_node \
+                  --bin re_client \
+                  --bin wavedb-monitor-gui
+
+                echo "── Launching orchestrator with the GUI monitor ──────────────────"
+                # eframe links wayland/libGL/etc. dynamically — put them on the
+                # loader path for the GUI child the orchestrator spawns.
+                export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath guiLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                export WAVE_MONITOR=gui
+                exec ./target/release/real_example "$@"
+              '';
+            }
+          }/bin/real_example_gui";
+        };
+
+        # ── monitor_gui_demo: turnkey GUI monitor against a live cluster ─────────
+        #
+        # One command: build the binaries, start a keyed 3-node cluster in a
+        # temp dir, seed three tenants, then open the GUI pointed at them with
+        # the cluster key. Closing the GUI window tears the whole thing down
+        # (the EXIT trap kills the nodes and removes the temp dir).
+        #
+        #   nix run .#monitor_gui_demo
+        #   nix run .#monitor_gui_demo -- --tab data   # extra GUI flags pass through
+        #
+        # Uses fixed ports 7700/7701/7800 — stop any other cluster on those
+        # ports first.
+        apps.monitor_gui_demo = {
+          type = "app";
+          program = "${
+            pkgs.writeShellApplication {
+              name = "monitor_gui_demo";
+              runtimeInputs = [ rustToolchain pkgs.coreutils ];
+              text = ''
+                set -euo pipefail
+
+                # Demo cluster secret (32 bytes / 64 hex). Node-to-node + the
+                # monitor's HMAC tokens use this; clients write without it.
+                KEY=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+
+                echo "── Building demo binaries (release) ──────────────────────────────"
+                cargo build --release \
+                  --bin wavedb-slow-node \
+                  --bin wavedb-quick-node \
+                  --bin wavedb-monitor-gui \
+                  --bin re_client
+
+                bin=./target/release
+                data="$(mktemp -d /tmp/wavedb-gui-demo.XXXXXX)"
+                pids=()
+
+                cleanup() {
+                  echo
+                  echo "── Stopping demo cluster ───────────────────────────────────────"
+                  for pid in "''${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+                  rm -rf "$data"
+                }
+                trap cleanup EXIT INT TERM
+
+                echo "── Starting keyed cluster (2 quick + 1 slow) in $data ──"
+                "$bin/wavedb-slow-node" --listen 127.0.0.1:7800 \
+                  --data-dir "$data/slow" --cluster-key "$KEY" \
+                  >"$data/slow.log" 2>&1 &
+                pids+=("$!")
+                sleep 1
+                "$bin/wavedb-quick-node" --listen 127.0.0.1:7700 \
+                  --peers 127.0.0.1:7701 --slow-node 127.0.0.1:7800 \
+                  --data-dir "$data/q0" --cluster-key "$KEY" \
+                  >"$data/q0.log" 2>&1 &
+                pids+=("$!")
+                "$bin/wavedb-quick-node" --listen 127.0.0.1:7701 \
+                  --peers 127.0.0.1:7700 --slow-node 127.0.0.1:7800 \
+                  --data-dir "$data/q1" --cluster-key "$KEY" \
+                  >"$data/q1.log" 2>&1 &
+                pids+=("$!")
+                sleep 2
+
+                echo "── Seeding tenants 42, 77, 1001 (writes over WebSocket) ──"
+                for tenant in 42 77 1001; do
+                  WAVE_QN_WS_URLS="ws://127.0.0.1:7700/ws,ws://127.0.0.1:7701/ws" \
+                  WAVE_TENANT="$tenant" WAVE_CLIENT_ID=0 WAVE_NUM_CLIENTS=1 \
+                    timeout 3 "$bin/re_client" >/dev/null 2>&1 || true
+                done
+
+                echo "── Waiting for the first history flush to the slow node ──"
+                sleep 6
+
+                echo "── Launching GUI — close the window to stop the demo ──"
+                export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath guiLibs}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                "$bin/wavedb-monitor-gui" \
+                  --quick-nodes http://127.0.0.1:7700,http://127.0.0.1:7701 \
+                  --slow-nodes http://127.0.0.1:7800 \
+                  --cluster-key "$KEY" "$@"
+              '';
+            }
+          }/bin/monitor_gui_demo";
+        };
+
         apps.fmt = {
           type = "app";
           program = "${

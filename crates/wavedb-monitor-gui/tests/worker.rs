@@ -31,8 +31,9 @@ fn payload(version: u8, body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Start a keyed Slow-Node with two tenants of seeded history.
-async fn start_slow_node() -> (std::net::SocketAddr, ClusterKey) {
+/// Start a keyed Slow-Node with two tenants of seeded history. Returns the
+/// store handle too so tests can write more records after startup.
+async fn start_slow_node() -> (std::net::SocketAddr, ClusterKey, HistoryStore) {
     let key = ClusterKey::from_hex(KEY_HEX).unwrap();
     let store = HistoryStore::in_memory();
     store
@@ -65,13 +66,13 @@ async fn start_slow_node() -> (std::net::SocketAddr, ClusterKey) {
         })
         .unwrap();
 
-    let app = router(store, Some(key.clone()));
+    let app = router(store.clone(), Some(key.clone()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    (addr, key)
+    (addr, key, store)
 }
 
 /// Block until `cond` holds on the shared state or the timeout fires.
@@ -92,7 +93,7 @@ fn wait_for(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn worker_polls_browses_and_fetches_with_auth() {
-    let (addr, key) = start_slow_node().await;
+    let (addr, key, _store) = start_slow_node().await;
     let slow_url = format!("http://{addr}");
 
     let shared: SharedHandle = std::sync::Arc::new(std::sync::Mutex::new(
@@ -180,9 +181,66 @@ async fn worker_polls_browses_and_fetches_with_auth() {
     }
 }
 
+/// The Data view tracks a live cluster: after the GUI browses a tenant,
+/// records written to the store afterward appear on the worker's own poll
+/// cadence — without a second Browse command from the UI. This is what makes
+/// the record graph grow under load in `real_example`.
+#[tokio::test(flavor = "multi_thread")]
+async fn worker_sticky_browse_tracks_live_writes() {
+    let (addr, key, store) = start_slow_node().await;
+    let slow_url = format!("http://{addr}");
+
+    let shared: SharedHandle = std::sync::Arc::new(std::sync::Mutex::new(
+        Shared::new(&[], &[slow_url]),
+    ));
+    let (tx, rx) = mpsc::channel();
+    let _worker = spawn_worker(
+        shared.clone(),
+        rx,
+        Some(key),
+        100,
+        egui::Context::default(),
+    );
+
+    // Browse tenant 42 once — it starts with three records.
+    tx.send(Command::Browse {
+        slow_idx: 0,
+        tenant: Some(42),
+    })
+    .unwrap();
+    assert!(
+        wait_for(&shared, Duration::from_secs(5), |s| {
+            s.data.records.len() == 3
+        }),
+        "initial browse never returned records"
+    );
+
+    // A new record lands in the store, as if a client just wrote it.
+    store
+        .apply_flush(FlushBatch {
+            write_seq: 3,
+            tenant: 42,
+            records: vec![VersionedRecord::new(
+                Id::new(42, 0, 7, 103).raw(),
+                payload(1, b"live write"),
+            )],
+            token: None,
+        })
+        .unwrap();
+
+    // No second Browse command: the worker's sticky re-browse picks it up on
+    // the next poll tick.
+    assert!(
+        wait_for(&shared, Duration::from_secs(5), |s| {
+            s.data.records.len() == 4
+        }),
+        "sticky re-browse did not pick up the live write"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn worker_without_key_reports_unauthorized() {
-    let (addr, _key) = start_slow_node().await;
+    let (addr, _key, _store) = start_slow_node().await;
     let slow_url = format!("http://{addr}");
 
     let shared: SharedHandle = std::sync::Arc::new(std::sync::Mutex::new(

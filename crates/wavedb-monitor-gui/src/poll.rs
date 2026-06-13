@@ -63,6 +63,11 @@ async fn worker_loop(
         .checked_sub(Duration::from_millis(refresh_ms))
         .unwrap_or_else(Instant::now);
 
+    // Last browse the GUI asked for. Re-run on every poll tick so the Data
+    // view tracks a live cluster — under continuous writes the record graph
+    // and tenant counts grow instead of freezing on the first snapshot.
+    let mut sticky_browse: Option<(usize, Option<u64>)> = None;
+
     loop {
         // Drain GUI commands first so key changes apply to the next poll.
         while let Ok(cmd) = commands.try_recv() {
@@ -77,6 +82,7 @@ async fn worker_loop(
                 Command::Browse { slow_idx, tenant } => {
                     browse(&shared, &client, key.as_ref(), slow_idx, tenant)
                         .await;
+                    sticky_browse = Some((slow_idx, tenant));
                     egui_ctx.request_repaint();
                 }
                 Command::FetchRecord {
@@ -92,6 +98,10 @@ async fn worker_loop(
 
         if last_poll.elapsed() >= Duration::from_millis(refresh_ms) {
             poll_metrics(&shared, &client, key.as_ref()).await;
+            // Refresh the open Data view against the live store.
+            if let Some((slow_idx, tenant)) = sticky_browse {
+                browse(&shared, &client, key.as_ref(), slow_idx, tenant).await;
+            }
             last_poll = Instant::now();
             egui_ctx.request_repaint();
         }
