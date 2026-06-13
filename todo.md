@@ -14,6 +14,31 @@
 
 # DONE
 
+- Oh fix the wavedb monitor gui;
+  → Root cause of "GUI won't run": `cargo run -p wavedb-monitor-gui` outside
+  `nix develop` — off-pin toolchain broke `ring v0.17.14` ("unresolved module
+  or unlinked crate `featureflags`") and the shell had no GUI libs
+  (`NoWaylandLib`). Fixes: wave_db dev shell now ships the eframe runtime
+  libs (wayland/libxkbcommon/libGL/X11 + `LD_LIBRARY_PATH`), and `ring` is
+  **gone from the dep graph entirely** — egui_shadcn's font-downloader
+  build-dep (`ureq`) switched rustls→native-tls. Chart fixes in egui_charts:
+  `annular_sector` filled concave ring outlines with `convex_polygon` (the
+  gauge "velocimeter" drew as a pacman disk; pie/sunburst/polar_bar shared
+  the bug) → now a triangle-strip mesh + outline; `GraphNode` gained
+  `hide_label()` / `group(n)` (Data tab: 150 labeled rainbow dots → labeled
+  family hubs with unlabeled color-grouped records); `HeatmapSeries::sqrt_scale()`;
+  explicit `Axis::value().min(0)` bounds now win over nice-rounding (idle
+  throughput chart no longer spans [-1,1]). Monitor data fixes: browse
+  summaries derive struct family from the **Id bits** + version from payload
+  byte 0 (Phase-14 `[version][body]` flushes all showed family "?");
+  `page_map` is scaled relative to the busiest slot with a floor of 1
+  (fixed 2 MiB/slot threshold truncated light traffic to all-zeros = blank
+  heat map) and `apply_replica` now feeds the slots (replica-only nodes
+  showed an empty map over a multi-MB data.bin). GUI polish: overview
+  charts fill the window height, topology colors by tier, invalid
+  `--cluster-key` exits with a clear message instead of a panic.
+  450 tests wave_db + egui_shadcn suite green, clippy 0 both repos.
+
 - Falta de clareza sobre aquizição de dados por clients;
   → Landed as Phase 14, the storage-backed read path. The response
   contracts the client already documented are now served for real:

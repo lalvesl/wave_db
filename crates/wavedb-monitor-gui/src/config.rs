@@ -68,8 +68,15 @@ pub struct Config {
 impl Config {
     pub fn from_args(args: &Args) -> Self {
         let cluster_key = args.cluster_key.as_deref().map(|hex| {
-            ClusterKey::from_hex(hex)
-                .expect("--cluster-key must be 64 hex characters")
+            ClusterKey::from_hex(hex).unwrap_or_else(|_| {
+                eprintln!(
+                    "error: --cluster-key must be the cluster's 64-hex-character \
+                     (32-byte) secret; got {} characters.\n\
+                     The key can also be pasted into the Settings tab at runtime.",
+                    hex.len()
+                );
+                std::process::exit(2);
+            })
         });
         let parse_urls = |s: &str| {
             s.split(',')

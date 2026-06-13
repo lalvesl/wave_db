@@ -196,15 +196,16 @@ fn show_record_graph(ui: &mut egui::Ui, data: &DataView) {
 
         let mut nodes: Vec<GraphNode> = Vec::new();
         let mut links: Vec<GraphLink> = Vec::new();
-        // struct family (header >> 8) → hub node index
-        let mut hubs: std::collections::BTreeMap<u32, usize> =
+        // struct family (header >> 8) → (hub node index, palette group)
+        let mut hubs: std::collections::BTreeMap<u32, (usize, usize)> =
             std::collections::BTreeMap::new();
 
         let shown = data.records.iter().take(GRAPH_RECORD_CAP);
         for rec in shown {
             let family = rec.header >> 8;
             let version = rec.header & 0xFF;
-            let hub = *hubs.entry(family).or_insert_with(|| {
+            let next_group = hubs.len();
+            let (hub, group) = *hubs.entry(family).or_insert_with(|| {
                 let idx = nodes.len();
                 let label = if family == 0 {
                     "struct ?".to_string()
@@ -212,8 +213,8 @@ fn show_record_graph(ui: &mut egui::Ui, data: &DataView) {
                     format!("struct {family}")
                 };
                 // Hub size fixed: prominence without drowning records.
-                nodes.push(GraphNode::new(label, 0.0));
-                idx
+                nodes.push(GraphNode::new(label, 0.0).group(next_group));
+                (idx, next_group)
             });
 
             let idx = nodes.len();
@@ -224,7 +225,14 @@ fn show_record_graph(ui: &mut egui::Ui, data: &DataView) {
                 version,
                 id.created_at()
             );
-            nodes.push(GraphNode::new(label, f64::from(rec.data_bytes)));
+            // Records stay unlabeled on canvas (hover shows the name) and
+            // share their hub's color — 150 labeled rainbow dots is a
+            // hairball, colored clusters around a labeled hub is a shape.
+            nodes.push(
+                GraphNode::new(label, f64::from(rec.data_bytes))
+                    .hide_label()
+                    .group(group),
+            );
             links.push(GraphLink::new(hub, idx, 1.0));
         }
 
@@ -236,7 +244,7 @@ fn show_record_graph(ui: &mut egui::Ui, data: &DataView) {
             *family_bytes.entry(rec.header >> 8).or_insert(0.0) +=
                 f64::from(rec.data_bytes);
         }
-        for (family, &hub_idx) in &hubs {
+        for (family, &(hub_idx, _)) in &hubs {
             if let Some(n) = nodes.get_mut(hub_idx) {
                 n.value =
                     family_bytes.get(family).copied().unwrap_or(1.0).max(1.0);

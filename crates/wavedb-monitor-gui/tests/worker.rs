@@ -6,6 +6,7 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use wavedb_core::Id;
 use wavedb_monitor_gui::poll::spawn_worker;
 use wavedb_monitor_gui::state::{Command, NodeHealth, Shared, SharedHandle};
 use wavedb_net::auth::ClusterKey;
@@ -17,10 +18,15 @@ use wavedb_storage::VersionedRecord;
 const KEY_HEX: &str =
     "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
 
-/// Envelope-prefixed payload: `header = struct_id << 8 | version`.
-fn payload(struct_id: u32, version: u8, body: &[u8]) -> Vec<u8> {
-    let header = (struct_id << 8) | u32::from(version);
-    let mut out = header.to_le_bytes().to_vec();
+/// Record id for tenant 42, struct family 7, first fixture record — the
+/// browse summary derives the struct family from these Id bits.
+const fn id_a() -> u128 {
+    Id::new(42, 0, 7, 100).raw()
+}
+
+/// Hot-tier flush payload shape: `[version u8][wire body]`.
+fn payload(version: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = vec![version];
     out.extend_from_slice(body);
     out
 }
@@ -34,9 +40,15 @@ async fn start_slow_node() -> (std::net::SocketAddr, ClusterKey) {
             write_seq: 1,
             tenant: 42,
             records: vec![
-                VersionedRecord::new(100, payload(7, 1, b"hello world")),
-                VersionedRecord::new(101, payload(7, 2, b"second")),
-                VersionedRecord::new(102, payload(3, 1, b"other family")),
+                VersionedRecord::new(id_a(), payload(1, b"hello world")),
+                VersionedRecord::new(
+                    Id::new(42, 0, 7, 101).raw(),
+                    payload(2, b"second"),
+                ),
+                VersionedRecord::new(
+                    Id::new(42, 0, 9000, 102).raw(),
+                    payload(1, b"other family"),
+                ),
             ],
             token: None,
         })
@@ -45,7 +57,10 @@ async fn start_slow_node() -> (std::net::SocketAddr, ClusterKey) {
         .apply_flush(FlushBatch {
             write_seq: 2,
             tenant: 9,
-            records: vec![VersionedRecord::new(200, payload(1, 1, b"t9"))],
+            records: vec![VersionedRecord::new(
+                Id::new(9, 0, 1, 200).raw(),
+                payload(1, b"t9"),
+            )],
             token: None,
         })
         .unwrap();
@@ -138,17 +153,17 @@ async fn worker_polls_browses_and_fetches_with_auth() {
     {
         let data = shared.lock().unwrap().data.clone();
         assert_eq!(data.selected_tenant, Some(42));
-        assert_eq!(data.records[0].id, 100);
+        assert_eq!(data.records[0].id, id_a());
         assert_eq!(data.records[0].header >> 8, 7);
         assert_eq!(data.records[0].header & 0xFF, 1);
-        assert_eq!(data.records[2].header >> 8, 3);
+        assert_eq!(data.records[2].header >> 8, 9000);
     }
 
     // Record fetch through /history decodes the VersionedRecord payload.
     tx.send(Command::FetchRecord {
         slow_idx: 0,
         tenant: 42,
-        id: 100,
+        id: id_a(),
     })
     .unwrap();
     assert!(
@@ -159,9 +174,9 @@ async fn worker_polls_browses_and_fetches_with_auth() {
     );
     {
         let detail = shared.lock().unwrap().data.detail.clone().unwrap();
-        assert_eq!(detail.id, 100);
+        assert_eq!(detail.id, id_a());
         let rec = detail.decoded.expect("payload decodes");
-        assert_eq!(rec.data, payload(7, 1, b"hello world"));
+        assert_eq!(rec.data, payload(1, b"hello world"));
     }
 }
 

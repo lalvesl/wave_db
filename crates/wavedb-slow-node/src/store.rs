@@ -172,9 +172,12 @@ impl HistoryStore {
     /// `max`.  The second tuple element is `true` when the cap truncated the
     /// listing.
     ///
-    /// The summary carries the record envelope header (first 4 LE bytes of
-    /// the payload) so the monitor can group records by struct family
-    /// without shipping payload bytes.
+    /// The summary carries a `struct_id << 8 | version` header so the
+    /// monitor can group records by struct family without shipping payload
+    /// bytes: the family comes from the record's Id bits, and the version
+    /// from the payload's first byte (the hot tier flushes
+    /// `[version u8][wire body]`; the legacy u32 LE envelope also keeps the
+    /// version in its low byte).
     pub fn record_summaries(
         &self,
         tenant: u64,
@@ -187,10 +190,9 @@ impl HistoryStore {
             .filter(|((t, _), _)| *t == tenant)
             .filter_map(|((_, id), bytes)| {
                 let rec = VersionedRecord::from_bytes(bytes).ok()?;
-                let header = rec
-                    .data
-                    .first_chunk::<4>()
-                    .map_or(0, |b| u32::from_le_bytes(*b));
+                let version = rec.data.first().copied().unwrap_or(0);
+                let header = (wavedb_core::Id::from_raw(*id).struct_id() << 8)
+                    | u32::from(version);
                 // new_modification_id carries the flush write_seq (packed
                 // u64-in-u128 at flush time, upper bits always zero).
                 #[allow(clippy::cast_possible_truncation)]
@@ -339,27 +341,28 @@ mod tests {
     }
 
     #[test]
-    fn record_summaries_header_from_payload_prefix() {
+    fn record_summaries_header_from_id_and_version_byte() {
         let store = HistoryStore::in_memory();
-        // Payload long enough to carry an envelope header.
-        let mut data = 0x0102_0304_u32.to_le_bytes().to_vec();
-        data.extend_from_slice(b"rest");
+        // Hot-tier flush payload shape: [version u8][wire body].
+        let id_a = wavedb_core::Id::new(3, 0, 7300, 1).raw();
+        let id_b = wavedb_core::Id::new(3, 0, 7301, 2).raw();
         store
             .apply_flush(FlushBatch {
                 write_seq: 1,
                 tenant: 3,
                 records: vec![
-                    VersionedRecord::new(1, data),
-                    // Too short for a header — must report 0.
-                    VersionedRecord::new(2, b"ab".to_vec()),
+                    VersionedRecord::new(id_a, vec![2, 0xAA, 0xBB]),
+                    // Empty payload — version must default to 0.
+                    VersionedRecord::new(id_b, Vec::new()),
                 ],
                 token: None,
             })
             .unwrap();
 
         let (recs, _) = store.record_summaries(3, 10);
-        assert_eq!(recs[0].header, 0x0102_0304);
-        assert_eq!(recs[1].header, 0);
+        assert_eq!(recs[0].header, (7300 << 8) | 2);
+        assert_eq!(recs[0].header >> 8, 7300);
+        assert_eq!(recs[1].header, 7301 << 8);
     }
 
     #[test]

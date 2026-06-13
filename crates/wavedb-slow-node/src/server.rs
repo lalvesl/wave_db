@@ -436,13 +436,17 @@ mod tests {
     #[tokio::test]
     async fn browse_lists_tenants_and_records() {
         let store = HistoryStore::in_memory();
+        let id_a = wavedb_core::Id::new(42, 0, 7300, 100).raw();
         store
             .apply_flush(FlushBatch {
                 write_seq: 1,
                 tenant: 42,
                 records: vec![
-                    VersionedRecord::new(100, b"abcd1234".to_vec()),
-                    VersionedRecord::new(101, b"xy".to_vec()),
+                    VersionedRecord::new(id_a, b"abcd1234".to_vec()),
+                    VersionedRecord::new(
+                        wavedb_core::Id::new(42, 0, 7300, 101).raw(),
+                        b"xy".to_vec(),
+                    ),
                 ],
                 token: None,
             })
@@ -483,10 +487,11 @@ mod tests {
         assert_eq!(browse.tenants[1].record_count, 2);
 
         assert_eq!(browse.records.len(), 2);
-        assert_eq!(browse.records[0].id, 100);
+        assert_eq!(browse.records[0].id, id_a);
         assert_eq!(browse.records[0].data_bytes, 8);
-        // First 4 LE bytes of b"abcd" decode as the envelope header.
-        assert_eq!(browse.records[0].header, u32::from_le_bytes(*b"abcd"));
+        // struct family from the Id bits, version from the first payload
+        // byte (b'a').
+        assert_eq!(browse.records[0].header, (7300 << 8) | u32::from(b'a'));
         assert!(!browse.truncated);
     }
 

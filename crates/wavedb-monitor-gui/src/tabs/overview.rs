@@ -24,17 +24,20 @@ pub fn show(app: &MonitorApp, ui: &mut egui::Ui) {
     show_stat_cards(ui, &nodes);
     ui.add_space(12.0);
 
-    // Topology graph and IOps charts side by side when there's room.
+    // Topology graph and IOps charts side by side when there's room. The
+    // charts stretch to the remaining window height (clamped so small
+    // windows still scroll instead of crushing the plots).
+    let chart_h = (ui.available_height() - 110.0).clamp(300.0, 720.0);
     let wide = ui.available_width() > 900.0;
     if wide {
         ui.columns(2, |cols| {
-            show_topology(&mut cols[0], &nodes);
-            show_iops(&mut cols[1], &write_history, &read_history);
+            show_topology(&mut cols[0], &nodes, chart_h);
+            show_iops(&mut cols[1], &write_history, &read_history, chart_h);
         });
     } else {
-        show_topology(ui, &nodes);
+        show_topology(ui, &nodes, chart_h);
         ui.add_space(12.0);
-        show_iops(ui, &write_history, &read_history);
+        show_iops(ui, &write_history, &read_history, chart_h);
     }
 }
 
@@ -80,7 +83,7 @@ fn show_stat_cards(ui: &mut egui::Ui, nodes: &[NodeState]) {
 /// every Quick-Node (history flush path).  Node size tracks write (quick)
 /// or record (slow) volume.
 #[allow(clippy::cast_precision_loss)]
-fn show_topology(ui: &mut egui::Ui, nodes: &[NodeState]) {
+fn show_topology(ui: &mut egui::Ui, nodes: &[NodeState], chart_h: f32) {
     Card::new().padding(12.0).show(ui, |ui| {
         card_header(
             ui,
@@ -124,7 +127,10 @@ fn show_topology(ui: &mut egui::Ui, nodes: &[NodeState]) {
                 }
             };
             graph_pos[i] = gi;
-            graph_nodes.push(GraphNode::new(label, value));
+            // Color by tier (quick vs slow), not by node index — the tiers
+            // are the meaningful clusters in a topology view.
+            let group = usize::from(n.kind == NodeKind::Slow);
+            graph_nodes.push(GraphNode::new(label, value).group(group));
         }
 
         // Gossip mesh: every Quick pair.
@@ -151,7 +157,7 @@ fn show_topology(ui: &mut egui::Ui, nodes: &[NodeState]) {
         ui.push_id("topology_chart", |ui| {
             ChartWidget::new(&chart)
                 .theme(chart_theme(ui.ctx()))
-                .min_size(egui::vec2(360.0, 300.0))
+                .min_size(egui::vec2(360.0, chart_h))
                 .show(ui);
         });
 
@@ -162,7 +168,7 @@ fn show_topology(ui: &mut egui::Ui, nodes: &[NodeState]) {
     });
 }
 
-fn show_iops(ui: &mut egui::Ui, writes: &[u64], reads: &[u64]) {
+fn show_iops(ui: &mut egui::Ui, writes: &[u64], reads: &[u64], chart_h: f32) {
     Card::new().padding(12.0).show(ui, |ui| {
         card_header(ui, "Throughput", Some("cluster-wide ops per poll tick"));
 
@@ -172,10 +178,12 @@ fn show_iops(ui: &mut egui::Ui, writes: &[u64], reads: &[u64]) {
 
         // One category per sample: labels feed the hover tooltip, but the
         // grid and tick text stay hidden — 120 gridlines is a picket fence.
+        // y pinned to 0: ops counts can't go negative, and the auto-range
+        // pads an idle (all-zero) history out to [-1, 1] otherwise.
         let labels = (0..writes.len()).map(|i| i.to_string());
         let chart = Chart::new()
             .x_axis(super::silent_category_axis(labels))
-            .y_axis(Axis::value())
+            .y_axis(Axis::value().min(0.0))
             .series(
                 Series::line("writes/tick")
                     .data(to_f64(writes))
@@ -193,7 +201,7 @@ fn show_iops(ui: &mut egui::Ui, writes: &[u64], reads: &[u64]) {
         ui.push_id("iops_chart", |ui| {
             ChartWidget::new(&chart)
                 .theme(chart_theme(ui.ctx()))
-                .min_size(egui::vec2(360.0, 300.0))
+                .min_size(egui::vec2(360.0, chart_h))
                 .show(ui);
         });
     });

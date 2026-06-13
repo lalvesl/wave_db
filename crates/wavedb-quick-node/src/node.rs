@@ -23,9 +23,7 @@ use wavedb_core::query::Expr;
 use wavedb_core::{Id, ObjectRegistry, Shape};
 use wavedb_net::EventBus;
 use wavedb_net::auth::{ClusterKey, TokenPurpose};
-use wavedb_net::metrics::{
-    MAX_MAP_PAGES, PAGE_MAP_VISUAL_FULL, QuickNodeMetrics,
-};
+use wavedb_net::metrics::{MAX_MAP_PAGES, QuickNodeMetrics};
 use wavedb_net::request::{
     ErrorCode, NodeError, RequestKind, TransportRequest, TransportResponse,
 };
@@ -453,13 +451,28 @@ impl QuickNode {
     /// Snapshot of this node's current metrics.
     pub fn metrics(&self) -> QuickNodeMetrics {
         let write_bytes = self.inner.write_bytes.load(Ordering::Relaxed);
-        let page_map: Vec<u8> = self
+        // Relative scale: the busiest slot is 255 and everything else is
+        // proportional, with a floor of 1 for any slot that saw traffic.
+        // (A fixed bytes-per-slot threshold truncated light traffic to 0
+        // and the heat map rendered blank.)
+        let raw_slots: Vec<u64> = self
             .inner
             .page_bytes
             .iter()
-            .map(|pb| {
-                let b = pb.load(Ordering::Relaxed);
-                (b.saturating_mul(255) / PAGE_MAP_VISUAL_FULL).min(255) as u8
+            .map(|pb| pb.load(Ordering::Relaxed))
+            .collect();
+        let busiest = raw_slots.iter().copied().max().unwrap_or(0).max(1);
+        let page_map: Vec<u8> = raw_slots
+            .iter()
+            .map(|&b| {
+                if b == 0 {
+                    0
+                } else {
+                    #[allow(clippy::cast_possible_truncation)]
+                    {
+                        (b.saturating_mul(255) / busiest).clamp(1, 255) as u8
+                    }
+                }
             })
             .collect();
         // Count only slots that have received at least one write.
@@ -1416,14 +1429,28 @@ impl QuickNode {
     /// — a replica stores them verbatim.
     pub fn apply_replica(&self, batch: &ReplicateBatch) -> ReplicateAck {
         if let Some(storage) = self.inner.storage.as_ref() {
-            for rec in &batch.records {
+            for (i, rec) in batch.records.iter().enumerate() {
                 if let Err(e) = storage.commit_write(rec.id, rec.data.clone()) {
                     tracing::error!(error = %e, id = rec.id, "replica WAL commit failed");
                     continue;
                 }
                 // Replicas index too, so the partition stays queryable
                 // when the ring re-derives ownership to this node.
-                self.index_committed(storage, Id::from_raw(rec.id), &rec.data);
+                let id = Id::from_raw(rec.id);
+                self.index_committed(storage, id, &rec.data);
+                // Replicated bytes land on disk like local writes, so feed
+                // the heat-map slots too — otherwise a pure-replica node
+                // monitors as an empty page map over a multi-MB data.bin.
+                #[allow(clippy::cast_possible_truncation)]
+                let page_idx = tuple4_page(
+                    id.struct_id(),
+                    id.tenant_id(),
+                    0,
+                    batch.write_seq.wrapping_add(i as u64),
+                    MAX_MAP_PAGES as u64,
+                ) as usize;
+                self.inner.page_bytes[page_idx]
+                    .fetch_add(rec.data.len() as u64, Ordering::Relaxed);
             }
         }
         self.inner
@@ -1674,10 +1701,6 @@ mod tests {
     /// the 512 heat-map slots — the old `fnv1a_page(user, struct_id)` only
     /// hit ~13 slots because the routing key collapsed every write from
     /// one user onto the same slot.
-    ///
-    /// Probes `inner.page_bytes` directly because the visual `page_count`
-    /// in [`QuickNodeMetrics`] is scaled against a 2 MiB-per-slot threshold
-    /// and rounds small test payloads to 0.
     #[tokio::test]
     async fn writes_spread_across_heat_map_slots() {
         let node = QuickNode::new(cfg(100, 0, 4095));
@@ -1706,6 +1729,13 @@ mod tests {
         // → ≤ 13 distinct slots ever lit up.  The new routing varies the
         // synthetic Id by write_seq so every write lands somewhere new.
         assert!(lit >= 30, "expected ≥ 30 distinct slots, got {lit}");
+
+        // The published metric must light the same slots: the map scales
+        // relative to the busiest slot, so even 128-byte test writes are
+        // visible (the old fixed 2 MiB threshold truncated them to 0).
+        let metric_lit =
+            node.metrics().page_map.iter().filter(|&&o| o > 0).count();
+        assert_eq!(metric_lit, lit);
     }
 
     #[test]

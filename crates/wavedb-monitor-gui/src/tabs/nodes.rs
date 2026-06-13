@@ -246,7 +246,10 @@ fn show_page_map(
         card_header(
             ui,
             "Page map",
-            Some("occupancy per 8 KiB page slot — 0 empty, 255 full"),
+            Some(
+                "traffic per page slot, relative to the busiest slot \
+                 (dark = untouched, sqrt color scale)",
+            ),
         );
         if m.page_map.is_empty() {
             typography::muted_text(ui, "no data yet");
@@ -269,7 +272,10 @@ fn show_page_map(
                 (0..rows).map(|i| i.to_string()),
             ))
             .series(Series::Heatmap(
-                HeatmapSeries::new("occupancy").data(data).range(0.0, 255.0),
+                HeatmapSeries::new("occupancy")
+                    .data(data)
+                    .range(0.0, 255.0)
+                    .sqrt_scale(),
             ));
         ui.push_id(("page_map", app.selected_node), |ui| {
             ChartWidget::new(&chart)

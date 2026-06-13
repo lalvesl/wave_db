@@ -23,15 +23,7 @@ pub struct MetricsRequest {
 pub const HEAP_PAGE_SIZE: u64 = 4 * 1024;
 
 /// Number of hash-map slots tracked in [`QuickNodeMetrics::page_map`].
-///
-/// Each byte encodes the occupancy of one slot (0 = empty, 255 = full).
 pub const MAX_MAP_PAGES: usize = 512;
-
-/// Byte threshold at which a page-map slot appears visually "full" (255).
-///
-/// Chosen so pages take tens of seconds to saturate under typical load,
-/// keeping the heat-map informative throughout a stress test.
-pub const PAGE_MAP_VISUAL_FULL: u64 = 2 * 1024 * 1024; // 2 MiB per slot
 
 /// Snapshot of a Quick-Node's operational state.
 #[derive(Debug, Clone, WaveWire)]
@@ -56,10 +48,12 @@ pub struct QuickNodeMetrics {
     pub write_bytes: u64,
     /// Theoretical heap page count derived from `write_bytes / HEAP_PAGE_SIZE`.
     pub page_count: u64,
-    /// Per-page occupancy map: each byte is 0 (empty) – 255 (full).
+    /// Per-slot traffic map, scaled relative to the busiest slot at
+    /// snapshot time: 0 = no bytes ever, 255 = the hottest slot, and any
+    /// slot with traffic reports at least 1.  A fixed byte threshold would
+    /// truncate light traffic to all-zeros and render the map blank.
     ///
-    /// At most [`MAX_MAP_PAGES`] entries.  The last entry may be partially
-    /// filled (< 255) when `write_bytes` is not a multiple of the page size.
+    /// At most [`MAX_MAP_PAGES`] entries.
     pub page_map: Vec<u8>,
     /// Rough in-memory footprint estimate (write_bytes + structural overhead).
     pub estimated_memory_bytes: u64,

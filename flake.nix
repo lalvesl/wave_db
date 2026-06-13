@@ -28,6 +28,20 @@
         # Reads channel, components, and targets from rust-toolchain.toml.
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
+        # Runtime libraries for wavedb-monitor-gui (eframe/winit links these
+        # dynamically — without them the binary panics with NoWaylandLib).
+        # Mirrors the sibling egui_shadcn flake's nativeLibs.
+        guiLibs = with pkgs; [
+          libxkbcommon
+          libGL
+          wayland
+          libx11
+          libxcursor
+          libxrandr
+          libxi
+          fontconfig
+        ];
+
         # Custom rust platform using the project toolchain (includes wasm32 target).
         rustPlatform = pkgs.makeRustPlatform {
           cargo = rustToolchain;
@@ -134,6 +148,7 @@
             [
               openssl
             ]
+            ++ lib.optionals stdenv.isLinux guiLibs
             ++ lib.optionals stdenv.isDarwin [
               darwin.apple_sdk.frameworks.SystemConfiguration
               darwin.apple_sdk.frameworks.CoreFoundation
@@ -142,6 +157,9 @@
 
           shellHook = ''
             export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig"
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath guiLibs}:$LD_LIBRARY_PATH"
+            ''}
           '';
         };
 

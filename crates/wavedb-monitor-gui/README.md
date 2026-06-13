@@ -5,14 +5,26 @@ Desktop GUI monitor for WaveDB clusters — the graphical sibling of the
 (shadcn-style) widget set and `egui_charts` from the sibling `egui_shadcn`
 checkout (path dependencies by folder for now).
 
-```text
-wavedb-monitor-gui \
+## Running
+
+Always build/run from the repo's dev shell — it pins the toolchain
+(`rust-toolchain.toml`) and provides the GUI runtime libraries
+(wayland, libxkbcommon, libGL, X11; eframe links them dynamically):
+
+```bash
+nix develop --command cargo run -p wavedb-monitor-gui -- \
   --quick-nodes http://127.0.0.1:7700,http://127.0.0.1:7701 \
   --slow-nodes  http://127.0.0.1:7800 \
-  --cluster-key <64-hex>     # optional — also settable in the Settings tab
+  --cluster-key 0123456789012345678901234567890123456789012345678901234567890123     # optional — also settable in the Settings tab
   --refresh-ms  500 \
   --tab overview             # overview | nodes | data | settings
 ```
+
+`--cluster-key` must be the cluster's full 64-hex-character (32-byte)
+secret; shorter strings are rejected at startup. Running plain `cargo run`
+outside the dev shell uses whatever toolchain rustup defaults to and
+usually fails — either at build time (off-pin toolchain) or at startup
+(`NoWaylandLib`: GUI libraries not on the loader path).
 
 ## Tabs
 
