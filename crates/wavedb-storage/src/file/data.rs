@@ -71,12 +71,12 @@ pub const DEFAULT_GROWTH_FACTOR: f64 = 1.75;
 /// Magic prefix for the sparse on-disk snapshot format.
 const DISK_FORMAT_MAGIC: [u8; 4] = *b"WDBS";
 
-/// Default page size in bytes — 8 KiB.
+/// Default page size in bytes — 16 KiB (four 4 KiB blocks).
 ///
-/// Doubled from the historical 4 KiB so directory entries plus payload
+/// Grown from the historical 4 KiB so directory entries plus payload
 /// fit in one page without overflow.  Override per-file via
 /// [`DataFile::open_with`].
-pub const DEFAULT_PAGE_SIZE: usize = 2 * 4 * 1024;
+pub const DEFAULT_PAGE_SIZE: usize = 4 * 4 * 1024;
 
 /// Fill ratio (0.0 – 1.0) at which a write trips a rebalance.
 ///
