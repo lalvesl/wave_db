@@ -73,8 +73,8 @@
   result is what gets committed (proven by journal read-back in
   `e2e_hooks.rs`). Plumbing: `WaveDbHooks` trait + `HAS_*` consts (hook-less
   types skip decode entirely), `declare_objects!` emits `validate(header,
-  body)` / `preprocess(header, body)` compare-chains + `REGISTRY: &'static
-  ObjectRegistry`, `QuickNode::with_registry(config, REGISTRY)` attaches the
+body)` / `preprocess(header, body)` compare-chains + `REGISTRY: &'static
+ObjectRegistry`, `QuickNode::with_registry(config, REGISTRY)` attaches the
   schema (4 gates: header declared → decodes → validate → preprocess),
   structured `NodeError {code, struct_id, field, message}` on
   `TransportResponse.error` replaces stringly `b"storage_error"` payloads,

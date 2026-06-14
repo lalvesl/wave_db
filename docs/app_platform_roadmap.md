@@ -26,16 +26,16 @@ is the protocol.
 
 ## Current state (inventory, 2026-06)
 
-| Layer | Crate | State |
-| ----- | ----- | ----- |
-| Wire + registry | `wavedb-core` | **Done.** `Wire` trait, `ObjectDescriptor`, `declare_objects!`, migration chains (`MigratesFrom`/`RollbackFrom`). |
-| Storage engine | `wavedb-storage` | **Substantial.** Pages, anchors, adaptive indexes, zstd + dict compression, journal/drain pipeline, `NodeStorage`. |
-| Client handle | `wavedb` | **Native-only.** `Db::connect`, typed `find/query/save/delete`, `Expr` DSL. No local cache file, no wasm32 support. |
-| Transport | `wavedb-net` | WS + HTTP frames, `RequestKind`, notifications scaffold, **node-to-node HMAC auth only**. |
-| Quick-Node | `wavedb-quick-node` | Binary with ownership/ring/gossip/replication; write path WAL-commits to `NodeStorage`; **`handle_search_unique` / `handle_query` are stubs** (`node.rs` "Phase 14"). Schema-blind: registry never linked in. |
-| Slow-Node | `wavedb-slow-node` | Flush receiver + `HistoryStore` (in-memory `HashMap` index over journal). No query surface. |
-| Browser | `wavedb-wasm` | Raw-bytes `JsDb` (u128 + `Vec<u8>`) + IndexedDB adapter + demo. Not the typed API. |
-| Examples | `wavedb-examples` | `real_example` cluster demo (3 quick + 1 slow + 500 clients) — uses `#[wave_db]` structs client-side, nodes treat payloads as opaque bytes, `declare_objects!` unused. |
+| Layer           | Crate               | State                                                                                                                                                                                                         |
+| --------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Wire + registry | `wavedb-core`       | **Done.** `Wire` trait, `ObjectDescriptor`, `declare_objects!`, migration chains (`MigratesFrom`/`RollbackFrom`).                                                                                             |
+| Storage engine  | `wavedb-storage`    | **Substantial.** Pages, anchors, adaptive indexes, zstd + dict compression, journal/drain pipeline, `NodeStorage`.                                                                                            |
+| Client handle   | `wavedb`            | **Native-only.** `Db::connect`, typed `find/query/save/delete`, `Expr` DSL. No local cache file, no wasm32 support.                                                                                           |
+| Transport       | `wavedb-net`        | WS + HTTP frames, `RequestKind`, notifications scaffold, **node-to-node HMAC auth only**.                                                                                                                     |
+| Quick-Node      | `wavedb-quick-node` | Binary with ownership/ring/gossip/replication; write path WAL-commits to `NodeStorage`; **`handle_search_unique` / `handle_query` are stubs** (`node.rs` "Phase 14"). Schema-blind: registry never linked in. |
+| Slow-Node       | `wavedb-slow-node`  | Flush receiver + `HistoryStore` (in-memory `HashMap` index over journal). No query surface.                                                                                                                   |
+| Browser         | `wavedb-wasm`       | Raw-bytes `JsDb` (u128 + `Vec<u8>`) + IndexedDB adapter + demo. Not the typed API.                                                                                                                            |
+| Examples        | `wavedb-examples`   | `real_example` cluster demo (3 quick + 1 slow + 500 clients) — uses `#[wave_db]` structs client-side, nodes treat payloads as opaque bytes, `declare_objects!` unused.                                        |
 
 ### The structural gap
 
@@ -52,6 +52,7 @@ fix that, but nothing consumes it yet. Every milestone below is some form of
 > and maintain anchors. Without this, nothing else matters.
 
 > **Landed early (2026-06-12), pulled out of M1:**
+>
 > - **M1.1 partially** — `wavedb_quick_node::Server` builder
 >   (`Server::bind(…).registry(REGISTRY).serve()`), the library-mode
 >   entrypoint; the generic `main.rs` binary still exists for schema-less
@@ -198,14 +199,14 @@ client B's watcher fires within one round-trip (WS) / one poll tick (HTTP).
    subsequent request carries it; node derives `user`/`tenant` from the
    token, never from the request body.
 2. **Unauthenticated tier.** `user = U48::MAX` sessions restricted to login
-   + world-readable reads (readme contract).
+   - world-readable reads (readme contract).
 3. **Permission checks on the node.** Enforce `Metadata.permission`
    (`None` → tenant-internal; `Inline` ACL walk; `Group` lookup) on every
    read/write/delete. Client-side checks are UX, node-side checks are the
    security boundary.
 4. **Server-side hooks (the "backend" in backend).** ✅ **Landed early
    (2026-06-11), ahead of the rest of M6.** Shipped as `#[wave_db(validate
-   = fn, preprocess = fn)]` + `WaveDbHooks` + registry-dispatched
+= fn, preprocess = fn)]` + `WaveDbHooks` + registry-dispatched
    `validate(header, body)` / `preprocess(header, body)` +
    `QuickNode::with_registry`. Design deviation from the original sketch:
    hooks are **typed** (`fn(&Self)` / `fn(&mut Self)`, sync, pure) and the
@@ -280,10 +281,10 @@ M1 (registry-aware nodes) ──► M2 (typed E2E) ──► M5 (live sync)
 
 ## Risks / open questions
 
-| Risk | Mitigation |
-| ---- | ---------- |
-| Registry statics bloat the wasm binary as schemas grow | M3.4 measures per-struct cost early; descriptors are `'static` data (no code), dictionary-compressible by wasm-opt — verify, don't assume. |
-| `Expr` evaluation against wire bytes needs heap-field comparisons (e.g. `String` equality) | Stack-only predicates first (covers `amount > 100` class); heap predicates decode just the one field via descriptor offset + heap walk. Phase the work. |
-| Runtime abstraction (tokio vs wasm) leaks into public API | Keep it internal to `wavedb`/`wavedb-net`; public API stays `async fn` — already the contract ("Everything is async"). |
-| Hook signature (`&[u8]` + descriptor vs typed dispatch) | **Resolved (2026-06-11):** typed dispatch via the `declare_objects!` compare chain — one monomorphised arm per declared version, `HAS_*` consts skip decode for hook-less types. See M6.4. |
-| P15 (cross-tenant sharing) intersects M6 | Out of scope here; M6 enforces the tenant-local model only, capability records stay a research item. |
+| Risk                                                                                       | Mitigation                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Registry statics bloat the wasm binary as schemas grow                                     | M3.4 measures per-struct cost early; descriptors are `'static` data (no code), dictionary-compressible by wasm-opt — verify, don't assume.                                                 |
+| `Expr` evaluation against wire bytes needs heap-field comparisons (e.g. `String` equality) | Stack-only predicates first (covers `amount > 100` class); heap predicates decode just the one field via descriptor offset + heap walk. Phase the work.                                    |
+| Runtime abstraction (tokio vs wasm) leaks into public API                                  | Keep it internal to `wavedb`/`wavedb-net`; public API stays `async fn` — already the contract ("Everything is async").                                                                     |
+| Hook signature (`&[u8]` + descriptor vs typed dispatch)                                    | **Resolved (2026-06-11):** typed dispatch via the `declare_objects!` compare chain — one monomorphised arm per declared version, `HAS_*` consts skip decode for hook-less types. See M6.4. |
+| P15 (cross-tenant sharing) intersects M6                                                   | Out of scope here; M6 enforces the tenant-local model only, capability records stay a research item.                                                                                       |

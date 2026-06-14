@@ -847,10 +847,10 @@ fn preprocess_payment(p: &mut Payment1) -> Result<(), ValidationError> {
 pub struct Payment1 { pub amount_cents: u64, pub currency: String }
 ```
 
-| Hook | Client (pre-send) | Quick-Node (pre-commit) | Purpose |
-| ---- | ----------------- | ----------------------- | ------- |
-| `validate` | ✓ — typed error, **zero round-trip** | ✓ — the security boundary | invariant checks |
-| `preprocess` | ✗ | ✓ — transformed bytes are what's committed | normalisation, derived fields |
+| Hook         | Client (pre-send)                    | Quick-Node (pre-commit)                    | Purpose                       |
+| ------------ | ------------------------------------ | ------------------------------------------ | ----------------------------- |
+| `validate`   | ✓ — typed error, **zero round-trip** | ✓ — the security boundary                  | invariant checks              |
+| `preprocess` | ✗                                    | ✓ — transformed bytes are what's committed | normalisation, derived fields |
 
 The node runs `validate` **before** `preprocess`: validate is the shared
 client/server contract over the bytes the client sent (same fn + same bytes ⇒
@@ -865,7 +865,7 @@ wasm32, and dispatch through the static registry's monomorphised fn table
 ### Node-side enforcement pipeline
 
 An application's whole Quick-Node binary is one expression — attaching the
-registry is what turns a generic node into *your* backend:
+registry is what turns a generic node into _your_ backend:
 
 ```rust
 declare_objects! { pub mod app_objects { payments: [Payment1], … } }
@@ -940,7 +940,7 @@ that moves the membership:
 
 - **Join:** a node announces itself (gossip `Announce`) and immediately owns
   its ring share; the ring's consistent hashing keeps reassignment minimal.
-- **Solo:** a single node *is* the ring, so it owns every tenant — a
+- **Solo:** a single node _is_ the ring, so it owns every tenant — a
   one-node deployment needs zero ownership setup.
 - **Graceful leave:** drain → gossip `Withdraw` → ring drops the node.
 - **Crash:** the heartbeat (periodic announce, default 1 s) evicts a peer

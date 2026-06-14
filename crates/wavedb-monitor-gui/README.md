@@ -28,12 +28,12 @@ usually fails — either at build time (off-pin toolchain) or at startup
 
 ## Tabs
 
-| Tab | What it shows |
-|-----|---------------|
-| **Overview** | Stat cards (nodes up, writes, reads, rejected, history records, hot-tier disk), cluster topology as a graph chart (gossip mesh between Quick-Nodes, flush edges to Slow-Nodes, bubble size = write/record volume), and write/read IOps area charts. |
-| **Nodes** | Sortable cluster table (status, ring, partitions, counters, memory, disk, uptime). Selecting a row opens the per-node detail: storage breakdown (WAL / data.bin / heap.bin), a data.bin fill gauge, and the page-occupancy heat map. |
-| **Data** | Browses a Slow-Node's history store via `POST /browse`: tenant list, then the selected tenant's records drawn as a **force graph clustered by struct family** (hub = `STRUCT_ID`, bubble size = payload bytes) — the natural shape for a tenant-partitioned, non-SQL store. Clicking a record fetches its payload through `POST /history` into a hex inspector with the decoded 128-bit ID fields. |
-| **Settings** | Cluster-key entry (HMAC-SHA256, masked input), poll cadence, and per-node authorization status. |
+| Tab          | What it shows                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Overview** | Stat cards (nodes up, writes, reads, rejected, history records, hot-tier disk), cluster topology as a graph chart (gossip mesh between Quick-Nodes, flush edges to Slow-Nodes, bubble size = write/record volume), and write/read IOps area charts.                                                                                                                                                |
+| **Nodes**    | Sortable cluster table (status, ring, partitions, counters, memory, disk, uptime). Selecting a row opens the per-node detail: storage breakdown (WAL / data.bin / heap.bin), a data.bin fill gauge, and the page-occupancy heat map.                                                                                                                                                               |
+| **Data**     | Browses a Slow-Node's history store via `POST /browse`: tenant list, then the selected tenant's records drawn as a **force graph clustered by struct family** (hub = `STRUCT_ID`, bubble size = payload bytes) — the natural shape for a tenant-partitioned, non-SQL store. Clicking a record fetches its payload through `POST /history` into a hex inspector with the decoded 128-bit ID fields. |
+| **Settings** | Cluster-key entry (HMAC-SHA256, masked input), poll cadence, and per-node authorization status.                                                                                                                                                                                                                                                                                                    |
 
 ## Authorization
 
