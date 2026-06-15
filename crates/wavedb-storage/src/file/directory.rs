@@ -230,6 +230,13 @@ impl PageDirectory {
         self.slots.len()
     }
 
+    /// The directory slot a record `id` routes to — useful for journaling the
+    /// one slot a `put`/`remove` touched.
+    #[must_use]
+    pub fn slot_of(&self, id: u128) -> usize {
+        slot_for(id, self.slots.len())
+    }
+
     /// The raw descriptors, e.g. for journaling the directory.
     #[must_use]
     pub fn descriptors(&self) -> &[PageDescriptor] {

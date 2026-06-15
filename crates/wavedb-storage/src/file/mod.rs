@@ -6,3 +6,4 @@ pub mod data;
 pub mod directory;
 pub mod page_dir;
 pub mod page_journal;
+pub mod paged_store;
