@@ -27,7 +27,11 @@ pub use error::{StorageError, StorageResult};
 pub use file::block_alloc::{
     BlockAllocator, BlockRun, DATA_BLOCK_SIZE, blocks_for_bytes,
 };
+pub use file::block_file::BlockFile;
 pub use file::data::DataFile;
+pub use file::directory::{
+    INITIAL_PAGE_BLOCKS, PAGE_GROW_OCCUPATION, PageDirectory,
+};
 pub use file::page_dir::{MAX_BLOCK_COUNT, MAX_OCCUPATION, PageDescriptor, occupation_for};
 pub use hash::{PageKey, mix64, tuple2_page, tuple4_page};
 pub use heap::{
