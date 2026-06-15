@@ -84,6 +84,15 @@ impl SlotPage {
         }
     }
 
+    /// Like [`upsert`](Self::upsert) but takes ownership of `payload` — used
+    /// when rehashing moves records between pages and the clone is wasteful.
+    fn upsert_owned(&mut self, id: u128, payload: Vec<u8>) {
+        match self.entries.binary_search_by_key(&id, |(k, _)| *k) {
+            Ok(i) => self.entries[i].1 = payload,
+            Err(i) => self.entries.insert(i, (id, payload)),
+        }
+    }
+
     fn remove(&mut self, id: u128) -> bool {
         match self.entries.binary_search_by_key(&id, |(k, _)| *k) {
             Ok(i) => {
@@ -266,39 +275,24 @@ impl PageDirectory {
         };
         page.upsert(id, payload);
 
-        let need = page.encoded_len() as u64;
-        let min_blocks = blocks_for_bytes(need);
-        if min_blocks > u64::from(MAX_BLOCK_COUNT) {
-            return Err(StorageError::Other(format!(
-                "page needs {min_blocks} blocks, exceeds max {MAX_BLOCK_COUNT}"
-            )));
-        }
-        let image = page.encode();
-
         let current = desc.run();
+        let need = page.encoded_len() as u64;
         let fits_in_place = desc.is_allocated()
             && need <= current.byte_len()
             && occupation_for(need, current.byte_len()) <= PAGE_GROW_OCCUPATION;
 
-        let run = if fits_in_place {
-            file.write_run(current, &image)?;
-            current
+        if fits_in_place {
+            file.write_run(current, &page.encode())?;
+            let occ = occupation_for(need, current.byte_len());
+            self.slots[idx] = PageDescriptor::from_run(current, occ);
         } else {
-            // Roomier run (≈2× headroom) so we don't relocate on every write.
-            let target = blocks_for_bytes(need)
-                .saturating_mul(2)
-                .clamp(INITIAL_PAGE_BLOCKS, u64::from(MAX_BLOCK_COUNT))
-                .max(min_blocks);
-            let new_run = file.allocate(target)?;
-            file.write_run(new_run, &image)?;
+            // Relocate to a roomier run, then release the old one.
+            let new_desc = place_page(file, &page)?;
             if desc.is_allocated() {
                 file.free(current);
             }
-            new_run
-        };
-
-        let occ = occupation_for(need, run.byte_len());
-        self.slots[idx] = PageDescriptor::from_run(run, occ);
+            self.slots[idx] = new_desc;
+        }
         Ok(())
     }
 
@@ -329,6 +323,104 @@ impl PageDirectory {
         }
         Ok(true)
     }
+
+    /// Whether the directory should be lengthened: most slots already hold
+    /// pages that are both **large** (≥ half the 255-block ceiling) and
+    /// **full** (`occupation ≥ PAGE_GROW_OCCUPATION`). When a type's buckets
+    /// can no longer absorb growth in place, adding slots is the only relief.
+    /// This is the rare, heavy path — the engine runs it in the background.
+    #[must_use]
+    pub fn needs_grow(&self) -> bool {
+        let hot = self
+            .slots
+            .iter()
+            .filter(|d| {
+                d.is_allocated()
+                    && d.occupation() >= PAGE_GROW_OCCUPATION
+                    && u64::from(d.block_count()) * 2 >= u64::from(MAX_BLOCK_COUNT)
+            })
+            .count();
+        // ≥ 75% of all slots are hot.
+        hot * 4 >= self.slots.len() * 3
+    }
+
+    /// Double the directory length and rehash every record. Convenience over
+    /// [`grow_to`](Self::grow_to).
+    pub fn grow(&mut self, file: &BlockFile) -> StorageResult<()> {
+        self.grow_to(file, self.slots.len().saturating_mul(2))
+    }
+
+    /// Lengthen the directory to `new_slot_count` and rehash every record
+    /// into the longer directory.
+    ///
+    /// New pages are materialized **before** the old runs are freed, so a
+    /// transient I/O error mid-rehash leaves the existing directory and data
+    /// fully intact (the only cost is leaked blocks a later `truncate` or
+    /// journal replay reclaims). Production journals this as one atomic step.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `new_slot_count < slot_count` — the directory only grows.
+    pub fn grow_to(
+        &mut self,
+        file: &BlockFile,
+        new_slot_count: usize,
+    ) -> StorageResult<()> {
+        assert!(
+            new_slot_count >= self.slots.len(),
+            "directory only grows ({} -> {new_slot_count})",
+            self.slots.len()
+        );
+
+        // Drain every record into the new bucket layout. Old runs stay live.
+        let old_runs: Vec<BlockRun> = self.used_runs().collect();
+        let mut buckets: Vec<SlotPage> =
+            (0..new_slot_count).map(|_| SlotPage::new()).collect();
+        for &run in &old_runs {
+            let page = SlotPage::decode(&file.read_run(run)?)?;
+            for (id, payload) in page.entries {
+                buckets[slot_for(id, new_slot_count)].upsert_owned(id, payload);
+            }
+        }
+
+        // Materialize the new pages with fresh allocations (old data intact
+        // until we commit, so any error here is safely recoverable).
+        let mut new_slots = vec![PageDescriptor::EMPTY; new_slot_count];
+        for (i, page) in buckets.iter().enumerate() {
+            if !page.is_empty() {
+                new_slots[i] = place_page(file, page)?;
+            }
+        }
+
+        // Commit: swap in the new directory, then release the old runs.
+        self.slots = new_slots;
+        for run in old_runs {
+            file.free(run);
+        }
+        Ok(())
+    }
+}
+
+/// Allocate a roomier run for `page`, write it, and return its descriptor.
+///
+/// Shared by [`PageDirectory::put`]'s relocate path and
+/// [`PageDirectory::grow_to`]'s rehash. Sizes the run with ~2× headroom so
+/// the page doesn't relocate on its very next write.
+fn place_page(file: &BlockFile, page: &SlotPage) -> StorageResult<PageDescriptor> {
+    let need = page.encoded_len() as u64;
+    let min_blocks = blocks_for_bytes(need);
+    if min_blocks > u64::from(MAX_BLOCK_COUNT) {
+        return Err(StorageError::Other(format!(
+            "page needs {min_blocks} blocks, exceeds max {MAX_BLOCK_COUNT}"
+        )));
+    }
+    let target = blocks_for_bytes(need)
+        .saturating_mul(2)
+        .clamp(INITIAL_PAGE_BLOCKS, u64::from(MAX_BLOCK_COUNT))
+        .max(min_blocks);
+    let run = file.allocate(target)?;
+    file.write_run(run, &page.encode())?;
+    Ok(PageDescriptor::from_run(run, occupation_for(need, run.byte_len())))
 }
 
 #[cfg(test)]
@@ -414,6 +506,73 @@ mod tests {
     }
 
     #[test]
+    fn grow_to_preserves_records_and_shrinks_pages() {
+        let bf = BlockFile::create_in_memory();
+        let mut dir = PageDirectory::new(2);
+        let payload = vec![0x5Au8; 500];
+        for id in 0..40u128 {
+            dir.put(&bf, id, &payload).unwrap();
+        }
+        let max_before = dir
+            .descriptors()
+            .iter()
+            .map(|d| d.block_count())
+            .max()
+            .unwrap();
+
+        dir.grow_to(&bf, 16).unwrap();
+        assert_eq!(dir.slot_count(), 16);
+
+        for id in 0..40u128 {
+            assert_eq!(dir.get(&bf, id).unwrap().unwrap(), payload);
+        }
+        // Spreading 40 records over 8× the slots makes each page smaller.
+        let max_after = dir
+            .descriptors()
+            .iter()
+            .map(|d| d.block_count())
+            .max()
+            .unwrap();
+        assert!(max_after <= max_before, "{max_after} !<= {max_before}");
+        // Old runs were released back to the allocator.
+        assert!(bf.free_blocks() > 0);
+    }
+
+    #[test]
+    fn grow_doubles_slot_count() {
+        let bf = BlockFile::create_in_memory();
+        let mut dir = PageDirectory::new(3);
+        dir.put(&bf, 1, b"a").unwrap();
+        dir.grow(&bf).unwrap();
+        assert_eq!(dir.slot_count(), 6);
+        assert_eq!(dir.get(&bf, 1).unwrap().unwrap(), b"a");
+    }
+
+    #[test]
+    fn needs_grow_heuristic() {
+        // Both pages large (≥128 blocks) and full (occ ≥ 48) → grow.
+        let hot = PageDirectory::from_slots(vec![
+            PageDescriptor::from_run(BlockRun { start: 0, len: 200 }, 50),
+            PageDescriptor::from_run(BlockRun { start: 200, len: 130 }, 48),
+        ]);
+        assert!(hot.needs_grow());
+
+        // Small pages → no grow.
+        let cool = PageDirectory::from_slots(vec![
+            PageDescriptor::from_run(BlockRun { start: 0, len: 2 }, 10),
+            PageDescriptor::EMPTY,
+        ]);
+        assert!(!cool.needs_grow());
+
+        // Only half the slots are hot (< 75%) → no grow.
+        let mixed = PageDirectory::from_slots(vec![
+            PageDescriptor::from_run(BlockRun { start: 0, len: 200 }, 50),
+            PageDescriptor::from_run(BlockRun { start: 200, len: 2 }, 10),
+        ]);
+        assert!(!mixed.needs_grow());
+    }
+
+    #[test]
     fn survives_block_file_reopen() {
         let dir_tmp = tempdir().unwrap();
         let path = dir_tmp.path().join("data.bin");
@@ -442,13 +601,15 @@ mod proptests {
     enum Op {
         Put(u128, Vec<u8>),
         Remove(u128),
+        Grow,
     }
 
     fn op_strategy() -> impl Strategy<Value = Op> {
         prop_oneof![
-            (0u128..8, prop::collection::vec(any::<u8>(), 0..40))
+            5 => (0u128..8, prop::collection::vec(any::<u8>(), 0..40))
                 .prop_map(|(id, p)| Op::Put(id, p)),
-            (0u128..8).prop_map(Op::Remove),
+            3 => (0u128..8).prop_map(Op::Remove),
+            1 => Just(Op::Grow),
         ]
     }
 
@@ -472,6 +633,13 @@ mod proptests {
                     Op::Remove(id) => {
                         let removed = dir.remove(&bf, id).unwrap();
                         prop_assert_eq!(removed, model.remove(&id).is_some());
+                    }
+                    Op::Grow => {
+                        // Cap the doubling so a long op sequence can't blow up
+                        // the slot count.
+                        if dir.slot_count() < 64 {
+                            dir.grow(&bf).unwrap();
+                        }
                     }
                 }
                 for id in 0u128..8 {
