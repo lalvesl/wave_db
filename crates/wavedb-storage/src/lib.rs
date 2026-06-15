@@ -32,6 +32,7 @@ pub use file::data::DataFile;
 pub use file::directory::{
     INITIAL_PAGE_BLOCKS, PAGE_GROW_OCCUPATION, PageDirectory,
 };
+pub use file::linear::{LinearDirectory, MAX_LEVEL};
 pub use file::page_journal::{PageJournal, ReplayState};
 pub use file::paged_store::{DEFAULT_DIRECTORY_SLOTS, PagedStore};
 pub use file::page_dir::{MAX_BLOCK_COUNT, MAX_OCCUPATION, PageDescriptor, occupation_for};

@@ -62,25 +62,28 @@ const fn slot_for(id: u128, slot_count: usize) -> usize {
 }
 
 /// In-memory view of one page: the records of a single bucket, id-sorted.
-struct SlotPage {
-    entries: Vec<(u128, Vec<u8>)>,
+///
+/// Shared by [`PageDirectory`] and `file::linear` — both store a bucket as
+/// this CRC-checked record image.
+pub(crate) struct SlotPage {
+    pub(crate) entries: Vec<(u128, Vec<u8>)>,
 }
 
 impl SlotPage {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
     }
 
-    fn get(&self, id: u128) -> Option<&[u8]> {
+    pub(crate) fn get(&self, id: u128) -> Option<&[u8]> {
         self.entries
             .binary_search_by_key(&id, |(k, _)| *k)
             .ok()
             .map(|i| self.entries[i].1.as_slice())
     }
 
-    fn upsert(&mut self, id: u128, payload: &[u8]) {
+    pub(crate) fn upsert(&mut self, id: u128, payload: &[u8]) {
         match self.entries.binary_search_by_key(&id, |(k, _)| *k) {
             Ok(i) => self.entries[i].1 = payload.to_vec(),
             Err(i) => self.entries.insert(i, (id, payload.to_vec())),
@@ -89,14 +92,14 @@ impl SlotPage {
 
     /// Like [`upsert`](Self::upsert) but takes ownership of `payload` — used
     /// when rehashing moves records between pages and the clone is wasteful.
-    fn upsert_owned(&mut self, id: u128, payload: Vec<u8>) {
+    pub(crate) fn upsert_owned(&mut self, id: u128, payload: Vec<u8>) {
         match self.entries.binary_search_by_key(&id, |(k, _)| *k) {
             Ok(i) => self.entries[i].1 = payload,
             Err(i) => self.entries.insert(i, (id, payload)),
         }
     }
 
-    fn remove(&mut self, id: u128) -> bool {
+    pub(crate) fn remove(&mut self, id: u128) -> bool {
         match self.entries.binary_search_by_key(&id, |(k, _)| *k) {
             Ok(i) => {
                 self.entries.remove(i);
@@ -106,7 +109,7 @@ impl SlotPage {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
@@ -151,7 +154,7 @@ impl SlotPage {
     }
 
     /// Decode a page image, verifying its CRC and ignoring trailing padding.
-    fn decode(bytes: &[u8]) -> StorageResult<Self> {
+    pub(crate) fn decode(bytes: &[u8]) -> StorageResult<Self> {
         if bytes.len() < HEADER_LEN {
             return Err(StorageError::Other("page image too short".into()));
         }
@@ -442,7 +445,7 @@ fn read_slot(file: &BlockFile, desc: PageDescriptor) -> StorageResult<SlotPage> 
 /// Shared by [`PageDirectory::put`]'s relocate path and
 /// [`PageDirectory::grow_to`]'s rehash. Sizes the run with ~2× headroom so
 /// the page doesn't relocate on its very next write.
-fn place_page(file: &BlockFile, page: &SlotPage) -> StorageResult<PageDescriptor> {
+pub(crate) fn place_page(file: &BlockFile, page: &SlotPage) -> StorageResult<PageDescriptor> {
     let need = page.encoded_len() as u64;
     let min_blocks = blocks_for_bytes(need);
     if min_blocks > u64::from(MAX_BLOCK_COUNT) {
