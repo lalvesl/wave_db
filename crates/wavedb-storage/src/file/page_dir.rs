@@ -12,8 +12,8 @@
 //! bits 63..16 │ start_block : u48   first 4 KiB block of the page
 //! bits 15..8  │ block_count : u8    contiguous blocks (≤ 255 ⇒ ≤ ~1 MiB)
 //! bits  7..2  │ occupation  : u6    fill gauge in 1/64ths (0 empty … 63 full)
-//! bit      1  │ reserved
-//! bit      0  │ reserved
+//! bit      1  │ in_journal         page lives in the journal, not data.bin
+//! bit      0  │ in_memory          page resident in memory (reserved/deferred)
 //! ```
 //!
 //! `start_block` + `block_count` are exactly a [`BlockRun`]; `occupation` is a
@@ -21,6 +21,19 @@
 //! the page**, so it can pick a page to grow or a relocation victim without a
 //! disk read.  An all-zero descriptor ([`PageDescriptor::EMPTY`]) is an
 //! unallocated slot — `block_count == 0` means "no page here yet".
+//!
+//! # The `in_journal` flag
+//!
+//! When `in_journal` is set, the page's bytes live in the **journal**, not the
+//! `data` file: [`start_block`](PageDescriptor::start_block) is reinterpreted
+//! as a journal address. Journal metadata records when the page is migrated
+//! into `data`; once the drain copies it down, the descriptor is rewritten in
+//! place (flag cleared, address = the new `data` block). This lets pages be
+//! **staged in the journal during balancing / transitions** without forcing
+//! the whole working set into memory.
+//!
+//! `in_memory` (bit 0) is reserved for a future resident-page path and is not
+//! acted on yet.
 
 use crate::file::block_alloc::BlockRun;
 
@@ -38,7 +51,13 @@ const START_SHIFT: u32 = COUNT_SHIFT + BLOCK_COUNT_BITS; // 16
 const OCC_MASK: u64 = (1 << OCCUPATION_BITS) - 1; // 0x3F
 const COUNT_MASK: u64 = (1 << BLOCK_COUNT_BITS) - 1; // 0xFF
 const START_MASK: u64 = (1 << START_BLOCK_BITS) - 1; // 0xFFFF_FFFF_FFFF
-const RESERVED_MASK: u64 = (1 << OCC_SHIFT) - 1; // 0x3
+
+/// Both low flag bits (`in_journal` | `in_memory`).
+const FLAGS_MASK: u64 = (1 << OCC_SHIFT) - 1; // 0x3
+/// `in_journal` — page lives in the journal, address is a journal location.
+const IN_JOURNAL_MASK: u64 = 1 << 1; // bit 1
+/// `in_memory` — page resident in memory (reserved / deferred).
+const IN_MEMORY_MASK: u64 = 1 << 0; // bit 0
 
 /// Largest representable `start_block` (2⁴⁸ − 1 ⇒ 1 EiB of 4 KiB blocks).
 pub const MAX_START_BLOCK: u64 = START_MASK;
@@ -127,12 +146,55 @@ impl PageDescriptor {
         (((self.0 >> OCC_SHIFT) & OCC_MASK) as u8)
     }
 
-    /// The two reserved low bits (currently always 0).
+    /// Whether this page lives in the **journal** rather than the `data` file.
+    ///
+    /// When set, [`start_block`](Self::start_block) /
+    /// [`journal_addr`](Self::journal_addr) address the journal; the drain
+    /// later migrates the page into `data` and rewrites this descriptor (flag
+    /// cleared, address = the new `data` block). See the module docs.
     #[inline]
     #[must_use]
-    pub const fn reserved(self) -> u8 {
-        #[allow(clippy::cast_possible_truncation)]
-        ((self.0 & RESERVED_MASK) as u8)
+    pub const fn is_in_journal(self) -> bool {
+        self.0 & IN_JOURNAL_MASK != 0
+    }
+
+    /// Whether this page is resident in memory. **Reserved / deferred** — the
+    /// in-memory page path is not implemented yet.
+    #[inline]
+    #[must_use]
+    pub const fn is_in_memory(self) -> bool {
+        self.0 & IN_MEMORY_MASK != 0
+    }
+
+    /// Set or clear the [`is_in_journal`](Self::is_in_journal) flag.
+    #[inline]
+    #[must_use]
+    pub const fn with_in_journal(self, on: bool) -> Self {
+        if on {
+            Self(self.0 | IN_JOURNAL_MASK)
+        } else {
+            Self(self.0 & !IN_JOURNAL_MASK)
+        }
+    }
+
+    /// Set or clear the [`is_in_memory`](Self::is_in_memory) flag (reserved).
+    #[inline]
+    #[must_use]
+    pub const fn with_in_memory(self, on: bool) -> Self {
+        if on {
+            Self(self.0 | IN_MEMORY_MASK)
+        } else {
+            Self(self.0 & !IN_MEMORY_MASK)
+        }
+    }
+
+    /// The page's journal address — the [`start_block`](Self::start_block)
+    /// bits reinterpreted as a journal location. Meaningful only when
+    /// [`is_in_journal`](Self::is_in_journal) is set.
+    #[inline]
+    #[must_use]
+    pub const fn journal_addr(self) -> u64 {
+        self.start_block()
     }
 
     /// Whether a page is allocated for this slot (`block_count != 0`).
@@ -159,7 +221,7 @@ impl PageDescriptor {
         f64::from(self.occupation()) / f64::from(OCCUPATION_SCALE)
     }
 
-    /// Same descriptor with a new occupation gauge (reserved bits preserved).
+    /// Same descriptor with a new occupation gauge (run + flag bits preserved).
     ///
     /// # Panics
     ///
@@ -173,7 +235,7 @@ impl PageDescriptor {
         )
     }
 
-    /// Same descriptor pointing at a new block run (occupation/reserved kept).
+    /// Same descriptor pointing at a new block run (occupation + flags kept).
     ///
     /// Used after a page is relocated to a larger run: the routing index in
     /// the directory is unchanged, only the bytes' location moves.
@@ -186,8 +248,8 @@ impl PageDescriptor {
         assert!(run.len <= MAX_BLOCK_COUNT as u64, "run exceeds 255 blocks");
         assert!(run.start <= MAX_START_BLOCK, "start_block exceeds u48");
         // Replace start_block (63..16) and block_count (15..8); keep the
-        // occupation (7..2) and reserved (1..0) bits untouched.
-        let keep = self.0 & ((OCC_MASK << OCC_SHIFT) | RESERVED_MASK);
+        // occupation (7..2) and flag (1..0) bits untouched.
+        let keep = self.0 & ((OCC_MASK << OCC_SHIFT) | FLAGS_MASK);
         Self((run.start << START_SHIFT) | (run.len << COUNT_SHIFT) | keep)
     }
 }
@@ -223,7 +285,8 @@ mod tests {
         assert_eq!(d.start_block(), 0x1234_5678_9ABC);
         assert_eq!(d.block_count(), 200);
         assert_eq!(d.occupation(), 48);
-        assert_eq!(d.reserved(), 0);
+        assert!(!d.is_in_journal());
+        assert!(!d.is_in_memory());
         assert!(d.is_allocated());
         assert_eq!(PageDescriptor::from_raw(d.raw()), d);
     }
@@ -243,10 +306,10 @@ mod tests {
             PageDescriptor::new(0, 0, MAX_OCCUPATION).occupation(),
             MAX_OCCUPATION
         );
-        // A fully-saturated descriptor: every non-reserved bit set.
+        // A fully-saturated descriptor: every non-flag bit set.
         let full =
             PageDescriptor::new(MAX_START_BLOCK, MAX_BLOCK_COUNT, MAX_OCCUPATION);
-        assert_eq!(full.raw(), !0x3u64); // every bit but the two reserved
+        assert_eq!(full.raw(), !0x3u64); // every bit but the two flag bits
     }
 
     #[test]
@@ -274,6 +337,42 @@ mod tests {
         assert_eq!(d.occupation(), 60);
         assert_eq!(d.start_block(), 99);
         assert_eq!(d.block_count(), 4);
+    }
+
+    #[test]
+    fn journal_and_memory_flags() {
+        let d = PageDescriptor::new(123, 4, 30);
+        assert!(!d.is_in_journal());
+        assert!(!d.is_in_memory());
+
+        let j = d.with_in_journal(true);
+        assert!(j.is_in_journal());
+        assert!(!j.is_in_memory());
+        // The flag must not disturb the packed fields.
+        assert_eq!(j.start_block(), 123);
+        assert_eq!(j.block_count(), 4);
+        assert_eq!(j.occupation(), 30);
+        assert_eq!(j.journal_addr(), 123);
+        // Clearing returns the original descriptor exactly.
+        assert_eq!(j.with_in_journal(false), d);
+
+        let m = d.with_in_memory(true);
+        assert!(m.is_in_memory());
+        assert!(!m.is_in_journal());
+    }
+
+    #[test]
+    fn flags_survive_with_run_and_with_occupation() {
+        let d = PageDescriptor::new(10, 4, 20).with_in_journal(true);
+        // Migrating the page to a data block keeps the (caller-managed) flag
+        // until it is explicitly cleared.
+        let moved = d.with_run(BlockRun { start: 99, len: 8 });
+        assert!(moved.is_in_journal());
+        assert_eq!(moved.start_block(), 99);
+        assert_eq!(moved.block_count(), 8);
+        let reoccupied = d.with_occupation(40);
+        assert!(reoccupied.is_in_journal());
+        assert_eq!(reoccupied.occupation(), 40);
     }
 
     #[test]
@@ -331,7 +430,8 @@ mod proptests {
             prop_assert_eq!(d.start_block(), start);
             prop_assert_eq!(d.block_count(), count);
             prop_assert_eq!(d.occupation(), occ);
-            prop_assert_eq!(d.reserved(), 0);
+            prop_assert!(!d.is_in_journal());
+            prop_assert!(!d.is_in_memory());
             prop_assert_eq!(PageDescriptor::from_raw(d.raw()), d);
         }
 

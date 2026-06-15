@@ -78,13 +78,23 @@ homogeneous page in the `data` file.
 | 63..16 | `start_block` | `u48` | Index of the page's first 4 KiB block in the `data` file.                   |
 | 15..8  | `block_count` | `u8`  | Contiguous blocks the page occupies (1 ≤ n ≤ 255 ⇒ ≤ ~1 MiB per page).      |
 | 7..2   | `occupation`  | `u6`  | Coarse fill gauge in 1/64ths of the page's capacity (0 = empty, 63 = full). |
-| 1      | reserved      | bit   | —                                                                           |
-| 0      | reserved      | bit   | —                                                                           |
+| 1      | `in_journal`  | bit   | Page lives in the **journal**, not `data.bin`; `start_block` addresses the journal. |
+| 0      | `in_memory`   | bit   | Page resident in memory (reserved — not yet implemented).                   |
 
 `start_block` + `block_count` locate the page's bytes; `occupation` is a cached
 summary the allocator reads **without touching the page** — enough to decide
 "this page must grow" or "this page is a good relocation victim" from the
 directory alone. `u48` block addressing covers 2⁴⁸ × 4 KiB = 1 EiB per file.
+
+**The `in_journal` flag.** When set, the page's bytes live in the journal
+rather than `data.bin`, and `start_block` is reinterpreted as a journal
+address. Journal metadata records when the page is migrated down; once the
+drain copies it into `data.bin`, the descriptor is rewritten in place (flag
+cleared, address = the new data block). This lets pages be **staged in the
+journal during balancing / transitions** without forcing the whole working set
+into memory — a relocation can land in the append-only journal first and settle
+into `data.bin` lazily. (`in_memory`, bit 0, is reserved for a future
+resident-page path.)
 
 ### Addressing
 
