@@ -10,14 +10,16 @@
 //! The descriptor at that slot locates a homogeneous page (a run of blocks in
 //! the shared [`BlockFile`]) holding that bucket's records.
 //!
-//! # Growth
+//! # Copy-on-write
 //!
-//! A full bucket **grows in place** rather than spilling to a neighbour: when
-//! a page outgrows its run (or crosses [`PAGE_GROW_OCCUPATION`]), the
-//! allocator hands it a roomier run, the page is copied over, the old run is
-//! freed, and the single descriptor is rewritten with the new location. No
-//! record changes slots — `hash % len` is invariant. Lengthening the
-//! directory itself (the rare per-type rehash) is a separate, future step.
+//! A live page is **never mutated in place**. Every change — a record write,
+//! a bucket growing, a directory rehash — **allocates a fresh page, writes it
+//! in full, then commits by swapping the slot's descriptor, and only then
+//! frees the old page**. The old page stays the truth until the one-`u64`
+//! commit, so a crash can never tear a page; recovery simply sees the old or
+//! the new pointer, never a half-written page. No record changes slots —
+//! `hash % len` is invariant. Lengthening the directory itself (the rare
+//! per-type rehash) follows the same discipline.
 //!
 //! # Page image
 //!
@@ -38,6 +40,7 @@ use crate::file::block_alloc::{BlockRun, blocks_for_bytes};
 use crate::file::block_file::BlockFile;
 use crate::file::page_dir::{MAX_BLOCK_COUNT, PageDescriptor, occupation_for};
 use crate::{StorageError, StorageResult};
+use std::collections::BTreeMap;
 
 /// Blocks handed to a brand-new page before it has grown.
 pub const INITIAL_PAGE_BLOCKS: u64 = 1;
@@ -266,7 +269,8 @@ impl PageDirectory {
         Ok(page.get(id).map(<[u8]>::to_vec))
     }
 
-    /// Insert or replace a record, growing/relocating the page as needed.
+    /// Insert or replace a single record (copy-on-write — see
+    /// [`commit_slot`](Self::commit_slot)).
     pub fn put(
         &mut self,
         file: &BlockFile,
@@ -275,36 +279,13 @@ impl PageDirectory {
     ) -> StorageResult<()> {
         let idx = slot_for(id, self.slots.len());
         let desc = self.slots[idx];
-        let mut page = if desc.is_allocated() {
-            SlotPage::decode(&file.read_run(desc.run())?)?
-        } else {
-            SlotPage::new()
-        };
+        let mut page = read_slot(file, desc)?;
         page.upsert(id, payload);
-
-        let current = desc.run();
-        let need = page.encoded_len() as u64;
-        let fits_in_place = desc.is_allocated()
-            && need <= current.byte_len()
-            && occupation_for(need, current.byte_len()) <= PAGE_GROW_OCCUPATION;
-
-        if fits_in_place {
-            file.write_run(current, &page.encode())?;
-            let occ = occupation_for(need, current.byte_len());
-            self.slots[idx] = PageDescriptor::from_run(current, occ);
-        } else {
-            // Relocate to a roomier run, then release the old one.
-            let new_desc = place_page(file, &page)?;
-            if desc.is_allocated() {
-                file.free(current);
-            }
-            self.slots[idx] = new_desc;
-        }
+        self.commit_page(file, idx, desc, &page)?;
         Ok(())
     }
 
-    /// Remove a record. Returns whether it was present. Frees the page's run
-    /// once its last record is gone.
+    /// Remove a single record. Returns whether it was present.
     pub fn remove(
         &mut self,
         file: &BlockFile,
@@ -315,20 +296,59 @@ impl PageDirectory {
         if !desc.is_allocated() {
             return Ok(false);
         }
-        let mut page = SlotPage::decode(&file.read_run(desc.run())?)?;
+        let mut page = read_slot(file, desc)?;
         if !page.remove(id) {
             return Ok(false);
         }
-        if page.is_empty() {
-            file.free(desc.run());
-            self.slots[idx] = PageDescriptor::EMPTY;
-        } else {
-            let image = page.encode();
-            file.write_run(desc.run(), &image)?;
-            let occ = occupation_for(image.len() as u64, desc.run().byte_len());
-            self.slots[idx] = desc.with_occupation(occ);
-        }
+        self.commit_page(file, idx, desc, &page)?;
         Ok(true)
+    }
+
+    /// Apply a **batch** of record mutations to one slot copy-on-write,
+    /// returning the slot's new descriptor. This is what the drain uses: all
+    /// pending records for a page are merged in one page rebuild.
+    ///
+    /// `Some(bytes)` upserts a record; `None` deletes it. The merged page is
+    /// written to a fresh run (or the slot is emptied if no records remain);
+    /// the old run is freed only after the new page is committed.
+    pub fn commit_slot(
+        &mut self,
+        file: &BlockFile,
+        slot: usize,
+        mutations: &BTreeMap<u128, Option<Vec<u8>>>,
+    ) -> StorageResult<PageDescriptor> {
+        let desc = self.slots[slot];
+        let mut page = read_slot(file, desc)?;
+        for (id, mutation) in mutations {
+            match mutation {
+                Some(payload) => page.upsert(*id, payload),
+                None => {
+                    page.remove(*id);
+                }
+            }
+        }
+        self.commit_page(file, slot, desc, &page)
+    }
+
+    /// Commit a rebuilt page to a slot copy-on-write: write the new page (or
+    /// empty the slot), swap the descriptor, then free the old run.
+    fn commit_page(
+        &mut self,
+        file: &BlockFile,
+        slot: usize,
+        old: PageDescriptor,
+        page: &SlotPage,
+    ) -> StorageResult<PageDescriptor> {
+        let new_desc = if page.is_empty() {
+            PageDescriptor::EMPTY
+        } else {
+            place_page(file, page)?
+        };
+        if old.is_allocated() {
+            file.free(old.run());
+        }
+        self.slots[slot] = new_desc;
+        Ok(new_desc)
     }
 
     /// Whether the directory should be lengthened: most slots already hold
@@ -405,6 +425,15 @@ impl PageDirectory {
             file.free(run);
         }
         Ok(())
+    }
+}
+
+/// Read the page a descriptor points at, or an empty page if unallocated.
+fn read_slot(file: &BlockFile, desc: PageDescriptor) -> StorageResult<SlotPage> {
+    if desc.is_allocated() {
+        SlotPage::decode(&file.read_run(desc.run())?)
+    } else {
+        Ok(SlotPage::new())
     }
 }
 

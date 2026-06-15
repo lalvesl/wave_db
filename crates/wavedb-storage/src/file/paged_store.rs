@@ -1,34 +1,45 @@
 //! `PagedStore` — the assembled per-node store for the new model.
 //!
 //! Ties the pieces together: a [`BlockFile`] (the `data` file), a
-//! [`PageJournal`] (durable directory deltas + page staging), and one
+//! [`PageJournal`] (durable write log + directory deltas), and one
 //! [`PageDirectory`] per `(struct_id, version)`.
 //!
-//! ```text
-//!   put/get/remove ──► PageDirectory[(sid,ver)] ──► BlockFile (data.bin)
-//!         │                                            ▲
-//!         └── descriptor / resize deltas ──► PageJournal ──┘ replay on open
-//! ```
+//! # Write path (journal-first)
 //!
-//! # Durability & recovery
+//! A `put`/`remove` does **no** `data.bin` work on the hot path:
 //!
-//! Pages are written into `data.bin` by the directory; the **journal** records
-//! every directory mutation (a slot's `u64` descriptor, a directory resize).
-//! On [`open`](PagedStore::open) the journal replays to rebuild the
-//! directories, and the [`BlockFile`] allocator is reconstructed from the live
-//! descriptors ([`ReplayState::data_runs`]). Call [`sync`](PagedStore::sync)
-//! to make a batch durable.
+//! 1. The record is appended to the **journal** (durable).
+//! 2. It is held in an in-memory **pending** buffer.
+//! 3. The caller is acked "saved".
 //!
-//! This is the **direct-to-data** path: a page lives in `data.bin` as soon as
-//! it is written. Staging pages in the journal (the descriptor's `in_journal`
-//! flag) for transition-time relocation is a forthcoming layer on top — the
-//! flag and [`PageJournal::stage_page`] already exist for it.
+//! Reads overlay the pending buffer on top of the committed pages, so a record
+//! is visible the instant it is written.
 //!
-//! [`ReplayState::data_runs`]: crate::file::page_journal::ReplayState::data_runs
-//! [`PageJournal::stage_page`]: crate::file::page_journal::PageJournal::stage_page
+//! # Drain (journal → data.bin), copy-on-write
+//!
+//! [`drain`](PagedStore::drain) settles pending records into pages. For each
+//! page that has pending records it:
+//!
+//! 1. reads the current committed page,
+//! 2. merges the pending upserts/deletes,
+//! 3. **allocates a fresh page**, writes it, and **commits** by swapping the
+//!    directory descriptor — then frees the old page.
+//!
+//! Nothing is mutated in place, so a crash mid-drain leaves every page intact;
+//! recovery replays the still-pending records. The drain syncs `data.bin`
+//! before journaling the descriptor commits, then writes a checkpoint so the
+//! drained records are reclaimable.
+//!
+//! # Recovery
+//!
+//! [`open`](PagedStore::open) replays the journal: committed directories come
+//! from the descriptor/resize deltas, the pending buffer from the records
+//! since the last checkpoint, and the [`BlockFile`] allocator from the live
+//! descriptors.
 
 use crate::file::block_file::BlockFile;
 use crate::file::directory::PageDirectory;
+use crate::file::page_dir::PageDescriptor;
 use crate::file::page_journal::PageJournal;
 use crate::StorageResult;
 use std::collections::BTreeMap;
@@ -40,6 +51,8 @@ pub const DEFAULT_DIRECTORY_SLOTS: usize = 8;
 const DATA_FILE: &str = "data.bin";
 const JOURNAL_FILE: &str = "page.journal";
 
+type Mutations = BTreeMap<u128, Option<Vec<u8>>>;
+
 fn u32_of(n: usize) -> u32 {
     u32::try_from(n).expect("directory index exceeds u32")
 }
@@ -48,8 +61,12 @@ fn u32_of(n: usize) -> u32 {
 pub struct PagedStore {
     data: BlockFile,
     journal: PageJournal,
+    /// Committed directories (pages settled in `data.bin`).
     dirs: BTreeMap<(u32, u8), PageDirectory>,
+    /// Records written but not yet drained. `Some` = upsert, `None` = delete.
+    pending: BTreeMap<(u32, u8), Mutations>,
     default_slots: usize,
+    drain_seq: u64,
 }
 
 impl PagedStore {
@@ -60,7 +77,9 @@ impl PagedStore {
             data: BlockFile::create_in_memory(),
             journal: PageJournal::create_in_memory(),
             dirs: BTreeMap::new(),
+            pending: BTreeMap::new(),
             default_slots: DEFAULT_DIRECTORY_SLOTS,
+            drain_seq: 0,
         }
     }
 
@@ -71,12 +90,14 @@ impl PagedStore {
             data: BlockFile::create(&dir.join(DATA_FILE))?,
             journal: PageJournal::create(&dir.join(JOURNAL_FILE))?,
             dirs: BTreeMap::new(),
+            pending: BTreeMap::new(),
             default_slots: DEFAULT_DIRECTORY_SLOTS,
+            drain_seq: 0,
         })
     }
 
     /// Open an existing store under `dir`, replaying the journal to rebuild
-    /// the directories and the block allocator.
+    /// the committed directories, the pending buffer, and the allocator.
     pub fn open(dir: &Path) -> StorageResult<Self> {
         let (journal, state) = PageJournal::open(&dir.join(JOURNAL_FILE))?;
         let data = BlockFile::open(&dir.join(DATA_FILE), state.data_runs())?;
@@ -89,30 +110,45 @@ impl PagedStore {
             data,
             journal,
             dirs,
+            pending: state.pending,
             default_slots: DEFAULT_DIRECTORY_SLOTS,
+            drain_seq: 0,
         })
     }
 
-    /// Override the slot count new directories are created with (before any
-    /// data is written for that type). Mainly for tuning / tests.
+    /// Override the slot count new directories are created with. Mainly for
+    /// tuning / tests.
     pub fn set_default_slots(&mut self, slots: usize) {
         assert!(slots > 0, "default slots must be positive");
         self.default_slots = slots;
     }
 
-    /// Look up a record. `Ok(None)` if its type or the record is absent.
+    /// Total records held in the pending buffer (not yet drained).
+    #[must_use]
+    pub fn pending_len(&self) -> usize {
+        self.pending.values().map(BTreeMap::len).sum()
+    }
+
+    /// Look up a record — pending buffer first, then the committed page.
     pub fn get(
         &self,
         struct_id: u32,
         version: u8,
         id: u128,
     ) -> StorageResult<Option<Vec<u8>>> {
+        if let Some(mutation) =
+            self.pending.get(&(struct_id, version)).and_then(|t| t.get(&id))
+        {
+            // `Some(bytes)` upsert or `None` tombstone — both authoritative.
+            return Ok(mutation.clone());
+        }
         self.dirs
             .get(&(struct_id, version))
             .map_or(Ok(None), |dir| dir.get(&self.data, id))
     }
 
-    /// Insert or replace a record, creating the type's directory on first use.
+    /// Write a record: journal it, buffer it, and return (acked "saved").
+    /// `data.bin` is untouched until [`drain`](Self::drain).
     pub fn put(
         &mut self,
         struct_id: u32,
@@ -120,50 +156,82 @@ impl PagedStore {
         id: u128,
         payload: &[u8],
     ) -> StorageResult<()> {
-        let key = (struct_id, version);
-        let is_new = !self.dirs.contains_key(&key);
-        let default_slots = self.default_slots;
-        let dir = self
-            .dirs
-            .entry(key)
-            .or_insert_with(|| PageDirectory::new(default_slots));
-
-        let slot = dir.slot_of(id);
-        dir.put(&self.data, id, payload)?;
-        let descriptor = dir.descriptors()[slot];
-        let slot_count = dir.slot_count();
-
-        if is_new {
-            self.journal
-                .resize_directory(struct_id, version, u32_of(slot_count))?;
-        }
-        self.journal
-            .set_descriptor(struct_id, version, u32_of(slot), descriptor)?;
+        self.journal.write_record(struct_id, version, id, payload)?;
+        self.pending
+            .entry((struct_id, version))
+            .or_default()
+            .insert(id, Some(payload.to_vec()));
         Ok(())
     }
 
-    /// Remove a record. Returns whether it was present.
+    /// Delete a record (a tombstone, drained like any write).
     pub fn remove(
         &mut self,
         struct_id: u32,
         version: u8,
         id: u128,
-    ) -> StorageResult<bool> {
-        let Some(dir) = self.dirs.get_mut(&(struct_id, version)) else {
-            return Ok(false);
-        };
-        let slot = dir.slot_of(id);
-        let removed = dir.remove(&self.data, id)?;
-        if removed {
-            let descriptor = dir.descriptors()[slot];
+    ) -> StorageResult<()> {
+        self.journal.delete_record(struct_id, version, id)?;
+        self.pending
+            .entry((struct_id, version))
+            .or_default()
+            .insert(id, None);
+        Ok(())
+    }
+
+    /// Settle the pending buffer into `data.bin` pages, copy-on-write.
+    pub fn drain(&mut self) -> StorageResult<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let default_slots = self.default_slots;
+        let pending = std::mem::take(&mut self.pending);
+
+        let mut resizes: Vec<(u32, u8, usize)> = Vec::new();
+        let mut commits: Vec<(u32, u8, usize, PageDescriptor)> = Vec::new();
+
+        for ((struct_id, version), muts) in pending {
+            let key = (struct_id, version);
+            let is_new = !self.dirs.contains_key(&key);
+            let dir = self
+                .dirs
+                .entry(key)
+                .or_insert_with(|| PageDirectory::new(default_slots));
+            if is_new {
+                resizes.push((struct_id, version, dir.slot_count()));
+            }
+            // Group this type's pending records by their target page.
+            let mut by_slot: BTreeMap<usize, Mutations> = BTreeMap::new();
+            for (id, mutation) in muts {
+                by_slot.entry(dir.slot_of(id)).or_default().insert(id, mutation);
+            }
+            for (slot, slot_muts) in by_slot {
+                let descriptor =
+                    dir.commit_slot(&self.data, slot, &slot_muts)?;
+                commits.push((struct_id, version, slot, descriptor));
+            }
+        }
+
+        // Durability order: the new pages must be on disk before the
+        // descriptors that point at them, and the checkpoint last.
+        self.data.sync()?;
+        for (struct_id, version, slot_count) in resizes {
+            self.journal
+                .resize_directory(struct_id, version, u32_of(slot_count))?;
+        }
+        for (struct_id, version, slot, descriptor) in commits {
             self.journal
                 .set_descriptor(struct_id, version, u32_of(slot), descriptor)?;
         }
-        Ok(removed)
+        self.drain_seq += 1;
+        self.journal.checkpoint(self.drain_seq)?;
+        self.journal.sync()?;
+        Ok(())
     }
 
-    /// Lengthen a type's directory to `new_slot_count`, rehashing its records,
-    /// and journal the new layout. Returns `false` if the type is unknown.
+    /// Lengthen a type's (committed) directory to `new_slot_count`, rehashing
+    /// its records copy-on-write, and journal the new layout. Returns `false`
+    /// if the type has no committed directory yet.
     pub fn grow_directory(
         &mut self,
         struct_id: u32,
@@ -174,17 +242,18 @@ impl PagedStore {
             return Ok(false);
         };
         dir.grow_to(&self.data, new_slot_count)?;
-        // Snapshot the new layout, then journal it (drops the `dir` borrow).
         let slot_count = dir.slot_count();
         let descriptors: Vec<_> = dir.descriptors().to_vec();
 
+        self.data.sync()?;
         self.journal
             .resize_directory(struct_id, version, u32_of(slot_count))?;
         for (i, descriptor) in descriptors.into_iter().enumerate() {
             self.journal
                 .set_descriptor(struct_id, version, u32_of(i), descriptor)?;
         }
-        Ok(true)
+        self.journal.sync()
+            .map(|()| true)
     }
 
     /// Grow a type's directory (doubling it) if [`PageDirectory::needs_grow`]
@@ -216,81 +285,123 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn put_get_remove_in_memory() {
+    fn pending_put_get_remove() {
         let mut store = PagedStore::create_in_memory();
         store.put(7, 2, 1, b"hello").unwrap();
-        store.put(7, 2, 2, b"world").unwrap();
-        // Different type, same id — isolated.
         store.put(8, 1, 1, b"other-type").unwrap();
-
         assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), b"hello");
-        assert_eq!(store.get(7, 2, 2).unwrap().unwrap(), b"world");
         assert_eq!(store.get(8, 1, 1).unwrap().unwrap(), b"other-type");
-        assert_eq!(store.get(7, 2, 3).unwrap(), None);
-        assert_eq!(store.get(9, 9, 1).unwrap(), None); // unknown type
+        assert_eq!(store.get(7, 2, 2).unwrap(), None);
 
-        // Update then delete.
         store.put(7, 2, 1, b"hello-v2").unwrap();
         assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), b"hello-v2");
-        assert!(store.remove(7, 2, 1).unwrap());
+        store.remove(7, 2, 1).unwrap();
         assert_eq!(store.get(7, 2, 1).unwrap(), None);
-        assert!(!store.remove(7, 2, 1).unwrap());
+        assert!(store.pending_len() >= 1); // tombstone still pending
     }
 
     #[test]
-    fn persists_across_reopen() {
-        let dir = tempdir().unwrap();
-        {
-            let mut store = PagedStore::create(dir.path()).unwrap();
-            for id in 0..50u128 {
-                store.put(7, 2, id, format!("record-{id}").as_bytes()).unwrap();
-            }
-            store.put(3, 1, 999, b"unique-ish").unwrap();
-            store.remove(7, 2, 0).unwrap(); // delete one
-            store.sync().unwrap();
+    fn drain_commits_and_clears_pending() {
+        let mut store = PagedStore::create_in_memory();
+        for id in 0..20u128 {
+            store.put(7, 2, id, format!("v{id}").as_bytes()).unwrap();
         }
-
-        let store = PagedStore::open(dir.path()).unwrap();
-        assert_eq!(store.get(7, 2, 0).unwrap(), None); // stayed deleted
-        for id in 1..50u128 {
+        assert_eq!(store.pending_len(), 20);
+        store.drain().unwrap();
+        assert_eq!(store.pending_len(), 0);
+        // Reads now come from committed pages.
+        for id in 0..20u128 {
             assert_eq!(
                 store.get(7, 2, id).unwrap().unwrap(),
-                format!("record-{id}").as_bytes()
+                format!("v{id}").as_bytes()
             );
         }
-        assert_eq!(store.get(3, 1, 999).unwrap().unwrap(), b"unique-ish");
     }
 
     #[test]
-    fn grow_directory_persists() {
+    fn pending_overlays_committed() {
+        let mut store = PagedStore::create_in_memory();
+        store.put(7, 2, 1, b"committed").unwrap();
+        store.drain().unwrap();
+        // New write sits in pending and shadows the committed page.
+        store.put(7, 2, 1, b"shadow").unwrap();
+        assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), b"shadow");
+        store.drain().unwrap();
+        assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), b"shadow");
+    }
+
+    #[test]
+    fn reopen_recovers_undrained_pending() {
         let dir = tempdir().unwrap();
         {
             let mut store = PagedStore::create(dir.path()).unwrap();
-            store.set_default_slots(1); // one bucket → big page, forces churn
-            let payload = vec![0x7Eu8; 300];
+            store.put(7, 2, 1, b"unsettled").unwrap();
+            store.put(7, 2, 2, b"also").unwrap();
+            store.sync().unwrap(); // journal durable, never drained
+        }
+        let store = PagedStore::open(dir.path()).unwrap();
+        // Recovered as pending records.
+        assert_eq!(store.pending_len(), 2);
+        assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), b"unsettled");
+        assert_eq!(store.get(7, 2, 2).unwrap().unwrap(), b"also");
+    }
+
+    #[test]
+    fn reopen_recovers_drained_committed() {
+        let dir = tempdir().unwrap();
+        {
+            let mut store = PagedStore::create(dir.path()).unwrap();
+            for id in 0..30u128 {
+                store.put(7, 2, id, format!("rec{id}").as_bytes()).unwrap();
+            }
+            store.put(3, 1, 999, b"unique").unwrap();
+            store.drain().unwrap(); // settle into data.bin
+            store.remove(7, 2, 0).unwrap();
+            store.drain().unwrap(); // settle the delete
+            store.sync().unwrap();
+        }
+        let store = PagedStore::open(dir.path()).unwrap();
+        assert_eq!(store.pending_len(), 0); // all checkpointed
+        assert_eq!(store.get(7, 2, 0).unwrap(), None); // stayed deleted
+        for id in 1..30u128 {
+            assert_eq!(
+                store.get(7, 2, id).unwrap().unwrap(),
+                format!("rec{id}").as_bytes()
+            );
+        }
+        assert_eq!(store.get(3, 1, 999).unwrap().unwrap(), b"unique");
+    }
+
+    #[test]
+    fn grow_after_drain_persists() {
+        let dir = tempdir().unwrap();
+        {
+            let mut store = PagedStore::create(dir.path()).unwrap();
+            store.set_default_slots(1); // one bucket → big page
+            let payload = vec![0x7Eu8; 200];
             for id in 0..30u128 {
                 store.put(7, 2, id, &payload).unwrap();
             }
+            store.drain().unwrap();
             assert!(store.grow_directory(7, 2, 16).unwrap());
-            // Data intact immediately after grow.
             for id in 0..30u128 {
                 assert_eq!(store.get(7, 2, id).unwrap().unwrap(), payload);
             }
             store.sync().unwrap();
         }
-        // And after replaying the resize + new descriptors.
         let store = PagedStore::open(dir.path()).unwrap();
-        let payload = vec![0x7Eu8; 300];
+        let payload = vec![0x7Eu8; 200];
         for id in 0..30u128 {
             assert_eq!(store.get(7, 2, id).unwrap().unwrap(), payload);
         }
     }
 
     #[test]
-    fn maybe_grow_is_noop_when_small() {
+    fn maybe_grow_noop_when_small() {
         let mut store = PagedStore::create_in_memory();
         store.put(7, 2, 1, b"x").unwrap();
+        store.drain().unwrap();
         assert!(!store.maybe_grow(7, 2).unwrap());
-        assert!(!store.maybe_grow(9, 9).unwrap()); // unknown type
+        assert!(!store.maybe_grow(9, 9).unwrap());
     }
 }

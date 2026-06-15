@@ -54,19 +54,30 @@ const TAG_STAGE: u8 = 0;
 const TAG_SET_DESC: u8 = 1;
 const TAG_RESIZE: u8 = 2;
 const TAG_CHECKPOINT: u8 = 3;
+const TAG_WRITE_REC: u8 = 4;
+const TAG_DELETE_REC: u8 = 5;
 
 /// Bytes before the image in a `StagePage` record: tag + addr + image_len.
 const STAGE_HEADER: u64 = 1 + 8 + 4;
+
+/// Records pending drain: `(struct_id, version)` → `id` → `Some(upsert)` /
+/// `None(delete)`.
+pub type PendingRecords = BTreeMap<(u32, u8), BTreeMap<u128, Option<Vec<u8>>>>;
 
 fn as_usize(n: u64) -> StorageResult<usize> {
     usize::try_from(n)
         .map_err(|_| StorageError::Other("size exceeds usize".into()))
 }
 
-/// The directories recovered by replaying a journal.
+/// State recovered by replaying a journal.
 pub struct ReplayState {
-    /// `(struct_id, version)` → its `Vec<PageDescriptor>` page directory.
+    /// `(struct_id, version)` → its `Vec<PageDescriptor>` page directory
+    /// (the committed pages in `data.bin`).
     pub directories: BTreeMap<(u32, u8), Vec<PageDescriptor>>,
+    /// Records written but **not yet drained** — everything since the last
+    /// checkpoint. `Some(bytes)` = upsert, `None` = delete (tombstone). The
+    /// store reloads these into its pending buffer and overlays them on reads.
+    pub pending: PendingRecords,
 }
 
 impl ReplayState {
@@ -198,6 +209,7 @@ impl PageJournal {
         let Replay {
             staged,
             directories,
+            pending,
             next_addr,
         } = replay(&data)?;
 
@@ -210,7 +222,7 @@ impl PageJournal {
                 staged,
             }),
         };
-        Ok((journal, ReplayState { directories }))
+        Ok((journal, ReplayState { directories, pending }))
     }
 
     /// Path this journal is bound to (empty for in-memory journals).
@@ -309,8 +321,45 @@ impl PageJournal {
         self.inner.lock().append(&record)
     }
 
+    /// Journal a record write — the durable side of a `put` before it has
+    /// been drained into a page. Held in the store's pending buffer until the
+    /// drain merges it into `data.bin`.
+    pub fn write_record(
+        &self,
+        struct_id: u32,
+        version: u8,
+        id: u128,
+        payload: &[u8],
+    ) -> StorageResult<()> {
+        let len = u32::try_from(payload.len())
+            .map_err(|_| StorageError::Other("record exceeds u32".into()))?;
+        let mut record = Vec::with_capacity(1 + 4 + 1 + 16 + 4 + payload.len());
+        record.push(TAG_WRITE_REC);
+        record.extend_from_slice(&struct_id.to_le_bytes());
+        record.push(version);
+        record.extend_from_slice(&id.to_le_bytes());
+        record.extend_from_slice(&len.to_le_bytes());
+        record.extend_from_slice(payload);
+        self.inner.lock().append(&record)
+    }
+
+    /// Journal a record delete (a tombstone pending drain).
+    pub fn delete_record(
+        &self,
+        struct_id: u32,
+        version: u8,
+        id: u128,
+    ) -> StorageResult<()> {
+        let mut record = Vec::with_capacity(1 + 4 + 1 + 16);
+        record.push(TAG_DELETE_REC);
+        record.extend_from_slice(&struct_id.to_le_bytes());
+        record.push(version);
+        record.extend_from_slice(&id.to_le_bytes());
+        self.inner.lock().append(&record)
+    }
+
     /// Journal a drain checkpoint: everything before `sequence` is settled in
-    /// `data.bin` and its staged records are reclaimable.
+    /// `data.bin`; pending records up to here are cleared on replay.
     pub fn checkpoint(&self, sequence: u64) -> StorageResult<()> {
         let mut record = Vec::with_capacity(1 + 8);
         record.push(TAG_CHECKPOINT);
@@ -331,6 +380,7 @@ impl PageJournal {
 struct Replay {
     staged: BTreeMap<u64, (u64, u32)>,
     directories: BTreeMap<(u32, u8), Vec<PageDescriptor>>,
+    pending: PendingRecords,
     next_addr: u64,
 }
 
@@ -355,10 +405,15 @@ fn le_u32(b: &[u8]) -> u32 {
 fn le_u64(b: &[u8]) -> u64 {
     u64::from_le_bytes(b.try_into().expect("8 bytes"))
 }
+fn le_u128(b: &[u8]) -> u128 {
+    u128::from_le_bytes(b.try_into().expect("16 bytes"))
+}
 
 fn replay(data: &[u8]) -> StorageResult<Replay> {
     let mut staged = BTreeMap::new();
     let mut directories: BTreeMap<(u32, u8), Vec<PageDescriptor>> =
+        BTreeMap::new();
+    let mut pending: PendingRecords =
         BTreeMap::new();
     let mut next_addr = 0u64;
     let mut c = 0usize;
@@ -394,8 +449,30 @@ fn replay(data: &[u8]) -> StorageResult<Replay> {
                     dir.resize(slot_count, PageDescriptor::EMPTY);
                 }
             }
+            TAG_WRITE_REC => {
+                let struct_id = le_u32(take(data, &mut c, 4)?);
+                let version = take(data, &mut c, 1)?[0];
+                let id = le_u128(take(data, &mut c, 16)?);
+                let len = le_u32(take(data, &mut c, 4)?);
+                let payload = take(data, &mut c, len as usize)?.to_vec();
+                pending
+                    .entry((struct_id, version))
+                    .or_default()
+                    .insert(id, Some(payload));
+            }
+            TAG_DELETE_REC => {
+                let struct_id = le_u32(take(data, &mut c, 4)?);
+                let version = take(data, &mut c, 1)?[0];
+                let id = le_u128(take(data, &mut c, 16)?);
+                pending
+                    .entry((struct_id, version))
+                    .or_default()
+                    .insert(id, None);
+            }
             TAG_CHECKPOINT => {
-                take(data, &mut c, 8)?; // sequence — informational for replay
+                take(data, &mut c, 8)?; // sequence
+                // Everything before a checkpoint is drained into data.bin.
+                pending.clear();
             }
             other => {
                 return Err(StorageError::Other(format!(
@@ -408,6 +485,7 @@ fn replay(data: &[u8]) -> StorageResult<Replay> {
     Ok(Replay {
         staged,
         directories,
+        pending,
         next_addr,
     })
 }
@@ -476,6 +554,7 @@ mod tests {
                     PageDescriptor::EMPTY,          // unallocated
                 ],
             )]),
+            pending: BTreeMap::new(),
         };
         assert_eq!(state.data_runs(), vec![BlockRun { start: 10, len: 2 }]);
         assert_eq!(state.journal_addrs(), vec![5]);
@@ -496,6 +575,29 @@ mod tests {
         let d = state.directories[&(1, 0)][0];
         assert_eq!(d.start_block(), 99);
         assert_eq!(d.block_count(), 4);
+    }
+
+    #[test]
+    fn records_replay_into_pending_until_checkpoint() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("page.journal");
+        {
+            let j = PageJournal::create(&path).unwrap();
+            // Drained batch: cleared by the checkpoint.
+            j.write_record(7, 2, 1, b"old").unwrap();
+            j.checkpoint(1).unwrap();
+            // Un-drained batch: survives as pending.
+            j.write_record(7, 2, 2, b"new").unwrap();
+            j.write_record(7, 2, 1, b"rewritten").unwrap();
+            j.delete_record(7, 2, 9).unwrap();
+            j.sync().unwrap();
+        }
+        let (_j, state) = PageJournal::open(&path).unwrap();
+        let pending = &state.pending[&(7, 2)];
+        assert_eq!(pending.get(&2), Some(&Some(b"new".to_vec())));
+        assert_eq!(pending.get(&1), Some(&Some(b"rewritten".to_vec()))); // post-checkpoint write
+        assert_eq!(pending.get(&9), Some(&None)); // tombstone
+        assert_eq!(pending.len(), 3);
     }
 
     #[test]
