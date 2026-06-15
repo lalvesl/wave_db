@@ -129,6 +129,46 @@ impl BlockAllocator {
         alloc
     }
 
+    /// Rebuild an allocator by **inverting** the set of live (used) runs over
+    /// a known `capacity` — the preferred crash-recovery path.
+    ///
+    /// On startup the engine knows every block that is *in use* (each page
+    /// descriptor's run plus the dictionary runs); everything else in
+    /// `[0, capacity)` is free.  The gaps between sorted used runs — plus the
+    /// head before the first and the tail after the last — are exactly the
+    /// free extents, already maximal and disjoint, so no coalescing pass is
+    /// needed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the used runs overlap each other or extend past `capacity` —
+    /// either means a corrupt directory and must not be papered over.
+    #[must_use]
+    pub fn from_used_runs(
+        capacity: u64,
+        used: impl IntoIterator<Item = BlockRun>,
+    ) -> Self {
+        let mut runs: Vec<BlockRun> =
+            used.into_iter().filter(|r| r.len > 0).collect();
+        runs.sort_unstable();
+
+        let mut alloc = Self::new();
+        alloc.capacity = capacity;
+        let mut cursor = 0u64;
+        for run in runs {
+            assert!(run.start >= cursor, "used runs overlap at {run:?}");
+            assert!(run.end() <= capacity, "used run {run:?} past capacity");
+            if run.start > cursor {
+                alloc.insert_free(cursor, run.start - cursor);
+            }
+            cursor = run.end();
+        }
+        if cursor < capacity {
+            alloc.insert_free(cursor, capacity - cursor);
+        }
+        alloc
+    }
+
     // ── Queries ──────────────────────────────────────────────────────────
 
     /// Number of blocks the file currently spans (the high-water mark).
@@ -202,6 +242,50 @@ impl BlockAllocator {
         let start = self.capacity;
         self.capacity += blocks;
         BlockRun { start, len: blocks }
+    }
+
+    /// Mark a **specific** run as allocated, growing the file if it extends
+    /// past the tail.  This is how crash recovery reproduces an
+    /// [`allocate`](Self::allocate)'s exact placement: replaying the journal
+    /// re-applies each recorded run rather than re-running best-fit (which
+    /// could pick a different hole and desync from what's on disk).
+    ///
+    /// If the run lies beyond the current tail, the gap before it becomes a
+    /// free extent and `capacity` extends to cover the run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the run is not fully free — reserving allocated blocks means
+    /// a corrupt or double-applied journal.
+    pub fn reserve(&mut self, run: BlockRun) {
+        if run.len == 0 {
+            return;
+        }
+        // Grow first: the newly spanned tail starts life free (coalescing
+        // with any existing tail hole), so the run below sits in free space.
+        if run.end() > self.capacity {
+            let old = self.capacity;
+            self.capacity = run.end();
+            self.free(old, self.capacity - old);
+        }
+        // The run now lies inside one free extent; carve it out, returning
+        // the left and right remainders to the pool.
+        let (&es, &el) = self
+            .by_start
+            .range(..=run.start)
+            .next_back()
+            .expect("reserved run is not within a free extent");
+        assert!(
+            es <= run.start && es + el >= run.end(),
+            "reserved run {run:?} is not fully free"
+        );
+        self.remove_free(es, el);
+        if es < run.start {
+            self.insert_free(es, run.start - es);
+        }
+        if es + el > run.end() {
+            self.insert_free(run.end(), es + el - run.end());
+        }
     }
 
     // ── Deallocation ─────────────────────────────────────────────────────
@@ -392,10 +476,7 @@ mod tests {
         // Remainder [3,10) is one 7-block extent.
         assert_eq!(a.free_extent_count(), 1);
         assert_eq!(a.free_blocks(), 7);
-        assert_eq!(
-            a.free_runs().next(),
-            Some(BlockRun { start: 3, len: 7 })
-        );
+        assert_eq!(a.free_runs().next(), Some(BlockRun { start: 3, len: 7 }));
         a.check_invariants();
     }
 
@@ -479,6 +560,96 @@ mod tests {
         assert_eq!(a.free_extent_count(), 1);
         assert_eq!(a.free_runs().next(), Some(BlockRun { start: 2, len: 5 }));
         a.check_invariants();
+    }
+
+    #[test]
+    fn reserve_carves_run_from_free_extent() {
+        let mut a = BlockAllocator::from_used_runs(10, std::iter::empty());
+        a.reserve(BlockRun { start: 3, len: 4 }); // carve [3,7) out of [0,10)
+        assert_eq!(
+            a.free_runs().collect::<Vec<_>>(),
+            vec![BlockRun { start: 0, len: 3 }, BlockRun { start: 7, len: 3 }]
+        );
+        assert_eq!(a.capacity(), 10);
+        a.check_invariants();
+    }
+
+    #[test]
+    fn reserve_grows_file_and_frees_head_gap() {
+        let mut a = BlockAllocator::new(); // capacity 0
+        a.reserve(BlockRun { start: 4, len: 2 }); // [4,6); gap [0,4) freed
+        assert_eq!(a.capacity(), 6);
+        assert_eq!(
+            a.free_runs().collect::<Vec<_>>(),
+            vec![BlockRun { start: 0, len: 4 }]
+        );
+        a.check_invariants();
+    }
+
+    #[test]
+    fn reserve_reproduces_allocate_placement() {
+        // Drive a live allocator, then replay the journal (reserve for each
+        // alloc, free for each free) onto a fresh one — the free maps must
+        // match exactly, which is the crash-recovery guarantee.
+        let mut live = BlockAllocator::new();
+        let a = live.allocate(4); // [0,4)
+        let b = live.allocate(2); // [4,6)
+        live.free(a.start, a.len); // free [0,4)
+        let c = live.allocate(1); // best-fit into [0,4) -> [0,1)
+
+        let mut replay = BlockAllocator::new();
+        replay.reserve(a);
+        replay.reserve(b);
+        replay.free(a.start, a.len);
+        replay.reserve(c);
+
+        assert_eq!(live.capacity(), replay.capacity());
+        assert_eq!(
+            live.free_runs().collect::<Vec<_>>(),
+            replay.free_runs().collect::<Vec<_>>()
+        );
+        replay.check_invariants();
+    }
+
+    #[test]
+    fn from_used_runs_inverts_used_to_free() {
+        let a = BlockAllocator::from_used_runs(
+            10,
+            [BlockRun { start: 2, len: 2 }, BlockRun { start: 6, len: 1 }],
+        );
+        assert_eq!(a.capacity(), 10);
+        assert_eq!(
+            a.free_runs().collect::<Vec<_>>(),
+            vec![
+                BlockRun { start: 0, len: 2 },
+                BlockRun { start: 4, len: 2 },
+                BlockRun { start: 7, len: 3 },
+            ]
+        );
+        assert_eq!(a.used_blocks(), 3);
+        a.check_invariants();
+    }
+
+    #[test]
+    fn from_used_runs_full_and_empty() {
+        let empty = BlockAllocator::from_used_runs(8, std::iter::empty());
+        assert_eq!(
+            empty.free_runs().collect::<Vec<_>>(),
+            vec![BlockRun { start: 0, len: 8 }]
+        );
+        let full =
+            BlockAllocator::from_used_runs(8, [BlockRun { start: 0, len: 8 }]);
+        assert_eq!(full.free_blocks(), 0);
+        empty.check_invariants();
+        full.check_invariants();
+    }
+
+    #[test]
+    #[should_panic(expected = "is not fully free")]
+    fn reserve_overlapping_panics() {
+        let mut a = BlockAllocator::from_used_runs(10, std::iter::empty());
+        a.reserve(BlockRun { start: 2, len: 3 }); // [2,5)
+        a.reserve(BlockRun { start: 3, len: 2 }); // overlaps the reserved run
     }
 
     #[test]
@@ -574,6 +745,18 @@ mod proptests {
                     }
                 }
                 prop_assert_eq!(covered.len() as u64, alloc.capacity());
+
+                // Recovery: rebuilding from the live (used) runs must
+                // reproduce the exact free map.
+                let rebuilt = BlockAllocator::from_used_runs(
+                    alloc.capacity(),
+                    live.iter().copied(),
+                );
+                rebuilt.check_invariants();
+                prop_assert_eq!(
+                    alloc.free_runs().collect::<Vec<_>>(),
+                    rebuilt.free_runs().collect::<Vec<_>>()
+                );
             }
         }
     }
