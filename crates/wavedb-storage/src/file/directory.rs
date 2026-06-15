@@ -51,7 +51,7 @@ const ENTRY_HEADER_LEN: usize = 20; // id(16) + len(4)
 
 /// Route a record `id` to a directory slot.
 #[allow(clippy::cast_possible_truncation)]
-fn slot_for(id: u128, slot_count: usize) -> usize {
+const fn slot_for(id: u128, slot_count: usize) -> usize {
     let lo = id as u64;
     let hi = (id >> 64) as u64;
     let mixed = crate::hash::mix64(lo ^ hi.rotate_left(32));
