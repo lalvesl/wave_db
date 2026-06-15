@@ -404,7 +404,7 @@ Inline mode trades disk space for one fewer I/O on the read path. Pointer-only m
 | **Anchor**    | `(STRUCT_ID, TENANT_ID, SHARD_ID)` — no timestamp | Live data (inline mode) **or** pointer (pointer-only mode), plus marker `current_version_at: created_at` |
 | **Versioned** | `(STRUCT_ID, TENANT_ID, SHARD_ID, CREATED_AT)`    | Full data + modification chain (`old_mod_id`, `new_mod_id`)                                              |
 
-`SHARD_ID` is `0` for Unique data, so its anchor key collapses to `(STRUCT_ID, TENANT_ID)` exactly as before. For NonUnique data, `SHARD_ID` is either node-allocated or set to a property hash, depending on the struct's anchor addressing strategy (see _Anchor Addressing_ above).
+`SHARD_ID` is `0` for Unique data, so its anchor key collapses to `(STRUCT_ID, TENANT_ID)` exactly as before. For NonUnique data, `SHARD_ID` is either node-allocated or set to a property hash, depending on the struct's anchor addressing strategy (see _Anchor Addressing_ above). Either way the resulting hash selects a slot **within the type's own page directory** (`hash % directory.len()`), not a global page array — see _Per-Type Page Directory_.
 
 ### How Mutation Works
 
@@ -430,10 +430,14 @@ Anchors duplicate live record bytes — 2x storage for live data only. Historica
 
 ## Page Layout
 
-Each page is internally organised as:
+A page is a **homogeneous bucket**: it holds records of **exactly one `(STRUCT_ID, struct_version)`** and nothing else. It is no longer a fixed 16 KiB slot — it is a **run of `block_count` contiguous 4 KiB blocks** in the `data` file, sized to the bucket it carries and grown in place when the bucket fills (see _Per-Type Page Directory_).
+
+Internally a page is organised as:
 
 ```
 ┌──────────────────────────────────────────────────┐
+│  PageHeader (checksum, entry_count, dict_version)│
+│  ──────────────────────────────────────────────  │
 │  Vec<(ID, offset, size)>   ← object directory    │
 │  ──────────────────────────────────────────────  │
 │  [object A bytes][object B bytes][object C ...]  │  ← stacked forward
@@ -442,7 +446,77 @@ Each page is internally organised as:
 └──────────────────────────────────────────────────┘
 ```
 
-Multiple `(STRUCT_ID, TENANT_ID)` pairs coexist in the same page. The directory at the front allows O(1) lookup of any object's byte range. Stack-allocated data lives in the object bytes; heap data grows from the end toward the middle.
+The in-page directory gives O(1) lookup of any record's byte range. Stack-allocated (fixed-width) data lives in the object bytes and compresses against the page's per-`(STRUCT_ID, version)` dictionary; inline heap data grows from the end toward the middle.
+
+**Why one type per page is the whole game.** Every record on a page shares the _exact same byte layout_ — same fields, same widths, same enum domains, same ID prefixes. That makes the page the ideal unit for dictionary compression (see _Compression_), and the engine never interleaves unrelated tenants' or types' bytes on a hot page. Mixing is gone at the storage layer too: the page _is_ the access pattern.
+
+---
+
+## Per-Type Page Directory
+
+The `data` file used to be one flat array of hash-mapped pages shared by every type. It is now **partitioned by type**: each live `(STRUCT_ID, struct_version)` owns its own **page directory** — an in-memory `Vec<u64>` where every entry is a 64-bit **page descriptor** pointing at one homogeneous page in the `data` file.
+
+### Page descriptor (`u64`)
+
+| Bits   | Field         | Width | Meaning                                                                       |
+| ------ | ------------- | ----- | ----------------------------------------------------------------------------- |
+| 63..16 | `start_block` | `u48` | Index of the page's **first 4 KiB block** in the `data` file.                 |
+| 15..8  | `block_count` | `u8`  | Contiguous blocks the page occupies (1 ≤ n ≤ 255 ⇒ ≤ ~1 MiB per page).        |
+| 7..2   | `occupation`  | `u6`  | Coarse fill gauge in 1/64ths of the page's capacity (0 = empty, 63 = full).   |
+| 1      | reserved      | bit   | —                                                                             |
+| 0      | reserved      | bit   | —                                                                             |
+
+`start_block` + `block_count` locate the page's bytes; `occupation` is a cached summary the allocator reads **without touching the page** — enough to decide "this page must grow" or "this page is a good relocation victim" from the directory alone. `u48` block addressing covers 2⁴⁸ × 4 KiB = 1 EiB per file.
+
+### Addressing
+
+A record's page is found by hashing its routing key (its `Id` — see _Anchor Slots_) and reducing it against the **length of that type's directory**:
+
+```
+page = directory_for[(struct_id, version)][ hash(id) % directory.len() ]
+```
+
+So `directory_for[(123, 2)][hash % len]` resolves the page for a `STRUCT_ID = 123`, `version = 2` record. Two records that reduce to the same index simply **share the bucket** — the page holds many records — and a full bucket **grows** rather than spilling to a neighbour (see _Collision & Fullness Strategy_).
+
+- **Anchors** route by `(STRUCT_ID, TENANT_ID)` into the **head version's** directory (the live record always carries the current compiled layout).
+- **Historical versioned records** route by their full `Id` into **their own `struct_version`'s** directory.
+
+A type's history at version `N` and its live data at version `M` therefore live in physically separate, individually-compressible directories — exactly what lazy migration already implies.
+
+### In memory, journaled for durability
+
+The directories live in RAM — they are tiny (one `u64` per page) and sit on the hot path of every read. Every descriptor mutation (a page grew, moved, or the directory resized) is **appended to the journal in the same atomic step as the data write**, so a crash never loses the key → block-run map. On startup the directories are rebuilt by journal replay over the last snapshot — the same mechanism already used for anchors and free-space deltas.
+
+### Two kinds of growth
+
+| Growth             | Trigger                                          | Cost                                                                                                                                              |
+| ------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Page grow**      | one bucket's `occupation` crosses the fill limit | allocate a larger block run, copy the page, free the old run, rewrite **one** `u64` descriptor. No keys move — `hash % len` is unchanged.         |
+| **Directory grow** | most pages of a type are large _and_ full         | append slots to the `Vec<u64>` and rehash that **one type's** records into the longer directory. Scoped to a single `(STRUCT_ID, version)`.        |
+
+Page grow is the common case and is **why rebalancing under load is cheap**: the old design moved records between shared pages on every overflow; the new design relocates a single contiguous run to a bigger hole and patches one pointer. The expensive directory rehash is rare, per-type, and off the write hot path.
+
+---
+
+## Block Allocator
+
+The `data` file is an **array of fixed 4 KiB blocks**. The page directories address it; the **block allocator** owns it — the manager of allocation and deallocation the directories lean on.
+
+### Responsibilities
+
+- **Allocate** a contiguous run of `n` blocks (`n = block_count`) for a new or growing page, returning its `start_block`.
+- **Free** a run when a page is relocated, emptied, or its type is dropped — the extent `(start_block, block_count)` returns to the free pool.
+- **Coalesce** adjacent free extents so large pages always have somewhere to land, and **truncate** the file tail when its trailing blocks are all free.
+
+### Free-space model
+
+Free blocks are tracked as **extents** (`start_block`, `len`) indexed two ways: by position (to coalesce neighbours on free) and by size (to satisfy "give me `n` contiguous blocks" — first-/best-fit). This is the classic run allocator; what keeps it cheap is that allocation is coarse — whole 4 KiB blocks, ≤ 255 per page — so the free map stays small.
+
+Every alloc/free is journaled as a **free-space delta** (the `journal` is already the single source of truth for "what space can be reclaimed where" — see _Reliability_), so the allocator's view is reconstructed on startup by replaying those deltas over the snapshot.
+
+### Dictionary region
+
+Because pages are homogeneous, each `(STRUCT_ID, version)` has **one dictionary**, and those dictionaries live in the **same `data` file**, in blocks the allocator hands out like any other. A small **dictionary directory** maps `(STRUCT_ID, version, dict_version)` → block run. Each page header still carries the `dict_version` it was compressed with, so pages stay readable across a dictionary rebuild; the new dictionary is just another block run the allocator placed, and the old one is freed once no live page references it.
 
 ---
 
@@ -456,7 +530,7 @@ Variable-length values (strings, blobs) are compressed with zstd before being wr
 
 ### Per-STRUCT Dictionary Compression for Stack Data
 
-The fixed-width region of pages (integers, enums, IDs) compresses extremely well using **dictionaries scoped per STRUCT**, because every record of the same type has identical field layout.
+The fixed-width region of pages (integers, enums, IDs) compresses extremely well using **dictionaries scoped per STRUCT**, because every record of the same type has identical field layout. Now that a page holds **exactly one `(STRUCT_ID, version)`** (see _Per-Type Page Directory_), the dictionary applies to the _whole_ page with nothing foreign to dilute it — the homogeneity the dictionary always wanted is now structural. The dictionaries themselves live in a **dictionary region inside the `data` file** (handed out by the _Block Allocator_), not a separate file.
 
 #### Architecture
 
@@ -472,8 +546,8 @@ The fixed-width region of pages (integers, enums, IDs) compresses extremely well
 └─────────────────────────────────────────────────┘
                     ↓ read on miss
 ┌─────────────────────────────────────────────────┐
-│  dictionaries_file (on disk)                    │
-│  one entry per STRUCT, versioned                │
+│  dictionary region in data.bin                  │
+│  one entry per (STRUCT_ID, version), versioned   │
 └─────────────────────────────────────────────────┘
                     ↑ background rewrite
 ┌─────────────────────────────────────────────────┐
@@ -483,12 +557,12 @@ The fixed-width region of pages (integers, enums, IDs) compresses extremely well
 
 #### Memory Management
 
-A configurable parameter `max_dict_memory` caps total RAM used by dictionaries. Hot STRUCTs stay loaded; cold ones are evicted under LRU pressure and re-read from `dictionaries_file` on demand. Each dictionary access updates a hot-counter, similar to the page buffer cache.
+A configurable parameter `max_dict_memory` caps total RAM used by dictionaries. Hot STRUCTs stay loaded; cold ones are evicted under LRU pressure and re-read from the `data` file's **dictionary region** on demand. Each dictionary access updates a hot-counter, similar to the page buffer cache.
 
 #### Update Flow
 
 1. Dictionary updates (rebuilt as the data distribution shifts) are first written to the **journal**.
-2. A **background task** consumes journal entries and rewrites the affected entries in `dictionaries_file`.
+2. A **background task** consumes journal entries and rewrites the affected entries in the `data` file's dictionary region (a fresh block run from the allocator; the superseded run is freed once no live page references it).
 3. Pages written under an old dictionary version remain readable — each page header carries the dictionary version it was compressed with.
 4. Lazy re-compression: when a page is rewritten for any other reason, it picks up the latest dictionary.
 
@@ -559,7 +633,7 @@ WaveDB splits its on-disk state across **four files**, each tuned for a differen
 
 | File           | Contents                                                                                    | Layout                                   | Access pattern                                |
 | -------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------- | --------------------------------------------- |
-| `data` file    | Hash-mapped pages — Anchor Slots, versioned records, heap-anchor stubs                      | Page-addressed (hash → page)             | Random IO, page-sized                         |
+| `data` file    | Per-`(STRUCT_ID, version)` page directories, homogeneous pages (anchor slots + versioned records), per-type dictionary region; heap-anchor stubs in a reserved directory | Block-addressed (descriptor `u64` → block run) | Random IO, variable-size pages                |
 | `index` file   | B+ tree nodes and small-collection array indexes                                            | **Highly contiguous**; nodes 4KB-aligned | Sequential within a tree, random across trees |
 | `heap` file    | Content-addressed heap entries: `size: u64` + value bytes + owner-ID list, per 4KB block(s) | Append-mostly, 4KB blocks                | Append on write, point IO on read             |
 | `journal` file | In-flight mutations, dictionary updates, free-space deltas                                  | Append-only                              | Append + sequential replay on startup         |
@@ -574,13 +648,13 @@ The index file's contiguous layout is the payoff of the per-(STRUCT_ID, TENANT_I
 
 ## Collision & Fullness Strategy
 
-Multiple `(STRUCT_ID, TENANT_ID)` pairs naturally share pages. When a target page crosses the security limit (`warning_size_page_occupation`) or fills up:
+Unrelated types never share a page — each `(STRUCT_ID, version)` owns its own page directory. A "collision" is just two records of the _same_ type reducing to the same bucket, which is expected and fine: a page is a multi-record bucket. The only question is what to do when that bucket fills. When a page crosses the security limit (`warning_size_page_occupation`, surfaced as the descriptor's `occupation` gauge):
 
 1. **Heapable eviction first.** Every heapable value on the page (strings, `Vec`s) is moved to the heap file behind content-hashed Heap Anchors (see _Heap Data Strategy_). Stackable bytes stay. For most pages this alone restores headroom — variable-length values are where the growth was.
-2. **Double hashing** finds an alternative candidate page if the page is still over the limit.
-3. Double hashing firing at a meaningful rate **is the signal** — the file is approaching capacity and a rebalance triggers automatically.
+2. **Grow the page in place.** If the page is still over the limit, the block allocator hands it a **larger contiguous run**; the page is copied over, the old run is freed, and the single `u64` descriptor is rewritten. No record changes buckets — `hash % len` is invariant — so no keys move and no neighbour is touched.
+3. **Grow the directory.** Only when a type's pages are _both_ large (near the 255-block ceiling) _and_ uniformly full does the per-type directory itself lengthen and that one type's records rehash. This is the rare, heavy path, and it runs in the background.
 
-The collision resolution mechanism _is_ the alert system.
+The `occupation` gauge climbing across a type's directory **is the signal** that a directory grow is coming — the descriptor map is the alert system, readable without touching a single page.
 
 ---
 
@@ -1078,7 +1152,7 @@ So the WASM build skips the page layer entirely:
 - **Key = the 128-bit Id** (big-endian bytes). Anchors live at their anchor key, versioned records at their full Id, heap-dedup entries at their content hash.
 - **Value = the wire-encoded record**, compressed exactly as on native.
 - Because `TENANT_ID` occupies the Id's top bits, IndexedDB's ordered keyspace **clusters a tenant's records naturally** — a `getAll(range)` over a tenant/struct prefix is the browser equivalent of reading a hot page.
-- The page-pressure machinery (heapable eviction, double hashing, rebalance) simply does not run client-side. Quota is the browser's job, and the local store is a write-through cache that can always be re-fetched from the cluster.
+- The page-pressure machinery (heapable eviction, page-local block growth, directory rehash) simply does not run client-side. Quota is the browser's job, and the local store is a write-through cache that can always be re-fetched from the cluster.
 
 The engine layers above storage — anchors, versioning, migration chains, query evaluation — are identical on both targets; only the storage adapter changes shape (block device on native, KV surface in the browser). Sync needs no page parity either: the Bloom-filter protocol exchanges objects and anchors, never pages.
 
@@ -1168,7 +1242,7 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 
 ## Reliability
 
-**Journal:** Append-only file recording in-flight page mutations, dictionary updates, **and free-space deltas**. Replayed on startup. Anchor + versioned writes are journaled together so crashes mid-mutation can never leave the two slots inconsistent. The full write/cleanup discipline is described in _Write Pipeline & Concurrency Model_ above.
+**Journal:** Append-only file recording in-flight page mutations, **page-directory descriptor updates** (page grew / moved / directory resized), **block alloc & free deltas**, dictionary updates, **and free-space deltas**. Replayed on startup to rebuild the per-type page directories and the block allocator's free map. Anchor + versioned writes are journaled together so crashes mid-mutation can never leave the two slots inconsistent. The full write/cleanup discipline is described in _Write Pipeline & Concurrency Model_ above.
 
 **Checksums:** Every page carries a checksum verified on read.
 
@@ -1180,8 +1254,12 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 
 | Parameter                       | Description                                                                      | Default              |
 | ------------------------------- | -------------------------------------------------------------------------------- | -------------------- |
-| `page_size`                     | Bytes per page                                                                   | varies by deployment |
-| `page_counter`                  | Number of pages in file                                                          | grows as needed      |
+| `block_size`                    | Allocation unit of the `data` file; a page is `block_count` of these             | 4 KiB                |
+| `max_blocks_per_page`           | Ceiling on a single page's block run (`block_count` is a `u8`)                    | 255 (~1 MiB)         |
+| `page_grow_occupation`          | `occupation` gauge (0–63) at which a page is reallocated to a larger run          | 48 (75%)             |
+| `directory_grow_threshold`      | Fraction of a type's pages that must be large + full before the directory rehashes | 0.75               |
+| `initial_blocks_per_page`       | Block run handed to a freshly created page                                        | 4 (16 KiB)           |
+| `page_counter`                  | Number of pages in a type's directory (`Vec<u64>` length)                         | grows as needed      |
 | `max_heap_inline`               | Largest heapable value stored inline; bigger values go straight to the heap file | 25% of page_size     |
 | `warning_size_page_occupation`  | Fill threshold to alert                                                          | 70%                  |
 | `max_dict_memory`               | RAM budget for STRUCT_ID dictionaries                                            | 64 MB                |
@@ -1202,13 +1280,13 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 | #   | Problem                    | Resolution                                                                                                                                                                                                                                                                                                                   |
 | --- | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P1  | Heap overflow strategy     | zstd inline first → on page pressure, evict heapables behind **content-hashed Heap Anchors** (`u128 = hash(value)`, payload = `u64` heap block position); heap blocks are 4KB-aligned `[size: u64][bytes][owner-ID list]`, identical values dedup by appending to the owner list; bounded 2-IO read regardless of value size |
-| P2  | Hash collision / page full | Tenants share pages naturally; double hashing as fallback; double hashing rate = rebalance trigger                                                                                                                                                                                                                           |
+| P2  | Hash collision / page full | Per-`(STRUCT_ID, version)` page directories (`Vec<u64>` descriptors: `u48` start_block · `u8` block_count · `u6` occupation). A full bucket **grows in place** — the block allocator hands it a larger contiguous run and one descriptor is rewritten — instead of spilling to a neighbour; `hash % len` is invariant so no keys move. Per-type directory rehash is the rare background path.                |
 | P3  | Heap compression           | zstd; CPU is free because no join processing                                                                                                                                                                                                                                                                                 |
 | P4  | Cross-tenant queries       | Out of scope by design — application context always knows the tenant                                                                                                                                                                                                                                                         |
 | P5  | STRUCT versioning          | `struct_version` (u8) in `Metadata`; lazy migration on read, background rewrite; chained migrations between any two registered versions                                                                                                                                                                                      |
 | P6  | Multi-tenant sharing       | Tenant-defined permissions struct scoping user access (see P14)                                                                                                                                                                                                                                                              |
 | P7  | Many-to-many relations     | **Anchor Slots** — fixed `(STRUCT_ID, TENANT_ID, SHARD_ID)` address with live data; references never need rewriting. Same mechanism handles S2M and indexes.                                                                                                                                                                 |
-| P8  | Stack data compression     | **Per-STRUCT_ID dictionaries** in memory bounded by `max_dict_memory`; updates journaled, applied to `dictionaries_file` by background task; pages carry dictionary version for backward compatibility                                                                                                                       |
+| P8  | Stack data compression     | **Per-`(STRUCT_ID, version)` dictionaries** in memory bounded by `max_dict_memory`; homogeneous pages mean the dictionary covers the whole page; updates journaled, applied to the `data` file's **dictionary region** by a background task; pages carry dictionary version for backward compatibility                          |
 | P11 | Index maintenance cost     | Per-(STRUCT_ID, TENANT_ID) B+ trees with adaptive conversion from array at threshold; index entries point to anchors so property mutations don't cascade                                                                                                                                                                     |
 | P12 | Adaptive index threshold   | Default 50 items (`MAX_NON_UNIQUE_ELEMENTS`), tunable per-STRUCT_ID via proc-macro attribute; one-way atomic conversion                                                                                                                                                                                                      |
 | P13 | Anchor storage cost        | Accepted as design trade-off (2x live data only, history single-copy); opt-in pointer-only mode available for storage-constrained deployments                                                                                                                                                                                |
@@ -1218,7 +1296,7 @@ Locks are **ID-scoped**, held as `Mutex` entries in the DB process memory. For r
 
 ### 🟡 P9 — Rebalancing Under Load
 
-Background rebalance task with backpressure. Force-rebalance API for maintenance windows. Multiple simultaneous rebalancing epochs theoretically possible in extreme growth; only the most recent is primary.
+Largely structural now. Most overflow is absorbed by **page-local growth**: the block allocator relocates one page to a larger contiguous run and rewrites a single `u64` descriptor — no record changes buckets, no global rehash (see _Per-Type Page Directory → Two kinds of growth_). The heavy path — lengthening a type's directory and rehashing its records — is per-type, rare, and runs in the background with backpressure. A force-rebalance API remains for maintenance windows. Multiple simultaneous rebalancing epochs are still theoretically possible in extreme growth; only the most recent is primary.
 
 ---
 

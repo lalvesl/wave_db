@@ -24,6 +24,9 @@ pub mod versioned;
 
 pub use anchor::{AnchorKey, AnchorKind, AnchorMode, AnchorSlot};
 pub use error::{StorageError, StorageResult};
+pub use file::block_alloc::{
+    BlockAllocator, BlockRun, DATA_BLOCK_SIZE, blocks_for_bytes,
+};
 pub use file::data::DataFile;
 pub use hash::{PageKey, mix64, tuple2_page, tuple4_page};
 pub use heap::{
