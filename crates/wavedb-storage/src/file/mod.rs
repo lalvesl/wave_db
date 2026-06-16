@@ -2,6 +2,7 @@
 
 pub mod block_alloc;
 pub mod block_file;
+pub mod btree_store;
 pub mod data;
 pub mod dict;
 pub mod directory;

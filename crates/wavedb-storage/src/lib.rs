@@ -32,6 +32,7 @@ pub use file::data::DataFile;
 pub use file::directory::{
     INITIAL_PAGE_BLOCKS, PAGE_GROW_OCCUPATION, PageDirectory,
 };
+pub use file::btree_store::{Node, NodeCache, NodeRef};
 pub use file::heap_store::{HeapRef, HeapStore};
 pub use file::linear::{LinearDirectory, MAX_LEVEL};
 pub use file::page_journal::{PageJournal, ReplayState};
