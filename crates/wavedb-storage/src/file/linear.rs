@@ -60,11 +60,13 @@ const fn hash_of(id: u128) -> u64 {
 fn read_bucket(
     file: &BlockFile,
     desc: PageDescriptor,
+    struct_id: u32,
+    version: u8,
 ) -> StorageResult<SlotPage> {
     if desc.is_allocated() {
         SlotPage::decode(&file.read_run(desc.run())?)
     } else {
-        Ok(SlotPage::new())
+        Ok(SlotPage::new(struct_id, version))
     }
 }
 
@@ -81,21 +83,25 @@ fn place_if_nonempty(
 
 /// A linear-hashing directory over a shared [`BlockFile`].
 pub struct LinearDirectory {
+    struct_id: u32,
+    version: u8,
     /// Length `M` is the live bucket count; `s` and `L` are derived from it.
     dir: Vec<PageDescriptor>,
 }
 
 impl LinearDirectory {
-    /// A directory of `2^level` empty buckets (a power-of-two base, so the
-    /// split pointer starts at 0).
+    /// A directory of `2^level` empty buckets for type `(struct_id, version)`
+    /// (a power-of-two base, so the split pointer starts at 0).
     ///
     /// # Panics
     ///
     /// Panics if `level > MAX_LEVEL`.
     #[must_use]
-    pub fn new(level: u8) -> Self {
+    pub fn new(struct_id: u32, version: u8, level: u8) -> Self {
         assert!(level <= MAX_LEVEL, "level too large");
         Self {
+            struct_id,
+            version,
             dir: vec![PageDescriptor::EMPTY; 1usize << level],
         }
     }
@@ -107,9 +113,17 @@ impl LinearDirectory {
     ///
     /// Panics if `dir` is empty.
     #[must_use]
-    pub fn from_buckets(dir: Vec<PageDescriptor>) -> Self {
+    pub fn from_buckets(
+        struct_id: u32,
+        version: u8,
+        dir: Vec<PageDescriptor>,
+    ) -> Self {
         assert!(!dir.is_empty(), "directory needs at least one bucket");
-        Self { dir }
+        Self {
+            struct_id,
+            version,
+            dir,
+        }
     }
 
     /// Number of buckets `M`.
@@ -173,7 +187,7 @@ impl LinearDirectory {
         if !desc.is_allocated() {
             return Ok(None);
         }
-        let bucket = read_bucket(file, desc)?;
+        let bucket = read_bucket(file, desc, self.struct_id, self.version)?;
         Ok(bucket.get(id).map(<[u8]>::to_vec))
     }
 
@@ -199,7 +213,7 @@ impl LinearDirectory {
         if !desc.is_allocated() {
             return Ok(false);
         }
-        let mut bucket = read_bucket(file, desc)?;
+        let mut bucket = read_bucket(file, desc, self.struct_id, self.version)?;
         if !bucket.remove(id) {
             return Ok(false);
         }
@@ -216,7 +230,7 @@ impl LinearDirectory {
         mutations: &std::collections::BTreeMap<u128, Option<Vec<u8>>>,
     ) -> StorageResult<()> {
         let desc = self.dir[i];
-        let mut bucket = read_bucket(file, desc)?;
+        let mut bucket = read_bucket(file, desc, self.struct_id, self.version)?;
         for (id, mutation) in mutations {
             match mutation {
                 Some(payload) => bucket.upsert(*id, payload),
@@ -235,10 +249,10 @@ impl LinearDirectory {
         let s = (m - (1u64 << level)) as usize; // bucket to split
 
         let desc = self.dir[s];
-        let bucket = read_bucket(file, desc)?;
+        let bucket = read_bucket(file, desc, self.struct_id, self.version)?;
         // Partition by bit `level`: 0 stays in s, 1 moves to the new bucket.
-        let mut keep = SlotPage::new();
-        let mut moved = SlotPage::new();
+        let mut keep = SlotPage::new(self.struct_id, self.version);
+        let mut moved = SlotPage::new(self.struct_id, self.version);
         for (id, payload) in bucket.entries {
             if (hash_of(id) >> level) & 1 == 0 {
                 keep.upsert_owned(id, payload);
@@ -266,7 +280,7 @@ impl LinearDirectory {
         mutate: impl FnOnce(&mut SlotPage),
     ) -> StorageResult<()> {
         let desc = self.dir[i];
-        let mut bucket = read_bucket(file, desc)?;
+        let mut bucket = read_bucket(file, desc, self.struct_id, self.version)?;
         mutate(&mut bucket);
         self.commit(file, i, desc, &bucket)
     }
@@ -296,7 +310,7 @@ mod tests {
     #[test]
     fn put_get_remove() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = LinearDirectory::new(2); // 4 buckets
+        let mut dir = LinearDirectory::new(7, 2,2); // 4 buckets
         dir.put(&bf, 1, b"a").unwrap();
         dir.put(&bf, 2, b"bb").unwrap();
         assert_eq!(dir.get(&bf, 1).unwrap().unwrap(), b"a");
@@ -310,7 +324,7 @@ mod tests {
     #[test]
     fn split_grows_one_bucket_and_preserves_records() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = LinearDirectory::new(2); // M=4, s=0, L=2
+        let mut dir = LinearDirectory::new(7, 2,2); // M=4, s=0, L=2
         for id in 0..60u128 {
             dir.put(&bf, id, format!("v{id}").as_bytes()).unwrap();
         }
@@ -332,7 +346,7 @@ mod tests {
     #[test]
     fn level_bumps_when_split_pointer_wraps() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = LinearDirectory::new(1); // M=2, L=1
+        let mut dir = LinearDirectory::new(7, 2,1); // M=2, L=1
         for id in 0..40u128 {
             dir.put(&bf, id, b"x").unwrap();
         }
@@ -353,7 +367,7 @@ mod tests {
     fn only_split_bucket_relocates() {
         // Splitting bucket s must leave every other bucket's page untouched.
         let bf = BlockFile::create_in_memory();
-        let mut dir = LinearDirectory::new(2);
+        let mut dir = LinearDirectory::new(7, 2,2);
         for id in 0..40u128 {
             dir.put(&bf, id, b"y").unwrap();
         }
@@ -394,7 +408,7 @@ mod proptests {
         #[test]
         fn matches_reference(ops in prop::collection::vec(op_strategy(), 0..80)) {
             let bf = BlockFile::create_in_memory();
-            let mut dir = LinearDirectory::new(1);
+            let mut dir = LinearDirectory::new(7, 2,1);
             let mut model: BTreeMap<u128, Vec<u8>> = BTreeMap::new();
 
             for op in ops {

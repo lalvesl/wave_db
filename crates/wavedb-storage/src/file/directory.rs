@@ -27,14 +27,18 @@
 //! sit in a fixed run with trailing padding:
 //!
 //! ```text
-//! [ crc32: u32 ][ byte_len: u32 ][ entry_count: u32 ]   ← 12-byte header
+//! [ crc32: u32 ][ byte_len: u32 ]                            ┐
+//! [ struct_id: u32 ][ version: u8 ][ codec: u8 ]             ├ 18-byte header
+//! [ entry_count: u32 ]                                       ┘
 //! [ (id: u128)(len: u32)(payload bytes) ] × entry_count  ← records, id-sorted
 //! ```
 //!
-//! `byte_len` bounds the CRC so padding past the page is ignored on read.
-//! This is a deliberately minimal record page — no heap region, no
-//! dictionary compression yet; those fold in when this layer merges with the
-//! richer [`Page`](crate::page::Page) on the legacy path.
+//! `byte_len` bounds the CRC so padding past the page is ignored on read. The
+//! `struct_id`/`version` stamp makes a page **self-describing** (a `data.bin`
+//! scan knows each page's owner, cross-checking the journal's allocation
+//! ledger), and homogeneity — one type per page — is what later lets `codec`
+//! select per-type **dictionary compression**. Only [`CODEC_RAW`] (uncompressed
+//! records) exists today; the heap region and dictionary fold in next.
 
 use crate::file::block_alloc::{BlockRun, blocks_for_bytes};
 use crate::file::block_file::BlockFile;
@@ -49,8 +53,13 @@ pub const INITIAL_PAGE_BLOCKS: u64 = 1;
 /// roomier run on its next write. `48/64 = 75%`.
 pub const PAGE_GROW_OCCUPATION: u8 = 48;
 
-const HEADER_LEN: usize = 12; // crc(4) + byte_len(4) + entry_count(4)
+// crc(4) + byte_len(4) + struct_id(4) + version(1) + codec(1) + entry_count(4)
+const HEADER_LEN: usize = 18;
 const ENTRY_HEADER_LEN: usize = 20; // id(16) + len(4)
+
+/// Page payload codec: uncompressed, id-sorted records. The only codec today;
+/// dictionary compression will claim the next value.
+pub(crate) const CODEC_RAW: u8 = 0;
 
 /// Route a record `id` to a directory slot.
 #[allow(clippy::cast_possible_truncation)]
@@ -61,17 +70,23 @@ const fn slot_for(id: u128, slot_count: usize) -> usize {
     (mixed % slot_count as u64) as usize
 }
 
-/// In-memory view of one page: the records of a single bucket, id-sorted.
+/// In-memory view of one page: the records of a single bucket, id-sorted, plus
+/// the `(struct_id, version)` stamp the image carries.
 ///
 /// Shared by [`PageDirectory`] and `file::linear` — both store a bucket as
 /// this CRC-checked record image.
+#[derive(Debug)]
 pub(crate) struct SlotPage {
+    pub(crate) struct_id: u32,
+    pub(crate) version: u8,
     pub(crate) entries: Vec<(u128, Vec<u8>)>,
 }
 
 impl SlotPage {
-    pub(crate) const fn new() -> Self {
+    pub(crate) const fn new(struct_id: u32, version: u8) -> Self {
         Self {
+            struct_id,
+            version,
             entries: Vec::new(),
         }
     }
@@ -130,7 +145,10 @@ impl SlotPage {
         buf[4..8].copy_from_slice(
             &u32::try_from(total).expect("page exceeds u32 bytes").to_le_bytes(),
         );
-        buf[8..12].copy_from_slice(
+        buf[8..12].copy_from_slice(&self.struct_id.to_le_bytes());
+        buf[12] = self.version;
+        buf[13] = CODEC_RAW;
+        buf[14..18].copy_from_slice(
             &u32::try_from(self.entries.len())
                 .expect("too many entries")
                 .to_le_bytes(),
@@ -174,8 +192,16 @@ impl SlotPage {
                 actual,
             });
         }
+        let struct_id = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let version = bytes[12];
+        let codec = bytes[13];
+        if codec != CODEC_RAW {
+            return Err(StorageError::Other(format!(
+                "unknown page codec {codec}"
+            )));
+        }
         let count =
-            u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+            u32::from_le_bytes(bytes[14..18].try_into().unwrap()) as usize;
         let mut entries = Vec::with_capacity(count);
         let mut off = HEADER_LEN;
         for _ in 0..count {
@@ -193,7 +219,11 @@ impl SlotPage {
             entries.push((id, bytes[off..off + len].to_vec()));
             off += len;
         }
-        Ok(Self { entries })
+        Ok(Self {
+            struct_id,
+            version,
+            entries,
+        })
     }
 }
 
@@ -218,22 +248,27 @@ pub struct SlotCommit {
 
 /// A per-`(STRUCT_ID, version)` page directory over a shared [`BlockFile`].
 ///
-/// Holds the `Vec<PageDescriptor>`; every operation takes the `BlockFile` so
-/// one file backs many directories (one per type).
+/// Holds the `Vec<PageDescriptor>` plus the `(struct_id, version)` it stamps
+/// onto every page it writes; every operation takes the `BlockFile` so one file
+/// backs many directories (one per type).
 pub struct PageDirectory {
+    struct_id: u32,
+    version: u8,
     slots: Vec<PageDescriptor>,
 }
 
 impl PageDirectory {
-    /// A directory of `slot_count` empty slots.
+    /// A directory of `slot_count` empty slots for type `(struct_id, version)`.
     ///
     /// # Panics
     ///
     /// Panics if `slot_count == 0`.
     #[must_use]
-    pub fn new(slot_count: usize) -> Self {
+    pub fn new(struct_id: u32, version: u8, slot_count: usize) -> Self {
         assert!(slot_count > 0, "page directory needs at least one slot");
         Self {
+            struct_id,
+            version,
             slots: vec![PageDescriptor::EMPTY; slot_count],
         }
     }
@@ -244,9 +279,22 @@ impl PageDirectory {
     ///
     /// Panics if `slots` is empty.
     #[must_use]
-    pub fn from_slots(slots: Vec<PageDescriptor>) -> Self {
+    pub fn from_slots(
+        struct_id: u32,
+        version: u8,
+        slots: Vec<PageDescriptor>,
+    ) -> Self {
         assert!(!slots.is_empty(), "page directory needs at least one slot");
-        Self { slots }
+        Self {
+            struct_id,
+            version,
+            slots,
+        }
+    }
+
+    /// A fresh, empty [`SlotPage`] stamped with this directory's type.
+    const fn empty_page(&self) -> SlotPage {
+        SlotPage::new(self.struct_id, self.version)
     }
 
     /// Number of slots (the `hash % len` modulus).
@@ -301,7 +349,7 @@ impl PageDirectory {
     ) -> StorageResult<()> {
         let idx = slot_for(id, self.slots.len());
         let desc = self.slots[idx];
-        let mut page = read_slot(file, desc)?;
+        let mut page = read_slot(file, desc, self.struct_id, self.version)?;
         page.upsert(id, payload);
         self.commit_page(file, idx, desc, &page)?;
         Ok(())
@@ -318,7 +366,7 @@ impl PageDirectory {
         if !desc.is_allocated() {
             return Ok(false);
         }
-        let mut page = read_slot(file, desc)?;
+        let mut page = read_slot(file, desc, self.struct_id, self.version)?;
         if !page.remove(id) {
             return Ok(false);
         }
@@ -340,7 +388,7 @@ impl PageDirectory {
         mutations: &BTreeMap<u128, Option<Vec<u8>>>,
     ) -> StorageResult<SlotCommit> {
         let desc = self.slots[slot];
-        let mut page = read_slot(file, desc)?;
+        let mut page = read_slot(file, desc, self.struct_id, self.version)?;
         for (id, mutation) in mutations {
             match mutation {
                 Some(payload) => page.upsert(*id, payload),
@@ -431,7 +479,7 @@ impl PageDirectory {
         // Drain every record into the new bucket layout. Old runs stay live.
         let old_runs: Vec<BlockRun> = self.used_runs().collect();
         let mut buckets: Vec<SlotPage> =
-            (0..new_slot_count).map(|_| SlotPage::new()).collect();
+            (0..new_slot_count).map(|_| self.empty_page()).collect();
         for &run in &old_runs {
             let page = SlotPage::decode(&file.read_run(run)?)?;
             for (id, payload) in page.entries {
@@ -457,12 +505,18 @@ impl PageDirectory {
     }
 }
 
-/// Read the page a descriptor points at, or an empty page if unallocated.
-fn read_slot(file: &BlockFile, desc: PageDescriptor) -> StorageResult<SlotPage> {
+/// Read the page a descriptor points at, or an empty page (stamped with the
+/// caller's type) if unallocated.
+fn read_slot(
+    file: &BlockFile,
+    desc: PageDescriptor,
+    struct_id: u32,
+    version: u8,
+) -> StorageResult<SlotPage> {
     if desc.is_allocated() {
         SlotPage::decode(&file.read_run(desc.run())?)
     } else {
-        Ok(SlotPage::new())
+        Ok(SlotPage::new(struct_id, version))
     }
 }
 
@@ -496,7 +550,7 @@ mod tests {
     #[test]
     fn put_get_basic() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = PageDirectory::new(8);
+        let mut dir = PageDirectory::new(7, 2,8);
         dir.put(&bf, 1, b"hello").unwrap();
         assert_eq!(dir.get(&bf, 1).unwrap().as_deref(), Some(&b"hello"[..]));
         assert_eq!(dir.get(&bf, 2).unwrap(), None);
@@ -505,7 +559,7 @@ mod tests {
     #[test]
     fn collisions_share_one_bucket() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = PageDirectory::new(1); // everything lands in slot 0
+        let mut dir = PageDirectory::new(7, 2,1); // everything lands in slot 0
         dir.put(&bf, 10, b"a").unwrap();
         dir.put(&bf, 20, b"bb").unwrap();
         dir.put(&bf, 30, b"ccc").unwrap();
@@ -518,7 +572,7 @@ mod tests {
     #[test]
     fn upsert_replaces_value() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = PageDirectory::new(4);
+        let mut dir = PageDirectory::new(7, 2,4);
         dir.put(&bf, 5, b"v1").unwrap();
         dir.put(&bf, 5, b"v2-longer").unwrap();
         assert_eq!(dir.get(&bf, 5).unwrap().unwrap(), b"v2-longer");
@@ -527,7 +581,7 @@ mod tests {
     #[test]
     fn remove_frees_empty_page() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = PageDirectory::new(1);
+        let mut dir = PageDirectory::new(7, 2,1);
         dir.put(&bf, 7, b"x").unwrap();
         assert_eq!(dir.used_runs().count(), 1);
 
@@ -542,7 +596,7 @@ mod tests {
     #[test]
     fn page_grows_and_relocates_when_outgrowing_run() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = PageDirectory::new(1); // force one bucket
+        let mut dir = PageDirectory::new(7, 2,1); // force one bucket
         let big = vec![0xABu8; 1000];
         for id in 0..20u128 {
             dir.put(&bf, id, &big).unwrap();
@@ -558,7 +612,7 @@ mod tests {
     #[test]
     fn checksum_detects_corruption() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = PageDirectory::new(1);
+        let mut dir = PageDirectory::new(7, 2,1);
         dir.put(&bf, 1, b"data").unwrap();
         let run = dir.descriptors()[0].run();
         let mut bytes = bf.read_run(run).unwrap();
@@ -571,9 +625,42 @@ mod tests {
     }
 
     #[test]
+    fn page_image_carries_type_stamp_and_codec() {
+        let bf = BlockFile::create_in_memory();
+        let mut dir = PageDirectory::new(9, 4, 1);
+        dir.put(&bf, 1, b"hi").unwrap();
+        let run = dir.descriptors()[0].run();
+        let bytes = bf.read_run(run).unwrap();
+        // struct_id [8..12], version [12], codec [13].
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 9);
+        assert_eq!(bytes[12], 4);
+        assert_eq!(bytes[13], CODEC_RAW);
+        // Decode round-trips the stamp.
+        let page = SlotPage::decode(&bytes).unwrap();
+        assert_eq!((page.struct_id, page.version), (9, 4));
+    }
+
+    #[test]
+    fn unknown_codec_is_rejected() {
+        let bf = BlockFile::create_in_memory();
+        let mut dir = PageDirectory::new(1, 0, 1);
+        dir.put(&bf, 1, b"x").unwrap();
+        let run = dir.descriptors()[0].run();
+        let mut bytes = bf.read_run(run).unwrap();
+        let byte_len =
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        bytes[13] = 0xFF; // bogus codec
+        // Re-stamp the CRC so the codec check (not the checksum) is what trips.
+        let crc = crc32fast::hash(&bytes[4..byte_len]);
+        bytes[0..4].copy_from_slice(&crc.to_le_bytes());
+        let err = SlotPage::decode(&bytes).unwrap_err();
+        assert!(matches!(err, StorageError::Other(_)));
+    }
+
+    #[test]
     fn grow_to_preserves_records_and_shrinks_pages() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = PageDirectory::new(2);
+        let mut dir = PageDirectory::new(7, 2,2);
         let payload = vec![0x5Au8; 500];
         for id in 0..40u128 {
             dir.put(&bf, id, &payload).unwrap();
@@ -606,7 +693,7 @@ mod tests {
     #[test]
     fn grow_doubles_slot_count() {
         let bf = BlockFile::create_in_memory();
-        let mut dir = PageDirectory::new(3);
+        let mut dir = PageDirectory::new(7, 2,3);
         dir.put(&bf, 1, b"a").unwrap();
         dir.grow(&bf).unwrap();
         assert_eq!(dir.slot_count(), 6);
@@ -616,21 +703,21 @@ mod tests {
     #[test]
     fn needs_grow_heuristic() {
         // Both pages large (≥128 blocks) and full (occ ≥ 48) → grow.
-        let hot = PageDirectory::from_slots(vec![
+        let hot = PageDirectory::from_slots(7, 2,vec![
             PageDescriptor::from_run(BlockRun { start: 0, len: 200 }, 50),
             PageDescriptor::from_run(BlockRun { start: 200, len: 130 }, 48),
         ]);
         assert!(hot.needs_grow());
 
         // Small pages → no grow.
-        let cool = PageDirectory::from_slots(vec![
+        let cool = PageDirectory::from_slots(7, 2,vec![
             PageDescriptor::from_run(BlockRun { start: 0, len: 2 }, 10),
             PageDescriptor::EMPTY,
         ]);
         assert!(!cool.needs_grow());
 
         // Only half the slots are hot (< 75%) → no grow.
-        let mixed = PageDirectory::from_slots(vec![
+        let mixed = PageDirectory::from_slots(7, 2,vec![
             PageDescriptor::from_run(BlockRun { start: 0, len: 200 }, 50),
             PageDescriptor::from_run(BlockRun { start: 200, len: 2 }, 10),
         ]);
@@ -641,7 +728,7 @@ mod tests {
     fn survives_block_file_reopen() {
         let dir_tmp = tempdir().unwrap();
         let path = dir_tmp.path().join("data.bin");
-        let mut dir = PageDirectory::new(4);
+        let mut dir = PageDirectory::new(7, 2,4);
         {
             let bf = BlockFile::create(&path).unwrap();
             dir.put(&bf, 100, b"persisted").unwrap();
@@ -686,7 +773,7 @@ mod proptests {
         ) {
             let bf = BlockFile::create_in_memory();
             // Two slots → ids collide and pages grow under churn.
-            let mut dir = PageDirectory::new(2);
+            let mut dir = PageDirectory::new(7, 2,2);
             let mut model: BTreeMap<u128, Vec<u8>> = BTreeMap::new();
 
             for op in ops {

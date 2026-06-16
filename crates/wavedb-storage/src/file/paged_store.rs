@@ -40,12 +40,17 @@
 use crate::file::block_file::BlockFile;
 use crate::file::directory::{PageDirectory, SlotCommit};
 use crate::file::page_journal::PageJournal;
-use crate::StorageResult;
+use crate::{StorageError, StorageResult};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Slots a freshly-seen `(struct_id, version)` directory starts with.
 pub const DEFAULT_DIRECTORY_SLOTS: usize = 8;
+
+/// Journal byte length past which [`drain`](PagedStore::drain) compacts it,
+/// rewriting the log as a snapshot so the alloc/free ledger can't grow without
+/// bound (see [`compact`](PagedStore::compact)).
+pub const JOURNAL_COMPACT_THRESHOLD: u64 = 8 * 1024 * 1024;
 
 const DATA_FILE: &str = "data.bin";
 const JOURNAL_FILE: &str = "page.journal";
@@ -105,7 +110,9 @@ impl PagedStore {
         let dirs = state
             .directories
             .into_iter()
-            .map(|(key, slots)| (key, PageDirectory::from_slots(slots)))
+            .map(|((sid, ver), slots)| {
+                ((sid, ver), PageDirectory::from_slots(sid, ver, slots))
+            })
             .collect();
         Ok(Self {
             data,
@@ -197,7 +204,9 @@ impl PagedStore {
             let dir = self
                 .dirs
                 .entry(key)
-                .or_insert_with(|| PageDirectory::new(default_slots));
+                .or_insert_with(|| {
+                    PageDirectory::new(struct_id, version, default_slots)
+                });
             if is_new {
                 resizes.push((struct_id, version, dir.slot_count()));
             }
@@ -235,6 +244,81 @@ impl PagedStore {
         self.drain_seq += 1;
         self.journal.checkpoint(self.drain_seq)?;
         self.journal.sync()?;
+        // Pending is settled here, so a snapshot is cheap and safe — fold the
+        // accumulated alloc/free churn away once the log grows large.
+        if self.journal.len() >= JOURNAL_COMPACT_THRESHOLD {
+            self.compact()?;
+        }
+        Ok(())
+    }
+
+    /// Rewrite the journal as a compact snapshot of the current state, bounding
+    /// its size.
+    ///
+    /// Emits, into a fresh journal: every committed directory (its length, live
+    /// allocations, and descriptors), a checkpoint, then the still-pending tail
+    /// (so un-drained records survive). The fresh journal replaces the old one
+    /// atomically (write a sibling `.tmp`, `fsync`, `rename`), so a crash at any
+    /// point recovers either the full old log or the complete snapshot.
+    pub fn compact(&mut self) -> StorageResult<()> {
+        // A staged (`in_journal`) page's bytes live in the current journal file;
+        // a file swap would orphan them. Nothing produces staged pages yet, so
+        // refuse rather than silently drop — the staging unit handles re-staging.
+        let has_staged = self
+            .dirs
+            .values()
+            .any(|dir| dir.descriptors().iter().any(|d| d.is_in_journal()));
+        if has_staged {
+            return Err(StorageError::Other(
+                "journal compaction with staged pages is unsupported".into(),
+            ));
+        }
+
+        let path = self.journal.path().to_path_buf();
+        let in_memory = path.as_os_str().is_empty();
+        let fresh = if in_memory {
+            PageJournal::create_in_memory()
+        } else {
+            PageJournal::create(&path.with_extension("tmp"))?
+        };
+
+        // Committed state: directories + their live runs. Ledger order per slot
+        // matches the drain (alloc before the descriptor that points at it).
+        for ((struct_id, version), dir) in &self.dirs {
+            fresh.resize_directory(*struct_id, *version, u32_of(dir.slot_count()))?;
+            for (i, desc) in dir.descriptors().iter().enumerate() {
+                let slot = u32_of(i);
+                if desc.is_allocated() {
+                    fresh.allocate_block(*struct_id, *version, slot, desc.run())?;
+                }
+                fresh.set_descriptor(*struct_id, *version, slot, *desc)?;
+            }
+        }
+        fresh.checkpoint(self.drain_seq)?;
+        // Un-drained tail, AFTER the checkpoint so replay keeps it as pending.
+        for ((struct_id, version), muts) in &self.pending {
+            for (id, mutation) in muts {
+                match mutation {
+                    Some(payload) => {
+                        fresh.write_record(*struct_id, *version, *id, payload)?;
+                    }
+                    None => fresh.delete_record(*struct_id, *version, *id)?,
+                }
+            }
+        }
+        fresh.sync()?;
+
+        self.journal = if in_memory {
+            fresh
+        } else {
+            let tmp = fresh.path().to_path_buf();
+            drop(fresh); // close the tmp handle before rename + reopen
+            std::fs::rename(&tmp, &path)?;
+            // Reopen at the real path so the live journal's path is correct for
+            // the next compaction; self.dirs is already authoritative.
+            let (journal, _state) = PageJournal::open(&path)?;
+            journal
+        };
         Ok(())
     }
 
@@ -445,6 +529,66 @@ mod tests {
         for id in 0..10u128 {
             assert_eq!(store.get(7, 2, id).unwrap().unwrap(), vec![0xABu8; 300]);
         }
+    }
+
+    #[test]
+    fn compact_shrinks_journal_and_preserves_state() {
+        let dir = tempdir().unwrap();
+        let jpath = dir.path().join("page.journal");
+        {
+            let mut store = PagedStore::create(dir.path()).unwrap();
+            store.set_default_slots(2);
+            // Heavy rewrite churn piles alloc/free pairs into the log.
+            for round in 0..40u128 {
+                for id in 0..8u128 {
+                    store
+                        .put(7, 2, id, format!("r{round}-{id}").as_bytes())
+                        .unwrap();
+                }
+                store.drain().unwrap();
+            }
+            store.sync().unwrap();
+            let before = std::fs::metadata(&jpath).unwrap().len();
+
+            // Leave an un-drained tail to prove it survives compaction.
+            store.put(7, 2, 100, b"pending-tail").unwrap();
+            store.compact().unwrap();
+            store.sync().unwrap();
+            let after = std::fs::metadata(&jpath).unwrap().len();
+            assert!(after < before, "compaction must shrink: {before} -> {after}");
+
+            // In-process state intact across the swap.
+            assert_eq!(store.get(7, 2, 0).unwrap().unwrap(), b"r39-0");
+            assert_eq!(store.get(7, 2, 100).unwrap().unwrap(), b"pending-tail");
+        }
+        // Reopen from the compacted journal alone — committed pages and the
+        // pending tail both recover.
+        let store = PagedStore::open(dir.path()).unwrap();
+        for id in 0..8u128 {
+            assert_eq!(
+                store.get(7, 2, id).unwrap().unwrap(),
+                format!("r39-{id}").as_bytes()
+            );
+        }
+        assert_eq!(store.get(7, 2, 100).unwrap().unwrap(), b"pending-tail");
+    }
+
+    #[test]
+    fn compact_in_memory_preserves_state() {
+        let mut store = PagedStore::create_in_memory();
+        for id in 0..20u128 {
+            store.put(7, 2, id, format!("v{id}").as_bytes()).unwrap();
+        }
+        store.drain().unwrap();
+        store.put(7, 2, 100, b"tail").unwrap(); // pending
+        store.compact().unwrap();
+        for id in 0..20u128 {
+            assert_eq!(
+                store.get(7, 2, id).unwrap().unwrap(),
+                format!("v{id}").as_bytes()
+            );
+        }
+        assert_eq!(store.get(7, 2, 100).unwrap().unwrap(), b"tail");
     }
 
     #[test]
