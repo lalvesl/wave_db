@@ -14,8 +14,14 @@
 //!    ([`resize_directory`]) — is journaled, so the directories rebuild on
 //!    restart by [replay](PageJournal::open).
 //!
-//! The allocator is **not** journaled here: it is reconstructed from the live
-//! descriptors after replay ([`ReplayState::data_runs`] → [`BlockFile::open`]).
+//! 3. **Track block allocations.** Every [`allocate_block`] / [`free_block`] is
+//!    an append-only ledger entry carrying its owner `(struct_id, version,
+//!    slot index)`. Replay folds the ledger into the live-run set
+//!    ([`ReplayState::allocated_runs`]) so the [`BlockAllocator`] rebuilds
+//!    from the journal alone — independent of the page descriptors, and with
+//!    no leaked blocks (every run is owned until explicitly freed). This is the
+//!    single source of truth for "what space is in use, and whose"; it removes
+//!    the need for any magic superblock in `data.bin`.
 //!
 //! # Record framing
 //!
@@ -26,6 +32,8 @@
 //! 1  SetDescriptor  [u32 struct_id][u8 version][u32 slot][u64 descriptor]
 //! 2  ResizeDirectory[u32 struct_id][u8 version][u32 slot_count]
 //! 3  Checkpoint     [u64 sequence]
+//! 6  Allocate       [u32 struct_id][u8 version][u32 slot][u64 start][u64 len]
+//! 7  Free           [u64 start][u64 len]
 //! ```
 //!
 //! A staged page's address is a monotonic counter, stored *in* its record, so
@@ -56,6 +64,8 @@ const TAG_RESIZE: u8 = 2;
 const TAG_CHECKPOINT: u8 = 3;
 const TAG_WRITE_REC: u8 = 4;
 const TAG_DELETE_REC: u8 = 5;
+const TAG_ALLOC: u8 = 6;
+const TAG_FREE: u8 = 7;
 
 /// Bytes before the image in a `StagePage` record: tag + addr + image_len.
 const STAGE_HEADER: u64 = 1 + 8 + 4;
@@ -63,6 +73,13 @@ const STAGE_HEADER: u64 = 1 + 8 + 4;
 /// Records pending drain: `(struct_id, version)` → `id` → `Some(upsert)` /
 /// `None(delete)`.
 pub type PendingRecords = BTreeMap<(u32, u8), BTreeMap<u128, Option<Vec<u8>>>>;
+
+/// Who owns a journaled block run: `(struct_id, version, slot index)`.
+///
+/// Recorded on every [`PageJournal::allocate_block`] so a recovered run can be
+/// attributed to the directory entry that holds it (used by group rebalancing
+/// to recycle a chunk's pages).
+pub type BlockOwner = (u32, u8, u32);
 
 fn as_usize(n: u64) -> StorageResult<usize> {
     usize::try_from(n)
@@ -78,6 +95,17 @@ pub struct ReplayState {
     /// checkpoint. `Some(bytes)` = upsert, `None` = delete (tombstone). The
     /// store reloads these into its pending buffer and overlays them on reads.
     pub pending: PendingRecords,
+    /// Live block runs per the allocation ledger: every [`allocate_block`] not
+    /// since [`free_block`]d. Feed these to [`BlockFile::open`] to rebuild the
+    /// allocator straight from the journal, without scanning descriptors.
+    ///
+    /// [`allocate_block`]: PageJournal::allocate_block
+    /// [`free_block`]: PageJournal::free_block
+    /// [`BlockFile::open`]: crate::file::block_file::BlockFile::open
+    pub allocated_runs: Vec<BlockRun>,
+    /// `run start block` → its [`BlockOwner`], for the still-live runs in
+    /// [`allocated_runs`](Self::allocated_runs).
+    pub block_owners: BTreeMap<u64, BlockOwner>,
 }
 
 impl ReplayState {
@@ -211,6 +239,7 @@ impl PageJournal {
             directories,
             pending,
             next_addr,
+            allocated,
         } = replay(&data)?;
 
         let journal = Self {
@@ -222,7 +251,21 @@ impl PageJournal {
                 staged,
             }),
         };
-        Ok((journal, ReplayState { directories, pending }))
+        let allocated_runs = allocated
+            .iter()
+            .map(|(&start, &(len, _))| BlockRun { start, len })
+            .collect();
+        let block_owners =
+            allocated.into_iter().map(|(start, (_, owner))| (start, owner)).collect();
+        Ok((
+            journal,
+            ReplayState {
+                directories,
+                pending,
+                allocated_runs,
+                block_owners,
+            },
+        ))
     }
 
     /// Path this journal is bound to (empty for in-memory journals).
@@ -321,6 +364,39 @@ impl PageJournal {
         self.inner.lock().append(&record)
     }
 
+    /// Journal a block allocation, tagging the run with its owner
+    /// `(struct_id, version, slot)`. Append this **before** the descriptor that
+    /// points at the run, so a crash can never leave a block in use yet absent
+    /// from the rebuilt allocator. See [`BlockOwner`].
+    pub fn allocate_block(
+        &self,
+        struct_id: u32,
+        version: u8,
+        slot: u32,
+        run: BlockRun,
+    ) -> StorageResult<()> {
+        let mut record = Vec::with_capacity(1 + 4 + 1 + 4 + 8 + 8);
+        record.push(TAG_ALLOC);
+        record.extend_from_slice(&struct_id.to_le_bytes());
+        record.push(version);
+        record.extend_from_slice(&slot.to_le_bytes());
+        record.extend_from_slice(&run.start.to_le_bytes());
+        record.extend_from_slice(&run.len.to_le_bytes());
+        self.inner.lock().append(&record)
+    }
+
+    /// Journal a block free — the run returns to the pool. Append this **after**
+    /// the descriptor that stopped pointing at the run (copy-on-write commits
+    /// the new page first), so the run is reclaimable only once nothing reads
+    /// it.
+    pub fn free_block(&self, run: BlockRun) -> StorageResult<()> {
+        let mut record = Vec::with_capacity(1 + 8 + 8);
+        record.push(TAG_FREE);
+        record.extend_from_slice(&run.start.to_le_bytes());
+        record.extend_from_slice(&run.len.to_le_bytes());
+        self.inner.lock().append(&record)
+    }
+
     /// Journal a record write — the durable side of a `put` before it has
     /// been drained into a page. Held in the store's pending buffer until the
     /// drain merges it into `data.bin`.
@@ -382,6 +458,8 @@ struct Replay {
     directories: BTreeMap<(u32, u8), Vec<PageDescriptor>>,
     pending: PendingRecords,
     next_addr: u64,
+    /// Live runs from the allocation ledger: `start → (len, owner)`.
+    allocated: BTreeMap<u64, (u64, BlockOwner)>,
 }
 
 /// Read `n` bytes at `*cursor`, advancing it. Errors if the record runs past
@@ -415,6 +493,7 @@ fn replay(data: &[u8]) -> StorageResult<Replay> {
         BTreeMap::new();
     let mut pending: PendingRecords =
         BTreeMap::new();
+    let mut allocated: BTreeMap<u64, (u64, BlockOwner)> = BTreeMap::new();
     let mut next_addr = 0u64;
     let mut c = 0usize;
 
@@ -474,6 +553,19 @@ fn replay(data: &[u8]) -> StorageResult<Replay> {
                 // Everything before a checkpoint is drained into data.bin.
                 pending.clear();
             }
+            TAG_ALLOC => {
+                let struct_id = le_u32(take(data, &mut c, 4)?);
+                let version = take(data, &mut c, 1)?[0];
+                let slot = le_u32(take(data, &mut c, 4)?);
+                let start = le_u64(take(data, &mut c, 8)?);
+                let len = le_u64(take(data, &mut c, 8)?);
+                allocated.insert(start, (len, (struct_id, version, slot)));
+            }
+            TAG_FREE => {
+                let start = le_u64(take(data, &mut c, 8)?);
+                let _len = le_u64(take(data, &mut c, 8)?);
+                allocated.remove(&start);
+            }
             other => {
                 return Err(StorageError::Other(format!(
                     "unknown journal tag {other}"
@@ -487,6 +579,7 @@ fn replay(data: &[u8]) -> StorageResult<Replay> {
         directories,
         pending,
         next_addr,
+        allocated,
     })
 }
 
@@ -555,6 +648,8 @@ mod tests {
                 ],
             )]),
             pending: BTreeMap::new(),
+            allocated_runs: Vec::new(),
+            block_owners: BTreeMap::new(),
         };
         assert_eq!(state.data_runs(), vec![BlockRun { start: 10, len: 2 }]);
         assert_eq!(state.journal_addrs(), vec![5]);
@@ -598,6 +693,36 @@ mod tests {
         assert_eq!(pending.get(&1), Some(&Some(b"rewritten".to_vec()))); // post-checkpoint write
         assert_eq!(pending.get(&9), Some(&None)); // tombstone
         assert_eq!(pending.len(), 3);
+    }
+
+    #[test]
+    fn alloc_ledger_rebuilds_live_runs_and_owners() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("page.journal");
+        {
+            let j = PageJournal::create(&path).unwrap();
+            j.allocate_block(7, 2, 0, BlockRun { start: 0, len: 2 }).unwrap();
+            j.allocate_block(7, 2, 1, BlockRun { start: 2, len: 3 }).unwrap();
+            j.allocate_block(9, 0, 5, BlockRun { start: 5, len: 1 }).unwrap();
+            // Copy-on-write churn: free the first run, re-allocate elsewhere.
+            j.free_block(BlockRun { start: 0, len: 2 }).unwrap();
+            j.allocate_block(7, 2, 0, BlockRun { start: 6, len: 2 }).unwrap();
+            j.sync().unwrap();
+        }
+        let (_j, state) = PageJournal::open(&path).unwrap();
+        // start=0 was freed; the rest stay live (sorted by start).
+        assert_eq!(
+            state.allocated_runs,
+            vec![
+                BlockRun { start: 2, len: 3 },
+                BlockRun { start: 5, len: 1 },
+                BlockRun { start: 6, len: 2 },
+            ]
+        );
+        assert_eq!(state.block_owners.get(&2), Some(&(7, 2, 1)));
+        assert_eq!(state.block_owners.get(&5), Some(&(9, 0, 5)));
+        assert_eq!(state.block_owners.get(&6), Some(&(7, 2, 0)));
+        assert!(!state.block_owners.contains_key(&0)); // freed
     }
 
     #[test]

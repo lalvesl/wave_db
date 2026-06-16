@@ -197,6 +197,25 @@ impl SlotPage {
     }
 }
 
+/// Outcome of a copy-on-write slot commit: the slot's new descriptor plus the
+/// block runs the commit allocated and/or freed.
+///
+/// The store feeds `allocated` / `freed` into the journal's allocation ledger
+/// (see [`PageJournal::allocate_block`]) so the [`BlockAllocator`] rebuilds from
+/// the journal alone.
+///
+/// [`PageJournal::allocate_block`]: crate::file::page_journal::PageJournal::allocate_block
+/// [`BlockAllocator`]: crate::file::block_alloc::BlockAllocator
+#[derive(Debug, Clone, Copy)]
+pub struct SlotCommit {
+    /// The slot's new descriptor (`EMPTY` if the page is now empty).
+    pub descriptor: PageDescriptor,
+    /// The run a fresh page was written to, if any.
+    pub allocated: Option<BlockRun>,
+    /// The old run that was released, if the slot previously held a page.
+    pub freed: Option<BlockRun>,
+}
+
 /// A per-`(STRUCT_ID, version)` page directory over a shared [`BlockFile`].
 ///
 /// Holds the `Vec<PageDescriptor>`; every operation takes the `BlockFile` so
@@ -319,7 +338,7 @@ impl PageDirectory {
         file: &BlockFile,
         slot: usize,
         mutations: &BTreeMap<u128, Option<Vec<u8>>>,
-    ) -> StorageResult<PageDescriptor> {
+    ) -> StorageResult<SlotCommit> {
         let desc = self.slots[slot];
         let mut page = read_slot(file, desc)?;
         for (id, mutation) in mutations {
@@ -334,24 +353,31 @@ impl PageDirectory {
     }
 
     /// Commit a rebuilt page to a slot copy-on-write: write the new page (or
-    /// empty the slot), swap the descriptor, then free the old run.
+    /// empty the slot), swap the descriptor, then free the old run. Reports the
+    /// allocated/freed runs so the caller can journal the allocation ledger.
     fn commit_page(
         &mut self,
         file: &BlockFile,
         slot: usize,
         old: PageDescriptor,
         page: &SlotPage,
-    ) -> StorageResult<PageDescriptor> {
+    ) -> StorageResult<SlotCommit> {
         let new_desc = if page.is_empty() {
             PageDescriptor::EMPTY
         } else {
             place_page(file, page)?
         };
-        if old.is_allocated() {
-            file.free(old.run());
+        let allocated = new_desc.is_allocated().then(|| new_desc.run());
+        let freed = old.is_allocated().then(|| old.run());
+        if let Some(run) = freed {
+            file.free(run);
         }
         self.slots[slot] = new_desc;
-        Ok(new_desc)
+        Ok(SlotCommit {
+            descriptor: new_desc,
+            allocated,
+            freed,
+        })
     }
 
     /// Whether the directory should be lengthened: most slots already hold
@@ -375,8 +401,8 @@ impl PageDirectory {
     }
 
     /// Double the directory length and rehash every record. Convenience over
-    /// [`grow_to`](Self::grow_to).
-    pub fn grow(&mut self, file: &BlockFile) -> StorageResult<()> {
+    /// [`grow_to`](Self::grow_to). Returns the old runs it freed.
+    pub fn grow(&mut self, file: &BlockFile) -> StorageResult<Vec<BlockRun>> {
         self.grow_to(file, self.slots.len().saturating_mul(2))
     }
 
@@ -395,7 +421,7 @@ impl PageDirectory {
         &mut self,
         file: &BlockFile,
         new_slot_count: usize,
-    ) -> StorageResult<()> {
+    ) -> StorageResult<Vec<BlockRun>> {
         assert!(
             new_slot_count >= self.slots.len(),
             "directory only grows ({} -> {new_slot_count})",
@@ -424,10 +450,10 @@ impl PageDirectory {
 
         // Commit: swap in the new directory, then release the old runs.
         self.slots = new_slots;
-        for run in old_runs {
+        for &run in &old_runs {
             file.free(run);
         }
-        Ok(())
+        Ok(old_runs)
     }
 }
 
