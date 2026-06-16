@@ -50,6 +50,7 @@ use crate::compression::page_codec::{decode_with_dict, encode_with_dict};
 use crate::file::block_alloc::{BlockRun, blocks_for_bytes};
 use crate::file::block_file::BlockFile;
 use crate::file::dict::{DictRef, DictStore};
+use crate::file::heap_store::{HeapRef, HeapStore};
 use crate::file::page_dir::{MAX_BLOCK_COUNT, PageDescriptor, occupation_for};
 use crate::{StorageError, StorageResult};
 use std::collections::BTreeMap;
@@ -62,15 +63,50 @@ pub const INITIAL_PAGE_BLOCKS: u64 = 1;
 /// roomier run on its next write. `48/64 = 75%`.
 pub const PAGE_GROW_OCCUPATION: u8 = 48;
 
+/// Values larger than this spill out of the data page into a heap extent (the
+/// "infinity" tier), with the page keeping only a 16-byte [`HeapRef`].
+pub const HEAP_SPILL_THRESHOLD: usize = 64 * 1024;
+
 // crc(4) + byte_len(4) + struct_id(4) + version(1) + codec(1)
 //   + dict_ref(8) + raw_len(4) + entry_count(4)
 const HEADER_LEN: usize = 30;
-const ENTRY_HEADER_LEN: usize = 20; // id(16) + len(4)
+const ENTRY_HEADER_LEN: usize = 21; // id(16) + kind(1) + len(4)
 
 /// Page payload codec: uncompressed, id-sorted records.
 pub(crate) const CODEC_RAW: u8 = 0;
 /// Page payload codec: records zstd-compressed against the type's dictionary.
 pub(crate) const CODEC_DICT: u8 = 1;
+
+/// Entry kind: the payload is the record's bytes, stored inline.
+const KIND_INLINE: u8 = 0;
+/// Entry kind: the payload is a 16-byte [`HeapRef`] to a heap extent.
+const KIND_HEAP: u8 = 1;
+
+/// One record's value as a page holds it: inline bytes, or a pointer to a heap
+/// extent for values past [`HEAP_SPILL_THRESHOLD`].
+#[derive(Debug, Clone)]
+pub(crate) enum Entry {
+    Inline(Vec<u8>),
+    Heap(HeapRef),
+}
+
+impl Entry {
+    /// The inline bytes, or `None` for a heap entry.
+    pub(crate) fn inline_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Inline(bytes) => Some(bytes),
+            Self::Heap(_) => None,
+        }
+    }
+
+    /// The heap ref, or `None` for an inline entry.
+    pub(crate) const fn heap_ref(&self) -> Option<HeapRef> {
+        match self {
+            Self::Heap(r) => Some(*r),
+            Self::Inline(_) => None,
+        }
+    }
+}
 
 /// Route a record `id` to a directory slot.
 #[allow(clippy::cast_possible_truncation)]
@@ -90,7 +126,7 @@ const fn slot_for(id: u128, slot_count: usize) -> usize {
 pub(crate) struct SlotPage {
     pub(crate) struct_id: u32,
     pub(crate) version: u8,
-    pub(crate) entries: Vec<(u128, Vec<u8>)>,
+    pub(crate) entries: Vec<(u128, Entry)>,
 }
 
 impl SlotPage {
@@ -102,26 +138,24 @@ impl SlotPage {
         }
     }
 
-    pub(crate) fn get(&self, id: u128) -> Option<&[u8]> {
+    pub(crate) fn get(&self, id: u128) -> Option<&Entry> {
         self.entries
             .binary_search_by_key(&id, |(k, _)| *k)
             .ok()
-            .map(|i| self.entries[i].1.as_slice())
+            .map(|i| &self.entries[i].1)
     }
 
+    /// Upsert an inline value (the small-value / `file::linear` path).
     pub(crate) fn upsert(&mut self, id: u128, payload: &[u8]) {
-        match self.entries.binary_search_by_key(&id, |(k, _)| *k) {
-            Ok(i) => self.entries[i].1 = payload.to_vec(),
-            Err(i) => self.entries.insert(i, (id, payload.to_vec())),
-        }
+        self.upsert_entry(id, Entry::Inline(payload.to_vec()));
     }
 
-    /// Like [`upsert`](Self::upsert) but takes ownership of `payload` — used
-    /// when rehashing moves records between pages and the clone is wasteful.
-    pub(crate) fn upsert_owned(&mut self, id: u128, payload: Vec<u8>) {
+    /// Upsert a fully-formed [`Entry`] — the spill path stores `Heap`, and the
+    /// rehash moves an entry between pages without touching its heap extent.
+    pub(crate) fn upsert_entry(&mut self, id: u128, entry: Entry) {
         match self.entries.binary_search_by_key(&id, |(k, _)| *k) {
-            Ok(i) => self.entries[i].1 = payload,
-            Err(i) => self.entries.insert(i, (id, payload)),
+            Ok(i) => self.entries[i].1 = entry,
+            Err(i) => self.entries.insert(i, (id, entry)),
         }
     }
 
@@ -139,23 +173,44 @@ impl SlotPage {
         self.entries.is_empty()
     }
 
+    /// Serialized byte length of one entry's payload.
+    fn payload_len(entry: &Entry) -> usize {
+        match entry {
+            Entry::Inline(bytes) => bytes.len(),
+            Entry::Heap(_) => 16, // a HeapRef raw u128
+        }
+    }
+
     /// Uncompressed length of the records region (every entry serialized).
     fn records_len(&self) -> usize {
         self.entries
             .iter()
-            .map(|(_, v)| ENTRY_HEADER_LEN + v.len())
+            .map(|(_, e)| ENTRY_HEADER_LEN + Self::payload_len(e))
             .sum()
     }
 
-    /// Serialize the records region: `(id u128)(len u32)(payload) ×`, id-sorted.
+    /// Serialize the records region:
+    /// `(id u128)(kind u8)(len u32)(payload) ×`, id-sorted.
     fn records_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(self.records_len());
-        for (id, v) in &self.entries {
+        for (id, entry) in &self.entries {
             buf.extend_from_slice(&id.to_le_bytes());
-            buf.extend_from_slice(
-                &u32::try_from(v.len()).expect("payload exceeds u32").to_le_bytes(),
-            );
-            buf.extend_from_slice(v);
+            match entry {
+                Entry::Inline(bytes) => {
+                    buf.push(KIND_INLINE);
+                    buf.extend_from_slice(
+                        &u32::try_from(bytes.len())
+                            .expect("payload exceeds u32")
+                            .to_le_bytes(),
+                    );
+                    buf.extend_from_slice(bytes);
+                }
+                Entry::Heap(r) => {
+                    buf.push(KIND_HEAP);
+                    buf.extend_from_slice(&16u32.to_le_bytes());
+                    buf.extend_from_slice(&r.raw().to_le_bytes());
+                }
+            }
         }
         buf
     }
@@ -265,6 +320,8 @@ impl SlotPage {
             let id =
                 u128::from_le_bytes(records[off..off + 16].try_into().unwrap());
             off += 16;
+            let kind = records[off];
+            off += 1;
             let len = u32::from_le_bytes(
                 records[off..off + 4].try_into().unwrap(),
             ) as usize;
@@ -272,7 +329,26 @@ impl SlotPage {
             if off + len > records.len() {
                 return Err(StorageError::Other("truncated entry payload".into()));
             }
-            entries.push((id, records[off..off + len].to_vec()));
+            let body = &records[off..off + len];
+            let entry = match kind {
+                KIND_INLINE => Entry::Inline(body.to_vec()),
+                KIND_HEAP => {
+                    if len != 16 {
+                        return Err(StorageError::Other(
+                            "heap entry payload is not a 16-byte ref".into(),
+                        ));
+                    }
+                    Entry::Heap(HeapRef::from_raw(u128::from_le_bytes(
+                        body.try_into().unwrap(),
+                    )))
+                }
+                other => {
+                    return Err(StorageError::Other(format!(
+                        "unknown entry kind {other}"
+                    )));
+                }
+            };
+            entries.push((id, entry));
             off += len;
         }
         Ok(Self {
@@ -292,7 +368,7 @@ impl SlotPage {
 ///
 /// [`PageJournal::allocate_block`]: crate::file::page_journal::PageJournal::allocate_block
 /// [`BlockAllocator`]: crate::file::block_alloc::BlockAllocator
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SlotCommit {
     /// The slot's new descriptor (`EMPTY` if the page is now empty).
     pub descriptor: PageDescriptor,
@@ -300,6 +376,10 @@ pub struct SlotCommit {
     pub allocated: Option<BlockRun>,
     /// The old run that was released, if the slot previously held a page.
     pub freed: Option<BlockRun>,
+    /// Heap extents written for values that spilled this commit.
+    pub heap_allocated: Vec<BlockRun>,
+    /// Heap extents orphaned this commit (overwritten/deleted heap values).
+    pub heap_freed: Vec<BlockRun>,
 }
 
 /// A per-`(STRUCT_ID, version)` page directory over a shared [`BlockFile`].
@@ -422,14 +502,36 @@ impl PageDirectory {
         let mut samples = Vec::new();
         for desc in self.slots.iter().filter(|d| d.is_allocated()) {
             let page = self.read_run_page(file, desc.run())?;
-            for (_, payload) in page.entries {
-                samples.push(payload);
-                if samples.len() >= max {
-                    return Ok(samples);
+            for (_, entry) in page.entries {
+                // Spilled (heap) values aren't part of the page corpus.
+                if let Entry::Inline(payload) = entry {
+                    samples.push(payload);
+                    if samples.len() >= max {
+                        return Ok(samples);
+                    }
                 }
             }
         }
         Ok(samples)
+    }
+
+    /// Heap extents referenced by this directory's pages — the store re-emits
+    /// these as live allocations during compaction (mirrors
+    /// [`dict_runs_in_use`](Self::dict_runs_in_use)).
+    pub fn heap_runs_in_use(
+        &self,
+        file: &BlockFile,
+    ) -> StorageResult<Vec<BlockRun>> {
+        let mut runs = Vec::new();
+        for desc in self.slots.iter().filter(|d| d.is_allocated()) {
+            let page = self.read_run_page(file, desc.run())?;
+            for (_, entry) in &page.entries {
+                if let Some(heap_ref) = entry.heap_ref() {
+                    runs.push(heap_ref.run());
+                }
+            }
+        }
+        Ok(runs)
     }
 
     /// Resolve the current dictionary's bytes + ref for encoding (`None` ⇒ raw).
@@ -518,7 +620,8 @@ impl PageDirectory {
             .map(|d| d.run())
     }
 
-    /// Look up a record by id. `Ok(None)` if it isn't stored.
+    /// Look up a record by id. `Ok(None)` if it isn't stored. A spilled value
+    /// is resolved from its heap extent.
     pub fn get(
         &self,
         file: &BlockFile,
@@ -529,7 +632,42 @@ impl PageDirectory {
             return Ok(None);
         }
         let page = self.read_run_page(file, desc.run())?;
-        Ok(page.get(id).map(<[u8]>::to_vec))
+        match page.get(id) {
+            None => Ok(None),
+            Some(Entry::Inline(bytes)) => Ok(Some(bytes.clone())),
+            Some(Entry::Heap(heap_ref)) => {
+                Ok(Some(HeapStore::get(file, *heap_ref)?))
+            }
+        }
+    }
+
+    /// Apply one mutation to `page`, spilling values past
+    /// [`HEAP_SPILL_THRESHOLD`] to a heap extent. Records the heap run allocated
+    /// (a new spill) and the heap run orphaned (the id's previous heap value).
+    fn apply_mutation(
+        file: &BlockFile,
+        page: &mut SlotPage,
+        id: u128,
+        value: Option<&[u8]>,
+        heap_allocated: &mut Vec<BlockRun>,
+        heap_freed: &mut Vec<BlockRun>,
+    ) -> StorageResult<()> {
+        // The id's previous heap extent (if any) is orphaned by this write.
+        if let Some(old) = page.get(id).and_then(Entry::heap_ref) {
+            heap_freed.push(old.run());
+        }
+        match value {
+            None => {
+                page.remove(id);
+            }
+            Some(bytes) if bytes.len() > HEAP_SPILL_THRESHOLD => {
+                let heap_ref = HeapStore::put(file, bytes)?;
+                heap_allocated.push(heap_ref.run());
+                page.upsert_entry(id, Entry::Heap(heap_ref));
+            }
+            Some(bytes) => page.upsert_entry(id, Entry::Inline(bytes.to_vec())),
+        }
+        Ok(())
     }
 
     /// Insert or replace a single record (copy-on-write — see
@@ -543,8 +681,16 @@ impl PageDirectory {
         let idx = slot_for(id, self.slots.len());
         let desc = self.slots[idx];
         let mut page = self.read_slot(file, desc)?;
-        page.upsert(id, payload);
-        self.commit_page(file, idx, desc, &page)?;
+        let (mut heap_allocated, mut heap_freed) = (Vec::new(), Vec::new());
+        Self::apply_mutation(
+            file,
+            &mut page,
+            id,
+            Some(payload),
+            &mut heap_allocated,
+            &mut heap_freed,
+        )?;
+        self.commit_page(file, idx, desc, &page, heap_allocated, heap_freed)?;
         Ok(())
     }
 
@@ -560,10 +706,19 @@ impl PageDirectory {
             return Ok(false);
         }
         let mut page = self.read_slot(file, desc)?;
-        if !page.remove(id) {
+        if page.get(id).is_none() {
             return Ok(false);
         }
-        self.commit_page(file, idx, desc, &page)?;
+        let (mut heap_allocated, mut heap_freed) = (Vec::new(), Vec::new());
+        Self::apply_mutation(
+            file,
+            &mut page,
+            id,
+            None,
+            &mut heap_allocated,
+            &mut heap_freed,
+        )?;
+        self.commit_page(file, idx, desc, &page, heap_allocated, heap_freed)?;
         Ok(true)
     }
 
@@ -571,9 +726,10 @@ impl PageDirectory {
     /// returning the slot's new descriptor. This is what the drain uses: all
     /// pending records for a page are merged in one page rebuild.
     ///
-    /// `Some(bytes)` upserts a record; `None` deletes it. The merged page is
-    /// written to a fresh run (or the slot is emptied if no records remain);
-    /// the old run is freed only after the new page is committed.
+    /// `Some(bytes)` upserts a record (spilling large values to the heap);
+    /// `None` deletes it. The merged page is written to a fresh run (or the slot
+    /// is emptied if no records remain); the old page run and any orphaned heap
+    /// extents are freed only after the new page is committed.
     pub fn commit_slot(
         &mut self,
         file: &BlockFile,
@@ -582,26 +738,32 @@ impl PageDirectory {
     ) -> StorageResult<SlotCommit> {
         let desc = self.slots[slot];
         let mut page = self.read_slot(file, desc)?;
+        let (mut heap_allocated, mut heap_freed) = (Vec::new(), Vec::new());
         for (id, mutation) in mutations {
-            match mutation {
-                Some(payload) => page.upsert(*id, payload),
-                None => {
-                    page.remove(*id);
-                }
-            }
+            Self::apply_mutation(
+                file,
+                &mut page,
+                *id,
+                mutation.as_deref(),
+                &mut heap_allocated,
+                &mut heap_freed,
+            )?;
         }
-        self.commit_page(file, slot, desc, &page)
+        self.commit_page(file, slot, desc, &page, heap_allocated, heap_freed)
     }
 
     /// Commit a rebuilt page to a slot copy-on-write: write the new page (or
-    /// empty the slot), swap the descriptor, then free the old run. Reports the
-    /// allocated/freed runs so the caller can journal the allocation ledger.
+    /// empty the slot), swap the descriptor, then free the old page run and any
+    /// orphaned heap extents. Reports the allocated/freed runs (page + heap) so
+    /// the caller can journal the allocation ledger.
     fn commit_page(
         &mut self,
         file: &BlockFile,
         slot: usize,
         old: PageDescriptor,
         page: &SlotPage,
+        heap_allocated: Vec<BlockRun>,
+        heap_freed: Vec<BlockRun>,
     ) -> StorageResult<SlotCommit> {
         let new_desc = if page.is_empty() {
             PageDescriptor::EMPTY
@@ -613,11 +775,18 @@ impl PageDirectory {
         if let Some(run) = freed {
             file.free(run);
         }
+        // Orphaned heap extents are reclaimable now the new page (which no
+        // longer points at them) is committed.
+        for run in &heap_freed {
+            file.free(*run);
+        }
         self.slots[slot] = new_desc;
         Ok(SlotCommit {
             descriptor: new_desc,
             allocated,
             freed,
+            heap_allocated,
+            heap_freed,
         })
     }
 
@@ -675,8 +844,10 @@ impl PageDirectory {
             (0..new_slot_count).map(|_| self.empty_page()).collect();
         for &run in &old_runs {
             let page = self.read_run_page(file, run)?;
-            for (id, payload) in page.entries {
-                buckets[slot_for(id, new_slot_count)].upsert_owned(id, payload);
+            // Move whole entries — a heap entry keeps its extent, only its ref
+            // lands in the new bucket. No heap I/O here.
+            for (id, entry) in page.entries {
+                buckets[slot_for(id, new_slot_count)].upsert_entry(id, entry);
             }
         }
 
@@ -895,6 +1066,39 @@ mod tests {
         for (i, s) in samples.iter().enumerate().take(200) {
             assert_eq!(cold.get(&bf, i as u128).unwrap().unwrap(), *s);
         }
+    }
+
+    #[test]
+    fn large_value_spills_to_heap_and_roundtrips() {
+        let bf = BlockFile::create_in_memory();
+        let mut dir = PageDirectory::new(7, 2, 1);
+        let big = vec![0xCDu8; HEAP_SPILL_THRESHOLD + 1];
+        dir.put(&bf, 1, &big).unwrap();
+        dir.put(&bf, 2, b"small inline").unwrap();
+
+        // The big value spilled: the page holds a 16-byte ref (stays ~1 block),
+        // and there is exactly one heap extent.
+        assert!(dir.descriptors()[0].block_count() <= 2);
+        assert_eq!(dir.heap_runs_in_use(&bf).unwrap().len(), 1);
+        // Both values round-trip (the big one resolved from its heap extent).
+        assert_eq!(dir.get(&bf, 1).unwrap().unwrap(), big);
+        assert_eq!(dir.get(&bf, 2).unwrap().unwrap(), b"small inline");
+
+        // Overwrite the big value with another big value → old extent freed,
+        // new one written; still exactly one heap extent.
+        let big2 = vec![0xEEu8; HEAP_SPILL_THRESHOLD + 9999];
+        dir.put(&bf, 1, &big2).unwrap();
+        assert_eq!(dir.get(&bf, 1).unwrap().unwrap(), big2);
+        assert_eq!(dir.heap_runs_in_use(&bf).unwrap().len(), 1);
+
+        // Overwrite with a small value → entry goes inline, extent orphaned.
+        dir.put(&bf, 1, b"now small").unwrap();
+        assert_eq!(dir.get(&bf, 1).unwrap().unwrap(), b"now small");
+        assert_eq!(dir.heap_runs_in_use(&bf).unwrap().len(), 0);
+
+        // A cold directory resolves the remaining records straight from disk.
+        let cold = PageDirectory::from_slots(7, 2, dir.descriptors().to_vec());
+        assert_eq!(cold.get(&bf, 2).unwrap().unwrap(), b"small inline");
     }
 
     #[test]

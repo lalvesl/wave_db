@@ -270,6 +270,11 @@ impl PagedStore {
         }
         for (struct_id, version, slot, commit) in commits {
             let slot = u32_of(slot);
+            // Heap extents first: a page may point at them, so they must be
+            // reserved in the ledger before the descriptor that references them.
+            for run in &commit.heap_allocated {
+                self.journal.allocate_block(struct_id, version, slot, *run)?;
+            }
             if let Some(run) = commit.allocated {
                 self.journal.allocate_block(struct_id, version, slot, run)?;
             }
@@ -281,6 +286,10 @@ impl PagedStore {
             )?;
             if let Some(run) = commit.freed {
                 self.journal.free_block(run)?;
+            }
+            // Orphaned heap extents free after the page that dropped them.
+            for run in &commit.heap_freed {
+                self.journal.free_block(*run)?;
             }
         }
         // Journal each freshly-installed dictionary's run so the allocator keeps
@@ -402,15 +411,24 @@ impl PagedStore {
                 }
                 fresh.set_descriptor(*struct_id, *version, slot, *desc)?;
             }
-            // Dictionary runs aren't directory slots — re-emit their
-            // allocations (refs scanned from the pages + the current dict), or
-            // the rewritten ledger would let the allocator reclaim them.
+            // Dictionary + heap runs aren't directory slots — re-emit their
+            // allocations (dict refs scanned from page headers + current dict;
+            // heap refs scanned from page entries), or the rewritten ledger
+            // would let the allocator reclaim them.
             for dict_ref in dir.dict_runs_in_use(&self.data)? {
                 fresh.allocate_block(
                     *struct_id,
                     *version,
                     DICT_OWNER_SLOT,
                     dict_ref.run(),
+                )?;
+            }
+            for run in dir.heap_runs_in_use(&self.data)? {
+                fresh.allocate_block(
+                    *struct_id,
+                    *version,
+                    DICT_OWNER_SLOT,
+                    run,
                 )?;
             }
         }
@@ -780,6 +798,40 @@ mod tests {
         for i in 0..2400u128 {
             assert_eq!(store.get(7, 2, i).unwrap().unwrap(), rec(i));
         }
+    }
+
+    #[test]
+    fn heap_spill_survives_drain_reopen_and_compaction() {
+        let dir = tempdir().unwrap();
+        let big = vec![0x5Au8; 200_000]; // well past the 64 KiB spill threshold
+        {
+            let mut store = PagedStore::create(dir.path()).unwrap();
+            store.put(7, 2, 1, &big).unwrap();
+            store.put(7, 2, 2, b"small").unwrap();
+            store.drain().unwrap();
+            assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), big);
+            // Compaction must keep the heap extent reserved.
+            store.compact().unwrap();
+            assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), big);
+            store.sync().unwrap();
+        }
+
+        // Reopen: the heap extent is reserved from the ledger, value resolves.
+        let mut store = PagedStore::open(dir.path()).unwrap();
+        assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), big);
+        assert_eq!(store.get(7, 2, 2).unwrap().unwrap(), b"small");
+
+        // Fresh allocations after reopen must not clobber the live heap extent.
+        for i in 100..200u128 {
+            store.put(7, 2, i, b"filler").unwrap();
+        }
+        store.drain().unwrap();
+        assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), big);
+
+        // Overwriting the big value with a small one frees the heap extent.
+        store.put(7, 2, 1, b"shrunk").unwrap();
+        store.drain().unwrap();
+        assert_eq!(store.get(7, 2, 1).unwrap().unwrap(), b"shrunk");
     }
 
     #[test]

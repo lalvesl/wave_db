@@ -45,7 +45,7 @@ use crate::StorageResult;
 use crate::file::block_alloc::BlockRun;
 use crate::file::block_file::BlockFile;
 use crate::file::dict::{DictRef, DictStore};
-use crate::file::directory::{SlotPage, place_page};
+use crate::file::directory::{Entry, SlotPage, place_page};
 use crate::file::page_dir::PageDescriptor;
 
 /// Largest starting level (`new(level)` allocates `2^level` buckets).
@@ -226,7 +226,7 @@ impl LinearDirectory {
             return Ok(None);
         }
         let bucket = self.read_bucket(file, desc)?;
-        Ok(bucket.get(id).map(<[u8]>::to_vec))
+        Ok(bucket.get(id).and_then(Entry::inline_bytes).map(<[u8]>::to_vec))
     }
 
     /// Insert or replace a single record (copy-on-write).
@@ -291,11 +291,11 @@ impl LinearDirectory {
         // Partition by bit `level`: 0 stays in s, 1 moves to the new bucket.
         let mut keep = SlotPage::new(self.struct_id, self.version);
         let mut moved = SlotPage::new(self.struct_id, self.version);
-        for (id, payload) in bucket.entries {
+        for (id, entry) in bucket.entries {
             if (hash_of(id) >> level) & 1 == 0 {
-                keep.upsert_owned(id, payload);
+                keep.upsert_entry(id, entry);
             } else {
-                moved.upsert_owned(id, payload);
+                moved.upsert_entry(id, entry);
             }
         }
         let keep_desc = self.place_if_nonempty(file, &keep)?;
