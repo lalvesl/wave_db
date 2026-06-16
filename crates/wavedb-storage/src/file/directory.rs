@@ -28,26 +28,28 @@
 //!
 //! ```text
 //! [ crc32: u32 ][ byte_len: u32 ]                            ┐
-//! [ struct_id: u32 ][ version: u8 ][ codec: u8 ]             │
-//! [ dict_version: u32 ][ raw_len: u32 ][ entry_count: u32 ]  ┘ 26-byte header
+//! [ struct_id: u32 ][ version: u8 ][ codec: u8 ]             │ 30-byte header
+//! [ dict_ref: u64 ][ raw_len: u32 ][ entry_count: u32 ]      ┘
 //! [ payload bytes ]   ← records region, possibly dictionary-compressed
 //! ```
 //!
 //! The records region is the entries `(id: u128)(len: u32)(payload) ×
 //! entry_count`, id-sorted. With [`CODEC_RAW`] it is stored verbatim; with
-//! [`CODEC_DICT`] it is zstd-compressed against the type's dictionary
-//! (`dict_version`), and `raw_len` is its uncompressed length (decode's
-//! capacity). `byte_len` bounds the CRC so padding past the page is ignored.
+//! [`CODEC_DICT`] it is zstd-compressed against the dictionary at
+//! [`dict_ref`](crate::file::dict::DictRef) (a `u48` block + `u16` count
+//! locating the dict page in `data.bin`), and `raw_len` is its uncompressed
+//! length (decode's capacity). `byte_len` bounds the CRC so padding is ignored.
 //!
 //! The `struct_id`/`version` stamp makes a page **self-describing** (a
 //! `data.bin` scan knows each page's owner, cross-checking the journal's
-//! allocation ledger); homogeneity — one type per page — is what lets the
-//! dictionary pay off (see [`page_codec`](crate::compression::page_codec)).
+//! allocation ledger); `dict_ref` makes it self-locating — decode reads the ref
+//! and loads that dict run, no journal dict directory needed (see
+//! [`dict`](crate::file::dict)).
 
-use crate::compression::dict_cache::Dictionary;
 use crate::compression::page_codec::{decode_with_dict, encode_with_dict};
 use crate::file::block_alloc::{BlockRun, blocks_for_bytes};
 use crate::file::block_file::BlockFile;
+use crate::file::dict::{DictRef, DictStore};
 use crate::file::page_dir::{MAX_BLOCK_COUNT, PageDescriptor, occupation_for};
 use crate::{StorageError, StorageResult};
 use std::collections::BTreeMap;
@@ -61,8 +63,8 @@ pub const INITIAL_PAGE_BLOCKS: u64 = 1;
 pub const PAGE_GROW_OCCUPATION: u8 = 48;
 
 // crc(4) + byte_len(4) + struct_id(4) + version(1) + codec(1)
-//   + dict_version(4) + raw_len(4) + entry_count(4)
-const HEADER_LEN: usize = 26;
+//   + dict_ref(8) + raw_len(4) + entry_count(4)
+const HEADER_LEN: usize = 30;
 const ENTRY_HEADER_LEN: usize = 20; // id(16) + len(4)
 
 /// Page payload codec: uncompressed, id-sorted records.
@@ -158,16 +160,27 @@ impl SlotPage {
         buf
     }
 
-    /// Encode the page to a CRC-checked image, compressing the records region
-    /// against `dict` when one is supplied (else stored [`CODEC_RAW`]).
-    fn encode(&self, dict: Option<&Dictionary>) -> StorageResult<Vec<u8>> {
+    /// Read the [`DictRef`] from a page image header without fully decoding —
+    /// lets the directory resolve the dict bytes before [`decode`](Self::decode).
+    pub(crate) fn dict_ref_of(bytes: &[u8]) -> StorageResult<DictRef> {
+        if bytes.len() < HEADER_LEN {
+            return Err(StorageError::Other("page image too short".into()));
+        }
+        Ok(DictRef::from_raw(u64::from_le_bytes(
+            bytes[14..22].try_into().unwrap(),
+        )))
+    }
+
+    /// Encode the page to a CRC-checked image. `dict` is the bytes + [`DictRef`]
+    /// to compress against ([`CODEC_DICT`]); `None` stores [`CODEC_RAW`].
+    fn encode(&self, dict: Option<(&[u8], DictRef)>) -> StorageResult<Vec<u8>> {
         let records = self.records_bytes();
         let raw_len = records.len();
-        let (codec, dict_version, payload) = match dict {
-            Some(d) if !d.data.is_empty() => {
-                (CODEC_DICT, d.version, encode_with_dict(&records, &d.data)?)
+        let (codec, dict_ref, payload) = match dict {
+            Some((bytes, dict_ref)) if !bytes.is_empty() => {
+                (CODEC_DICT, dict_ref, encode_with_dict(&records, bytes)?)
             }
-            _ => (CODEC_RAW, 0u32, records),
+            _ => (CODEC_RAW, DictRef::NONE, records),
         };
 
         let total = HEADER_LEN + payload.len();
@@ -178,11 +191,11 @@ impl SlotPage {
         buf[8..12].copy_from_slice(&self.struct_id.to_le_bytes());
         buf[12] = self.version;
         buf[13] = codec;
-        buf[14..18].copy_from_slice(&dict_version.to_le_bytes());
-        buf[18..22].copy_from_slice(
+        buf[14..22].copy_from_slice(&dict_ref.raw().to_le_bytes());
+        buf[22..26].copy_from_slice(
             &u32::try_from(raw_len).expect("records exceed u32").to_le_bytes(),
         );
-        buf[22..26].copy_from_slice(
+        buf[26..30].copy_from_slice(
             &u32::try_from(self.entries.len())
                 .expect("too many entries")
                 .to_le_bytes(),
@@ -193,11 +206,12 @@ impl SlotPage {
         Ok(buf)
     }
 
-    /// Decode a page image, verifying its CRC and ignoring trailing padding.
-    /// A [`CODEC_DICT`] page needs `dict` (matching the header's `dict_version`).
+    /// Decode a page image, verifying its CRC and ignoring trailing padding. A
+    /// [`CODEC_DICT`] page needs `dict` — the bytes for the header's `dict_ref`,
+    /// which the caller resolves via [`dict_ref_of`](Self::dict_ref_of).
     pub(crate) fn decode(
         bytes: &[u8],
-        dict: Option<&Dictionary>,
+        dict: Option<&[u8]>,
     ) -> StorageResult<Self> {
         if bytes.len() < HEADER_LEN {
             return Err(StorageError::Other("page image too short".into()));
@@ -221,11 +235,10 @@ impl SlotPage {
         let struct_id = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
         let version = bytes[12];
         let codec = bytes[13];
-        let dict_version = u32::from_le_bytes(bytes[14..18].try_into().unwrap());
         let raw_len =
-            u32::from_le_bytes(bytes[18..22].try_into().unwrap()) as usize;
-        let count =
             u32::from_le_bytes(bytes[22..26].try_into().unwrap()) as usize;
+        let count =
+            u32::from_le_bytes(bytes[26..30].try_into().unwrap()) as usize;
 
         let payload = &bytes[HEADER_LEN..byte_len];
         let records = match codec {
@@ -234,13 +247,7 @@ impl SlotPage {
                 let d = dict.ok_or_else(|| {
                     StorageError::Other("dict page needs a dictionary".into())
                 })?;
-                if d.version != dict_version {
-                    return Err(StorageError::Other(format!(
-                        "dict version mismatch: page {dict_version}, have {}",
-                        d.version
-                    )));
-                }
-                decode_with_dict(payload, &d.data, raw_len)?
+                decode_with_dict(payload, d, raw_len)?
             }
             other => {
                 return Err(StorageError::Other(format!(
@@ -303,9 +310,9 @@ pub struct SlotCommit {
 pub struct PageDirectory {
     struct_id: u32,
     version: u8,
-    /// Current dictionary for this type. `None` ⇒ pages stored [`CODEC_RAW`];
-    /// `Some` ⇒ new pages compress against it ([`CODEC_DICT`]).
-    dict: Option<Arc<Dictionary>>,
+    /// Dictionary cache + current ref. `current() == NONE` ⇒ pages stored
+    /// [`CODEC_RAW`]; otherwise new pages compress against it ([`CODEC_DICT`]).
+    dicts: DictStore,
     slots: Vec<PageDescriptor>,
 }
 
@@ -321,7 +328,7 @@ impl PageDirectory {
         Self {
             struct_id,
             version,
-            dict: None,
+            dicts: DictStore::new(),
             slots: vec![PageDescriptor::EMPTY; slot_count],
         }
     }
@@ -341,25 +348,146 @@ impl PageDirectory {
         Self {
             struct_id,
             version,
-            dict: None,
+            dicts: DictStore::new(),
             slots,
         }
     }
 
-    /// Set the dictionary new pages compress against. Existing pages keep
-    /// decoding via their own `dict_version` (resolved by the caller).
-    pub fn set_dictionary(&mut self, dict: Arc<Dictionary>) {
-        self.dict = Some(dict);
+    /// Train-and-install a dictionary: write it to `data.bin` and make it the
+    /// one new pages compress against. Returns its [`DictRef`] (its run); the
+    /// store journals that allocation through the ordinary ledger. Existing
+    /// pages keep decoding via their own header `dict_ref`.
+    pub fn install_dictionary(
+        &mut self,
+        file: &BlockFile,
+        dict: &[u8],
+    ) -> StorageResult<DictRef> {
+        self.dicts.install(file, dict)
     }
 
-    /// The current dictionary, if any.
-    fn dict(&self) -> Option<&Dictionary> {
-        self.dict.as_deref()
+    /// Whether this type has a current dictionary (new pages compress).
+    #[must_use]
+    pub const fn has_dictionary(&self) -> bool {
+        !self.dicts.current().is_none()
+    }
+
+    /// Adopt an already-installed dictionary as current (recovery): set it from
+    /// any [`CODEC_DICT`] page's `dict_ref`, so post-restart writes keep
+    /// compressing without re-training. No-op if no dict page exists.
+    pub fn adopt_dictionary_from_pages(
+        &mut self,
+        file: &BlockFile,
+    ) -> StorageResult<()> {
+        if let Some(dict_ref) = self.page_dict_refs(file)?.into_iter().next() {
+            self.dicts.adopt(dict_ref);
+        }
+        Ok(())
+    }
+
+    /// Distinct non-`NONE` dictionary refs across all allocated page headers,
+    /// plus the current one. The store re-emits these as live allocations when
+    /// it rewrites the journal (compaction), so dict runs aren't dropped.
+    pub fn dict_runs_in_use(
+        &self,
+        file: &BlockFile,
+    ) -> StorageResult<Vec<DictRef>> {
+        let mut refs = self.page_dict_refs(file)?;
+        let current = self.dicts.current();
+        if !current.is_none() && !refs.contains(&current) {
+            refs.push(current);
+        }
+        Ok(refs)
+    }
+
+    /// Distinct non-`NONE` dict refs read from each allocated page's header.
+    fn page_dict_refs(&self, file: &BlockFile) -> StorageResult<Vec<DictRef>> {
+        let mut refs: Vec<DictRef> = Vec::new();
+        for desc in self.slots.iter().filter(|d| d.is_allocated()) {
+            let bytes = file.read_run(desc.run())?;
+            let dict_ref = SlotPage::dict_ref_of(&bytes)?;
+            if !dict_ref.is_none() && !refs.contains(&dict_ref) {
+                refs.push(dict_ref);
+            }
+        }
+        Ok(refs)
+    }
+
+    /// Collect up to `max` record payloads from the committed pages — the
+    /// training corpus for a dictionary.
+    pub fn sample_payloads(
+        &self,
+        file: &BlockFile,
+        max: usize,
+    ) -> StorageResult<Vec<Vec<u8>>> {
+        let mut samples = Vec::new();
+        for desc in self.slots.iter().filter(|d| d.is_allocated()) {
+            let page = self.read_run_page(file, desc.run())?;
+            for (_, payload) in page.entries {
+                samples.push(payload);
+                if samples.len() >= max {
+                    return Ok(samples);
+                }
+            }
+        }
+        Ok(samples)
+    }
+
+    /// Resolve the current dictionary's bytes + ref for encoding (`None` ⇒ raw).
+    fn current_dict(
+        &self,
+        file: &BlockFile,
+    ) -> StorageResult<Option<(Arc<Vec<u8>>, DictRef)>> {
+        let dict_ref = self.dicts.current();
+        if dict_ref.is_none() {
+            return Ok(None);
+        }
+        Ok(Some((self.dicts.load(file, dict_ref)?, dict_ref)))
     }
 
     /// A fresh, empty [`SlotPage`] stamped with this directory's type.
     const fn empty_page(&self) -> SlotPage {
         SlotPage::new(self.struct_id, self.version)
+    }
+
+    /// Decode the page image at `run`, resolving its header `dict_ref` through
+    /// this directory's dictionary cache.
+    fn read_run_page(
+        &self,
+        file: &BlockFile,
+        run: BlockRun,
+    ) -> StorageResult<SlotPage> {
+        let bytes = file.read_run(run)?;
+        let dict_ref = SlotPage::dict_ref_of(&bytes)?;
+        if dict_ref.is_none() {
+            SlotPage::decode(&bytes, None)
+        } else {
+            let dict = self.dicts.load(file, dict_ref)?;
+            SlotPage::decode(&bytes, Some(&dict))
+        }
+    }
+
+    /// Read the page at `desc`, or a fresh empty page if the slot is empty.
+    fn read_slot(
+        &self,
+        file: &BlockFile,
+        desc: PageDescriptor,
+    ) -> StorageResult<SlotPage> {
+        if desc.is_allocated() {
+            self.read_run_page(file, desc.run())
+        } else {
+            Ok(self.empty_page())
+        }
+    }
+
+    /// Encode and place `page`, compressing against the current dictionary.
+    fn place(
+        &self,
+        file: &BlockFile,
+        page: &SlotPage,
+    ) -> StorageResult<PageDescriptor> {
+        let current = self.current_dict(file)?;
+        let dict = current.as_ref().map(|(bytes, r)| (bytes.as_slice(), *r));
+        place_page(file, page, dict)
     }
 
     /// Number of slots (the `hash % len` modulus).
@@ -400,7 +528,7 @@ impl PageDirectory {
         if !desc.is_allocated() {
             return Ok(None);
         }
-        let page = SlotPage::decode(&file.read_run(desc.run())?, self.dict())?;
+        let page = self.read_run_page(file, desc.run())?;
         Ok(page.get(id).map(<[u8]>::to_vec))
     }
 
@@ -414,8 +542,7 @@ impl PageDirectory {
     ) -> StorageResult<()> {
         let idx = slot_for(id, self.slots.len());
         let desc = self.slots[idx];
-        let mut page =
-            read_slot(file, desc, self.struct_id, self.version, self.dict())?;
+        let mut page = self.read_slot(file, desc)?;
         page.upsert(id, payload);
         self.commit_page(file, idx, desc, &page)?;
         Ok(())
@@ -432,8 +559,7 @@ impl PageDirectory {
         if !desc.is_allocated() {
             return Ok(false);
         }
-        let mut page =
-            read_slot(file, desc, self.struct_id, self.version, self.dict())?;
+        let mut page = self.read_slot(file, desc)?;
         if !page.remove(id) {
             return Ok(false);
         }
@@ -455,8 +581,7 @@ impl PageDirectory {
         mutations: &BTreeMap<u128, Option<Vec<u8>>>,
     ) -> StorageResult<SlotCommit> {
         let desc = self.slots[slot];
-        let mut page =
-            read_slot(file, desc, self.struct_id, self.version, self.dict())?;
+        let mut page = self.read_slot(file, desc)?;
         for (id, mutation) in mutations {
             match mutation {
                 Some(payload) => page.upsert(*id, payload),
@@ -481,7 +606,7 @@ impl PageDirectory {
         let new_desc = if page.is_empty() {
             PageDescriptor::EMPTY
         } else {
-            place_page(file, page, self.dict())?
+            self.place(file, page)?
         };
         let allocated = new_desc.is_allocated().then(|| new_desc.run());
         let freed = old.is_allocated().then(|| old.run());
@@ -549,7 +674,7 @@ impl PageDirectory {
         let mut buckets: Vec<SlotPage> =
             (0..new_slot_count).map(|_| self.empty_page()).collect();
         for &run in &old_runs {
-            let page = SlotPage::decode(&file.read_run(run)?, self.dict())?;
+            let page = self.read_run_page(file, run)?;
             for (id, payload) in page.entries {
                 buckets[slot_for(id, new_slot_count)].upsert_owned(id, payload);
             }
@@ -560,7 +685,7 @@ impl PageDirectory {
         let mut new_slots = vec![PageDescriptor::EMPTY; new_slot_count];
         for (i, page) in buckets.iter().enumerate() {
             if !page.is_empty() {
-                new_slots[i] = place_page(file, page, self.dict())?;
+                new_slots[i] = self.place(file, page)?;
             }
         }
 
@@ -573,33 +698,17 @@ impl PageDirectory {
     }
 }
 
-/// Read the page a descriptor points at, or an empty page (stamped with the
-/// caller's type) if unallocated. `dict` decodes a [`CODEC_DICT`] page.
-fn read_slot(
-    file: &BlockFile,
-    desc: PageDescriptor,
-    struct_id: u32,
-    version: u8,
-    dict: Option<&Dictionary>,
-) -> StorageResult<SlotPage> {
-    if desc.is_allocated() {
-        SlotPage::decode(&file.read_run(desc.run())?, dict)
-    } else {
-        Ok(SlotPage::new(struct_id, version))
-    }
-}
-
 /// Encode `page` (compressing against `dict` when present), allocate a roomier
 /// run for the image, write it, and return its descriptor.
 ///
-/// Shared by [`PageDirectory::put`]'s relocate path and
-/// [`PageDirectory::grow_to`]'s rehash. Sizes the run from the *encoded* image
-/// (so compression shrinks the allocation), with ~2× headroom so the page
-/// doesn't relocate on its very next write.
+/// Shared by [`PageDirectory`] and `file::linear`. Sizes the run from the
+/// *encoded* image (so compression shrinks the allocation), with ~2× headroom
+/// so the page doesn't relocate on its very next write. `dict` is the bytes +
+/// [`DictRef`] to compress against.
 pub(crate) fn place_page(
     file: &BlockFile,
     page: &SlotPage,
-    dict: Option<&Dictionary>,
+    dict: Option<(&[u8], DictRef)>,
 ) -> StorageResult<PageDescriptor> {
     let image = page.encode(dict)?;
     let need = image.len() as u64;
@@ -746,11 +855,7 @@ mod tests {
                 .into_bytes()
             })
             .collect();
-        let dict = Arc::new(Dictionary {
-            struct_id: 7,
-            version: 1,
-            data: train_dictionary(&samples, 8 * 1024).unwrap(),
-        });
+        let dict_bytes = train_dictionary(&samples, 8 * 1024).unwrap();
 
         // RAW baseline: one bucket → one growing page.
         let raw_bf = BlockFile::create_in_memory();
@@ -760,10 +865,10 @@ mod tests {
         }
         let raw_blocks = raw.descriptors()[0].block_count();
 
-        // DICT directory: same data, compressed against the dictionary.
+        // DICT directory: install the dict (into data.bin) then write the data.
         let bf = BlockFile::create_in_memory();
         let mut dir = PageDirectory::new(7, 2, 1);
-        dir.set_dictionary(Arc::clone(&dict));
+        let dict_ref = dir.install_dictionary(&bf, &dict_bytes).unwrap();
         for (i, s) in samples.iter().enumerate().take(200) {
             dir.put(&bf, i as u128, s).unwrap();
         }
@@ -772,15 +877,24 @@ mod tests {
             assert_eq!(dir.get(&bf, i as u128).unwrap().unwrap(), *s);
         }
 
-        // The page is marked CODEC_DICT and occupies fewer blocks than RAW.
+        // The page is marked CODEC_DICT, points at the dict, and occupies fewer
+        // blocks than RAW.
         let run = dir.descriptors()[0].run();
         let image = bf.read_run(run).unwrap();
         assert_eq!(image[13], CODEC_DICT);
+        assert_eq!(SlotPage::dict_ref_of(&image).unwrap(), dict_ref);
         let dict_blocks = dir.descriptors()[0].block_count();
         assert!(
             dict_blocks < raw_blocks,
             "dict {dict_blocks} !< raw {raw_blocks} blocks"
         );
+
+        // A fresh directory (cold dict cache) still decodes: it loads the dict
+        // from data.bin via the page's own ref.
+        let cold = PageDirectory::from_slots(7, 2, dir.descriptors().to_vec());
+        for (i, s) in samples.iter().enumerate().take(200) {
+            assert_eq!(cold.get(&bf, i as u128).unwrap().unwrap(), *s);
+        }
     }
 
     #[test]

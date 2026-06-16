@@ -3,6 +3,7 @@
 pub mod block_alloc;
 pub mod block_file;
 pub mod data;
+pub mod dict;
 pub mod directory;
 pub mod linear;
 pub mod page_dir;

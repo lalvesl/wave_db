@@ -37,7 +37,9 @@
 //! since the last checkpoint, and the [`BlockFile`] allocator from the live
 //! descriptors.
 
+use crate::compression::page_codec::train_dictionary;
 use crate::file::block_file::BlockFile;
+use crate::file::dict::DictRef;
 use crate::file::directory::{PageDirectory, SlotCommit};
 use crate::file::page_journal::PageJournal;
 use crate::{StorageError, StorageResult};
@@ -45,15 +47,27 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Slots a freshly-seen `(struct_id, version)` directory starts with.
-pub const DEFAULT_DIRECTORY_SLOTS: usize = 8;
+pub const DEFAULT_DIRECTORY_SLOTS: usize = 1;
 
 /// Journal byte length past which [`drain`](PagedStore::drain) compacts it,
 /// rewriting the log as a snapshot so the alloc/free ledger can't grow without
 /// bound (see [`compact`](PagedStore::compact)).
 pub const JOURNAL_COMPACT_THRESHOLD: u64 = 8 * 1024 * 1024;
 
+/// Records drained for a type before its dictionary is trained (once).
+pub const DICT_TRAIN_MIN_RECORDS: u64 = 256;
+
 const DATA_FILE: &str = "data.bin";
 const JOURNAL_FILE: &str = "page.journal";
+
+/// Cap on payloads sampled when training a dictionary.
+const DICT_SAMPLE_CAP: usize = 4096;
+/// Trained dictionary size ceiling.
+const DICT_MAX_BYTES: usize = 8 * 1024;
+/// Minimum samples before training is worthwhile.
+const DICT_MIN_SAMPLES: usize = 64;
+/// Owner slot stamped on a dictionary run's ledger entry (not a real slot).
+const DICT_OWNER_SLOT: u32 = u32::MAX;
 
 type Mutations = BTreeMap<u128, Option<Vec<u8>>>;
 
@@ -69,6 +83,8 @@ pub struct PagedStore {
     dirs: BTreeMap<(u32, u8), PageDirectory>,
     /// Records written but not yet drained. `Some` = upsert, `None` = delete.
     pending: BTreeMap<(u32, u8), Mutations>,
+    /// Cumulative upserts drained per type — the dictionary training trigger.
+    drained_counts: BTreeMap<(u32, u8), u64>,
     default_slots: usize,
     drain_seq: u64,
 }
@@ -82,6 +98,7 @@ impl PagedStore {
             journal: PageJournal::create_in_memory(),
             dirs: BTreeMap::new(),
             pending: BTreeMap::new(),
+            drained_counts: BTreeMap::new(),
             default_slots: DEFAULT_DIRECTORY_SLOTS,
             drain_seq: 0,
         }
@@ -95,6 +112,7 @@ impl PagedStore {
             journal: PageJournal::create(&dir.join(JOURNAL_FILE))?,
             dirs: BTreeMap::new(),
             pending: BTreeMap::new(),
+            drained_counts: BTreeMap::new(),
             default_slots: DEFAULT_DIRECTORY_SLOTS,
             drain_seq: 0,
         })
@@ -107,18 +125,24 @@ impl PagedStore {
         // The allocator rebuilds from the journal's allocation ledger — the
         // single source of truth for which blocks are in use.
         let data = BlockFile::open(&dir.join(DATA_FILE), state.allocated_runs)?;
-        let dirs = state
+        let mut dirs: BTreeMap<(u32, u8), PageDirectory> = state
             .directories
             .into_iter()
             .map(|((sid, ver), slots)| {
                 ((sid, ver), PageDirectory::from_slots(sid, ver, slots))
             })
             .collect();
+        // Re-adopt each type's dictionary from its pages so post-restart writes
+        // keep compressing (the dict location lives in the page headers).
+        for directory in dirs.values_mut() {
+            directory.adopt_dictionary_from_pages(&data)?;
+        }
         Ok(Self {
             data,
             journal,
             dirs,
             pending: state.pending,
+            drained_counts: BTreeMap::new(),
             default_slots: DEFAULT_DIRECTORY_SLOTS,
             drain_seq: 0,
         })
@@ -144,8 +168,10 @@ impl PagedStore {
         version: u8,
         id: u128,
     ) -> StorageResult<Option<Vec<u8>>> {
-        if let Some(mutation) =
-            self.pending.get(&(struct_id, version)).and_then(|t| t.get(&id))
+        if let Some(mutation) = self
+            .pending
+            .get(&(struct_id, version))
+            .and_then(|t| t.get(&id))
         {
             // `Some(bytes)` upsert or `None` tombstone — both authoritative.
             return Ok(mutation.clone());
@@ -197,23 +223,28 @@ impl PagedStore {
 
         let mut resizes: Vec<(u32, u8, usize)> = Vec::new();
         let mut commits: Vec<(u32, u8, usize, SlotCommit)> = Vec::new();
+        // Upserts drained per type this round — feeds the training trigger.
+        let mut added: Vec<((u32, u8), u64)> = Vec::new();
 
         for ((struct_id, version), muts) in pending {
             let key = (struct_id, version);
             let is_new = !self.dirs.contains_key(&key);
-            let dir = self
-                .dirs
-                .entry(key)
-                .or_insert_with(|| {
-                    PageDirectory::new(struct_id, version, default_slots)
-                });
+            let dir = self.dirs.entry(key).or_insert_with(|| {
+                PageDirectory::new(struct_id, version, default_slots)
+            });
             if is_new {
                 resizes.push((struct_id, version, dir.slot_count()));
             }
+            let upserts =
+                muts.values().filter(|m| m.is_some()).count() as u64;
+            added.push((key, upserts));
             // Group this type's pending records by their target page.
             let mut by_slot: BTreeMap<usize, Mutations> = BTreeMap::new();
             for (id, mutation) in muts {
-                by_slot.entry(dir.slot_of(id)).or_default().insert(id, mutation);
+                by_slot
+                    .entry(dir.slot_of(id))
+                    .or_default()
+                    .insert(id, mutation);
             }
             for (slot, slot_muts) in by_slot {
                 let commit = dir.commit_slot(&self.data, slot, &slot_muts)?;
@@ -221,25 +252,47 @@ impl PagedStore {
             }
         }
 
+        // Train a dictionary for any type crossing the record threshold for the
+        // first time, writing it to `data.bin` now (synced with the pages).
+        let dict_installs = self.train_due_dictionaries(&added)?;
+
         // Durability order: the new pages must be on disk before the
         // descriptors that point at them, and the checkpoint last. Per slot the
         // ledger order is alloc → set descriptor → free, so a recovered
         // allocator never omits a block a live descriptor points at.
         self.data.sync()?;
         for (struct_id, version, slot_count) in resizes {
-            self.journal
-                .resize_directory(struct_id, version, u32_of(slot_count))?;
+            self.journal.resize_directory(
+                struct_id,
+                version,
+                u32_of(slot_count),
+            )?;
         }
         for (struct_id, version, slot, commit) in commits {
             let slot = u32_of(slot);
             if let Some(run) = commit.allocated {
                 self.journal.allocate_block(struct_id, version, slot, run)?;
             }
-            self.journal
-                .set_descriptor(struct_id, version, slot, commit.descriptor)?;
+            self.journal.set_descriptor(
+                struct_id,
+                version,
+                slot,
+                commit.descriptor,
+            )?;
             if let Some(run) = commit.freed {
                 self.journal.free_block(run)?;
             }
+        }
+        // Journal each freshly-installed dictionary's run so the allocator keeps
+        // its blocks reserved on recovery (the dict location lives in the page
+        // headers, not a dict directory).
+        for (struct_id, version, dict_ref) in dict_installs {
+            self.journal.allocate_block(
+                struct_id,
+                version,
+                DICT_OWNER_SLOT,
+                dict_ref.run(),
+            )?;
         }
         self.drain_seq += 1;
         self.journal.checkpoint(self.drain_seq)?;
@@ -250,6 +303,53 @@ impl PagedStore {
             self.compact()?;
         }
         Ok(())
+    }
+
+    /// Train + install a dictionary for each type that crosses
+    /// [`DICT_TRAIN_MIN_RECORDS`] for the first time. Returns the installed
+    /// `(struct_id, version, DictRef)`s for the caller to journal. Writes the
+    /// dict pages to `data.bin` (synced by the drain alongside the records).
+    fn train_due_dictionaries(
+        &mut self,
+        added: &[((u32, u8), u64)],
+    ) -> StorageResult<Vec<(u32, u8, DictRef)>> {
+        let mut installs = Vec::new();
+        for &(key, n) in added {
+            let old = self.drained_counts.get(&key).copied().unwrap_or(0);
+            let new = old + n;
+            self.drained_counts.insert(key, new);
+            // Attempt exactly once, the round the type first crosses the line.
+            if old >= DICT_TRAIN_MIN_RECORDS || new < DICT_TRAIN_MIN_RECORDS {
+                continue;
+            }
+            let dir =
+                self.dirs.get_mut(&key).expect("drained type has a directory");
+            if dir.has_dictionary() {
+                continue;
+            }
+            let samples = dir.sample_payloads(&self.data, DICT_SAMPLE_CAP)?;
+            if samples.len() < DICT_MIN_SAMPLES {
+                continue;
+            }
+            // Training can fail on a low-entropy corpus — stay RAW if so.
+            let Ok(dict) = train_dictionary(&samples, DICT_MAX_BYTES) else {
+                continue;
+            };
+            if dict.is_empty() {
+                continue;
+            }
+            let dict_ref = dir.install_dictionary(&self.data, &dict)?;
+            installs.push((key.0, key.1, dict_ref));
+        }
+        Ok(installs)
+    }
+
+    /// Whether a type has a trained dictionary (new pages compress).
+    #[must_use]
+    pub fn has_dictionary(&self, struct_id: u32, version: u8) -> bool {
+        self.dirs
+            .get(&(struct_id, version))
+            .is_some_and(PageDirectory::has_dictionary)
     }
 
     /// Rewrite the journal as a compact snapshot of the current state, bounding
@@ -285,13 +385,33 @@ impl PagedStore {
         // Committed state: directories + their live runs. Ledger order per slot
         // matches the drain (alloc before the descriptor that points at it).
         for ((struct_id, version), dir) in &self.dirs {
-            fresh.resize_directory(*struct_id, *version, u32_of(dir.slot_count()))?;
+            fresh.resize_directory(
+                *struct_id,
+                *version,
+                u32_of(dir.slot_count()),
+            )?;
             for (i, desc) in dir.descriptors().iter().enumerate() {
                 let slot = u32_of(i);
                 if desc.is_allocated() {
-                    fresh.allocate_block(*struct_id, *version, slot, desc.run())?;
+                    fresh.allocate_block(
+                        *struct_id,
+                        *version,
+                        slot,
+                        desc.run(),
+                    )?;
                 }
                 fresh.set_descriptor(*struct_id, *version, slot, *desc)?;
+            }
+            // Dictionary runs aren't directory slots — re-emit their
+            // allocations (refs scanned from the pages + the current dict), or
+            // the rewritten ledger would let the allocator reclaim them.
+            for dict_ref in dir.dict_runs_in_use(&self.data)? {
+                fresh.allocate_block(
+                    *struct_id,
+                    *version,
+                    DICT_OWNER_SLOT,
+                    dict_ref.run(),
+                )?;
             }
         }
         fresh.checkpoint(self.drain_seq)?;
@@ -300,7 +420,8 @@ impl PagedStore {
             for (id, mutation) in muts {
                 match mutation {
                     Some(payload) => {
-                        fresh.write_record(*struct_id, *version, *id, payload)?;
+                        fresh
+                            .write_record(*struct_id, *version, *id, payload)?;
                     }
                     None => fresh.delete_record(*struct_id, *version, *id)?,
                 }
@@ -341,13 +462,20 @@ impl PagedStore {
         let descriptors: Vec<_> = dir.descriptors().to_vec();
 
         self.data.sync()?;
-        self.journal
-            .resize_directory(struct_id, version, u32_of(slot_count))?;
+        self.journal.resize_directory(
+            struct_id,
+            version,
+            u32_of(slot_count),
+        )?;
         for (i, descriptor) in descriptors.into_iter().enumerate() {
             let slot = u32_of(i);
             if descriptor.is_allocated() {
-                self.journal
-                    .allocate_block(struct_id, version, slot, descriptor.run())?;
+                self.journal.allocate_block(
+                    struct_id,
+                    version,
+                    slot,
+                    descriptor.run(),
+                )?;
             }
             self.journal
                 .set_descriptor(struct_id, version, slot, descriptor)?;
@@ -519,7 +647,10 @@ mod tests {
         // Reopen: the allocator is reconstructed from the ledger alone.
         let mut store = PagedStore::open(dir.path()).unwrap();
         for id in 0..10u128 {
-            assert_eq!(store.get(7, 2, id).unwrap().unwrap(), vec![0xABu8; 300]);
+            assert_eq!(
+                store.get(7, 2, id).unwrap().unwrap(),
+                vec![0xABu8; 300]
+            );
         }
         // A fresh write must land in free space without clobbering the live
         // page — proves freed runs are reusable and live runs stay reserved.
@@ -527,7 +658,10 @@ mod tests {
         store.drain().unwrap();
         assert_eq!(store.get(7, 2, 99).unwrap().unwrap(), b"new");
         for id in 0..10u128 {
-            assert_eq!(store.get(7, 2, id).unwrap().unwrap(), vec![0xABu8; 300]);
+            assert_eq!(
+                store.get(7, 2, id).unwrap().unwrap(),
+                vec![0xABu8; 300]
+            );
         }
     }
 
@@ -555,7 +689,10 @@ mod tests {
             store.compact().unwrap();
             store.sync().unwrap();
             let after = std::fs::metadata(&jpath).unwrap().len();
-            assert!(after < before, "compaction must shrink: {before} -> {after}");
+            assert!(
+                after < before,
+                "compaction must shrink: {before} -> {after}"
+            );
 
             // In-process state intact across the swap.
             assert_eq!(store.get(7, 2, 0).unwrap().unwrap(), b"r39-0");
@@ -589,6 +726,60 @@ mod tests {
             );
         }
         assert_eq!(store.get(7, 2, 100).unwrap().unwrap(), b"tail");
+    }
+
+    #[test]
+    fn dictionary_trains_uses_survives_reopen_and_compaction() {
+        fn rec(i: u128) -> Vec<u8> {
+            format!(
+                "{{\"id\":{i},\"role\":\"member\",\"status\":\"active\",\"tier\":\"gold\"}}"
+            )
+            .into_bytes()
+        }
+
+        let dir = tempdir().unwrap();
+        {
+            let mut store = PagedStore::create(dir.path()).unwrap();
+            assert!(!store.has_dictionary(7, 2));
+            // Cross the training threshold in one drain.
+            for i in 0..2000u128 {
+                store.put(7, 2, i, &rec(i)).unwrap();
+            }
+            store.drain().unwrap();
+            assert!(store.has_dictionary(7, 2), "dict trains past threshold");
+
+            // The next drain's writes compress against the dict (DICT pages).
+            for i in 2000..2300u128 {
+                store.put(7, 2, i, &rec(i)).unwrap();
+            }
+            store.drain().unwrap();
+            for i in 0..2300u128 {
+                assert_eq!(store.get(7, 2, i).unwrap().unwrap(), rec(i));
+            }
+
+            // Compaction must keep the dict run reserved.
+            store.compact().unwrap();
+            for i in 0..2300u128 {
+                assert_eq!(store.get(7, 2, i).unwrap().unwrap(), rec(i));
+            }
+            store.sync().unwrap();
+        }
+
+        // Reopen: the dict is adopted from the pages (no journal dict entry).
+        let mut store = PagedStore::open(dir.path()).unwrap();
+        assert!(store.has_dictionary(7, 2), "dict adopted on reopen");
+        for i in 0..2300u128 {
+            assert_eq!(store.get(7, 2, i).unwrap().unwrap(), rec(i));
+        }
+        // A fresh write + drain allocates new blocks — must not clobber the
+        // dict run reconstructed from the ledger.
+        for i in 2300..2400u128 {
+            store.put(7, 2, i, &rec(i)).unwrap();
+        }
+        store.drain().unwrap();
+        for i in 0..2400u128 {
+            assert_eq!(store.get(7, 2, i).unwrap().unwrap(), rec(i));
+        }
     }
 
     #[test]

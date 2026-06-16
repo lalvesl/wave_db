@@ -42,12 +42,11 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use crate::StorageResult;
-use crate::compression::dict_cache::Dictionary;
 use crate::file::block_alloc::BlockRun;
 use crate::file::block_file::BlockFile;
+use crate::file::dict::{DictRef, DictStore};
 use crate::file::directory::{SlotPage, place_page};
 use crate::file::page_dir::PageDescriptor;
-use std::sync::Arc;
 
 /// Largest starting level (`new(level)` allocates `2^level` buckets).
 pub const MAX_LEVEL: u8 = 32;
@@ -59,39 +58,12 @@ const fn hash_of(id: u128) -> u64 {
     crate::hash::mix64(lo ^ hi.rotate_left(32))
 }
 
-fn read_bucket(
-    file: &BlockFile,
-    desc: PageDescriptor,
-    struct_id: u32,
-    version: u8,
-    dict: Option<&Dictionary>,
-) -> StorageResult<SlotPage> {
-    if desc.is_allocated() {
-        SlotPage::decode(&file.read_run(desc.run())?, dict)
-    } else {
-        Ok(SlotPage::new(struct_id, version))
-    }
-}
-
-fn place_if_nonempty(
-    file: &BlockFile,
-    page: &SlotPage,
-    dict: Option<&Dictionary>,
-) -> StorageResult<PageDescriptor> {
-    if page.is_empty() {
-        Ok(PageDescriptor::EMPTY)
-    } else {
-        place_page(file, page, dict)
-    }
-}
-
 /// A linear-hashing directory over a shared [`BlockFile`].
 pub struct LinearDirectory {
     struct_id: u32,
     version: u8,
-    /// Current dictionary (`None` ⇒ pages stored raw). See
-    /// [`set_dictionary`](Self::set_dictionary).
-    dict: Option<Arc<Dictionary>>,
+    /// Dictionary cache + current ref (`current() == NONE` ⇒ pages stored raw).
+    dicts: DictStore,
     /// Length `M` is the live bucket count; `s` and `L` are derived from it.
     dir: Vec<PageDescriptor>,
 }
@@ -109,7 +81,7 @@ impl LinearDirectory {
         Self {
             struct_id,
             version,
-            dict: None,
+            dicts: DictStore::new(),
             dir: vec![PageDescriptor::EMPTY; 1usize << level],
         }
     }
@@ -130,19 +102,66 @@ impl LinearDirectory {
         Self {
             struct_id,
             version,
-            dict: None,
+            dicts: DictStore::new(),
             dir,
         }
     }
 
-    /// Set the dictionary new pages compress against.
-    pub fn set_dictionary(&mut self, dict: Arc<Dictionary>) {
-        self.dict = Some(dict);
+    /// Train-and-install a dictionary (written to `data.bin`). Returns its
+    /// [`DictRef`]; the store journals the run's allocation through the ledger.
+    pub fn install_dictionary(
+        &mut self,
+        file: &BlockFile,
+        dict: &[u8],
+    ) -> StorageResult<DictRef> {
+        self.dicts.install(file, dict)
     }
 
-    /// The current dictionary, if any.
-    fn dict(&self) -> Option<&Dictionary> {
-        self.dict.as_deref()
+    /// Decode the page at `run`, resolving its header `dict_ref` via the cache.
+    fn read_run_bucket(
+        &self,
+        file: &BlockFile,
+        run: BlockRun,
+    ) -> StorageResult<SlotPage> {
+        let bytes = file.read_run(run)?;
+        let dict_ref = SlotPage::dict_ref_of(&bytes)?;
+        if dict_ref.is_none() {
+            SlotPage::decode(&bytes, None)
+        } else {
+            let dict = self.dicts.load(file, dict_ref)?;
+            SlotPage::decode(&bytes, Some(&dict))
+        }
+    }
+
+    /// Read bucket `desc`, or a fresh empty page if unallocated.
+    fn read_bucket(
+        &self,
+        file: &BlockFile,
+        desc: PageDescriptor,
+    ) -> StorageResult<SlotPage> {
+        if desc.is_allocated() {
+            self.read_run_bucket(file, desc.run())
+        } else {
+            Ok(SlotPage::new(self.struct_id, self.version))
+        }
+    }
+
+    /// Place `page` (compressing against the current dict), or `EMPTY` if empty.
+    fn place_if_nonempty(
+        &self,
+        file: &BlockFile,
+        page: &SlotPage,
+    ) -> StorageResult<PageDescriptor> {
+        if page.is_empty() {
+            return Ok(PageDescriptor::EMPTY);
+        }
+        let dict_ref = self.dicts.current();
+        if dict_ref.is_none() {
+            place_page(file, page, None)
+        } else {
+            let bytes = self.dicts.load(file, dict_ref)?;
+            place_page(file, page, Some((&bytes, dict_ref)))
+        }
     }
 
     /// Number of buckets `M`.
@@ -206,7 +225,7 @@ impl LinearDirectory {
         if !desc.is_allocated() {
             return Ok(None);
         }
-        let bucket = read_bucket(file, desc, self.struct_id, self.version, self.dict())?;
+        let bucket = self.read_bucket(file, desc)?;
         Ok(bucket.get(id).map(<[u8]>::to_vec))
     }
 
@@ -232,7 +251,7 @@ impl LinearDirectory {
         if !desc.is_allocated() {
             return Ok(false);
         }
-        let mut bucket = read_bucket(file, desc, self.struct_id, self.version, self.dict())?;
+        let mut bucket = self.read_bucket(file, desc)?;
         if !bucket.remove(id) {
             return Ok(false);
         }
@@ -249,7 +268,7 @@ impl LinearDirectory {
         mutations: &std::collections::BTreeMap<u128, Option<Vec<u8>>>,
     ) -> StorageResult<()> {
         let desc = self.dir[i];
-        let mut bucket = read_bucket(file, desc, self.struct_id, self.version, self.dict())?;
+        let mut bucket = self.read_bucket(file, desc)?;
         for (id, mutation) in mutations {
             match mutation {
                 Some(payload) => bucket.upsert(*id, payload),
@@ -268,7 +287,7 @@ impl LinearDirectory {
         let s = (m - (1u64 << level)) as usize; // bucket to split
 
         let desc = self.dir[s];
-        let bucket = read_bucket(file, desc, self.struct_id, self.version, self.dict())?;
+        let bucket = self.read_bucket(file, desc)?;
         // Partition by bit `level`: 0 stays in s, 1 moves to the new bucket.
         let mut keep = SlotPage::new(self.struct_id, self.version);
         let mut moved = SlotPage::new(self.struct_id, self.version);
@@ -279,8 +298,8 @@ impl LinearDirectory {
                 moved.upsert_owned(id, payload);
             }
         }
-        let keep_desc = place_if_nonempty(file, &keep, self.dict())?;
-        let moved_desc = place_if_nonempty(file, &moved, self.dict())?;
+        let keep_desc = self.place_if_nonempty(file, &keep)?;
+        let moved_desc = self.place_if_nonempty(file, &moved)?;
         if desc.is_allocated() {
             file.free(desc.run());
         }
@@ -299,7 +318,7 @@ impl LinearDirectory {
         mutate: impl FnOnce(&mut SlotPage),
     ) -> StorageResult<()> {
         let desc = self.dir[i];
-        let mut bucket = read_bucket(file, desc, self.struct_id, self.version, self.dict())?;
+        let mut bucket = self.read_bucket(file, desc)?;
         mutate(&mut bucket);
         self.commit(file, i, desc, &bucket)
     }
@@ -313,7 +332,7 @@ impl LinearDirectory {
         old: PageDescriptor,
         bucket: &SlotPage,
     ) -> StorageResult<()> {
-        let new_desc = place_if_nonempty(file, bucket, self.dict())?;
+        let new_desc = self.place_if_nonempty(file, bucket)?;
         if old.is_allocated() {
             file.free(old.run());
         }
