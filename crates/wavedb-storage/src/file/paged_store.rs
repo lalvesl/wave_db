@@ -38,8 +38,7 @@
 //! descriptors.
 
 use crate::file::block_file::BlockFile;
-use crate::file::directory::PageDirectory;
-use crate::file::page_dir::PageDescriptor;
+use crate::file::directory::{PageDirectory, SlotCommit};
 use crate::file::page_journal::PageJournal;
 use crate::StorageResult;
 use std::collections::BTreeMap;
@@ -100,7 +99,9 @@ impl PagedStore {
     /// the committed directories, the pending buffer, and the allocator.
     pub fn open(dir: &Path) -> StorageResult<Self> {
         let (journal, state) = PageJournal::open(&dir.join(JOURNAL_FILE))?;
-        let data = BlockFile::open(&dir.join(DATA_FILE), state.data_runs())?;
+        // The allocator rebuilds from the journal's allocation ledger — the
+        // single source of truth for which blocks are in use.
+        let data = BlockFile::open(&dir.join(DATA_FILE), state.allocated_runs)?;
         let dirs = state
             .directories
             .into_iter()
@@ -188,7 +189,7 @@ impl PagedStore {
         let pending = std::mem::take(&mut self.pending);
 
         let mut resizes: Vec<(u32, u8, usize)> = Vec::new();
-        let mut commits: Vec<(u32, u8, usize, PageDescriptor)> = Vec::new();
+        let mut commits: Vec<(u32, u8, usize, SlotCommit)> = Vec::new();
 
         for ((struct_id, version), muts) in pending {
             let key = (struct_id, version);
@@ -206,22 +207,30 @@ impl PagedStore {
                 by_slot.entry(dir.slot_of(id)).or_default().insert(id, mutation);
             }
             for (slot, slot_muts) in by_slot {
-                let descriptor =
-                    dir.commit_slot(&self.data, slot, &slot_muts)?;
-                commits.push((struct_id, version, slot, descriptor));
+                let commit = dir.commit_slot(&self.data, slot, &slot_muts)?;
+                commits.push((struct_id, version, slot, commit));
             }
         }
 
         // Durability order: the new pages must be on disk before the
-        // descriptors that point at them, and the checkpoint last.
+        // descriptors that point at them, and the checkpoint last. Per slot the
+        // ledger order is alloc → set descriptor → free, so a recovered
+        // allocator never omits a block a live descriptor points at.
         self.data.sync()?;
         for (struct_id, version, slot_count) in resizes {
             self.journal
                 .resize_directory(struct_id, version, u32_of(slot_count))?;
         }
-        for (struct_id, version, slot, descriptor) in commits {
+        for (struct_id, version, slot, commit) in commits {
+            let slot = u32_of(slot);
+            if let Some(run) = commit.allocated {
+                self.journal.allocate_block(struct_id, version, slot, run)?;
+            }
             self.journal
-                .set_descriptor(struct_id, version, u32_of(slot), descriptor)?;
+                .set_descriptor(struct_id, version, slot, commit.descriptor)?;
+            if let Some(run) = commit.freed {
+                self.journal.free_block(run)?;
+            }
         }
         self.drain_seq += 1;
         self.journal.checkpoint(self.drain_seq)?;
@@ -241,7 +250,9 @@ impl PagedStore {
         let Some(dir) = self.dirs.get_mut(&(struct_id, version)) else {
             return Ok(false);
         };
-        dir.grow_to(&self.data, new_slot_count)?;
+        // The rehash reallocates every page; `freed` is the full set of old
+        // runs to release once the new layout is journaled.
+        let freed = dir.grow_to(&self.data, new_slot_count)?;
         let slot_count = dir.slot_count();
         let descriptors: Vec<_> = dir.descriptors().to_vec();
 
@@ -249,11 +260,18 @@ impl PagedStore {
         self.journal
             .resize_directory(struct_id, version, u32_of(slot_count))?;
         for (i, descriptor) in descriptors.into_iter().enumerate() {
+            let slot = u32_of(i);
+            if descriptor.is_allocated() {
+                self.journal
+                    .allocate_block(struct_id, version, slot, descriptor.run())?;
+            }
             self.journal
-                .set_descriptor(struct_id, version, u32_of(i), descriptor)?;
+                .set_descriptor(struct_id, version, slot, descriptor)?;
         }
-        self.journal.sync()
-            .map(|()| true)
+        for run in freed {
+            self.journal.free_block(run)?;
+        }
+        self.journal.sync().map(|()| true)
     }
 
     /// Grow a type's directory (doubling it) if [`PageDirectory::needs_grow`]
@@ -393,6 +411,39 @@ mod tests {
         let payload = vec![0x7Eu8; 200];
         for id in 0..30u128 {
             assert_eq!(store.get(7, 2, id).unwrap().unwrap(), payload);
+        }
+    }
+
+    #[test]
+    fn ledger_rebuilds_allocator_across_reopen() {
+        let dir = tempdir().unwrap();
+        {
+            let mut store = PagedStore::create(dir.path()).unwrap();
+            store.set_default_slots(1); // one bucket → page relocates on growth
+            for id in 0..10u128 {
+                store.put(7, 2, id, format!("v{id}").as_bytes()).unwrap();
+            }
+            store.drain().unwrap();
+            // Rewrite with bigger payloads → the page outgrows its run, so the
+            // drain frees the old run and allocates a new one (ledger free+alloc).
+            for id in 0..10u128 {
+                store.put(7, 2, id, &vec![0xABu8; 300]).unwrap();
+            }
+            store.drain().unwrap();
+            store.sync().unwrap();
+        }
+        // Reopen: the allocator is reconstructed from the ledger alone.
+        let mut store = PagedStore::open(dir.path()).unwrap();
+        for id in 0..10u128 {
+            assert_eq!(store.get(7, 2, id).unwrap().unwrap(), vec![0xABu8; 300]);
+        }
+        // A fresh write must land in free space without clobbering the live
+        // page — proves freed runs are reusable and live runs stay reserved.
+        store.put(7, 2, 99, b"new").unwrap();
+        store.drain().unwrap();
+        assert_eq!(store.get(7, 2, 99).unwrap().unwrap(), b"new");
+        for id in 0..10u128 {
+            assert_eq!(store.get(7, 2, id).unwrap().unwrap(), vec![0xABu8; 300]);
         }
     }
 
